@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import { parse } from 'yaml';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runAction, type CoreLike } from '../src/index.js';
 import { parseCliArgs } from '../src/cli.js';
@@ -90,8 +91,17 @@ describe('action.yml <-> CLI flag parity', () => {
 });
 
 describe('adapter parity', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('AZ-ENTRY-001: action shell and CLI-shaped env produce byte-equal outputs for all 22 outputs', async () => {
-    process.env.POSTMAN_ACTIONS_TELEMETRY = 'off';
+    // Hermetic repo root: empty temp dir so neither adapter picks up repo
+    // specs/IaC from the action checkout or CI workspace, and both adapters
+    // see identical ambient env (CI sets GITHUB_WORKSPACE; locally unset).
+    const emptyRepoRoot = mkdtempSync(join(tmpdir(), 'az-parity-'));
+    vi.stubEnv('GITHUB_WORKSPACE', emptyRepoRoot);
+    vi.stubEnv('POSTMAN_ACTIONS_TELEMETRY', 'off');
     const runtimeDeps = (provider: SpecProvider): Omit<AzureDependencies, 'core'> => ({
       subscriptions: { listEnabledSubscriptions: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }]) },
       createApimClient: () => {
@@ -122,7 +132,7 @@ describe('adapter parity', () => {
     // CLI path: parseCliArgs -> resolveInputs -> execute (same runtime seam runCli uses)
     const parsed = parseCliArgs(
       ['--api-id', 'payments', '--subscription-id', 'sub-1'],
-      { POSTMAN_ACTIONS_TELEMETRY: 'off' }
+      { ...process.env, POSTMAN_ACTIONS_TELEMETRY: 'off' }
     );
     if (parsed.kind !== 'run') throw new Error('expected run');
     const cliResult = await execute(resolveInputs(parsed.inputEnv), { core: { group: async (_n, fn) => fn(), info: () => undefined, warning: () => undefined } as ReporterLike, ...runtimeDeps(stubProvider()) });
