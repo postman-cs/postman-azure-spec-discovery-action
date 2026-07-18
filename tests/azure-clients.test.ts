@@ -230,6 +230,38 @@ describe('azure sdk client wrappers', () => {
     expect(sdk.workspaceApi.listByService).not.toHaveBeenCalled();
   });
 
+  it('AZ-APIM-001c: unexpected workspace listing and workspace API failures are not masked', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as {
+      client: {
+        api: { listByService: ReturnType<typeof vi.fn> };
+        workspace: { listByService: ReturnType<typeof vi.fn> };
+        workspaceApi: { listByService: ReturnType<typeof vi.fn> };
+      };
+    }).client;
+    sdk.api.listByService.mockImplementation(() => (async function* () {
+      yield { name: 'service-current', displayName: 'Service current', apiType: 'http', isCurrent: true };
+    })());
+    sdk.workspace.listByService.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield* [];
+        throw new Error('ServiceUnavailable: workspace listing failed with HTTP 503');
+      }
+    });
+
+    await expect(client.listApis('rg', 'svc')).rejects.toThrow('HTTP 503');
+
+    sdk.workspace.listByService.mockReturnValue((async function* () { yield { name: 'team-a' }; })());
+    sdk.workspaceApi.listByService.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield* [];
+        throw new Error('403 Forbidden reading workspace APIs');
+      }
+    });
+
+    await expect(client.listApis('rg', 'svc')).rejects.toThrow('403 Forbidden');
+  });
+
   it('AZ-APIM-003: a SAS 403 triggers a fresh export and total cycles stay within maxAttempts', async () => {
     const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
     const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;

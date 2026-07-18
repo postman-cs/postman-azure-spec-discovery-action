@@ -153,6 +153,11 @@ function isAuthorizationError(error: unknown): boolean {
   return /authorizationfailed|forbidden|unauthorized|\b401\b|\b403\b/i.test(message);
 }
 
+function isUnsupportedWorkspaceTierError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /workspace feature is not supported in this service tier/i.test(message);
+}
+
 function sdkMaxRetries(options?: AzureSdkOptions): number {
   return Math.max(0, (options?.maxAttempts ?? 3) - 1);
 }
@@ -211,25 +216,25 @@ export class ApimSdkClient implements AzureApimClient {
     const summaries = serviceApis.map((api) => toApiSummary(api, serviceName, resourceGroup));
     // Workspaces exist only on Premium v2 / workspace-capable tiers; every other tier
     // (Consumption, Developer, Basic, Standard) rejects the workspace surface outright.
-    // Workspace enumeration is therefore additive and fail-soft: a workspace listing
-    // failure must never take down service-level API discovery.
+    // Workspace enumeration is therefore additive and fail-soft only for the explicit
+    // unsupported-tier response. Other failures must propagate rather than silently
+    // dropping workspace APIs from a workspace-capable service.
     try {
-    const workspaces = await collectBounded(
-      this.client.workspace.listByService(resourceGroup, serviceName),
-      'APIM workspace list'
-    );
-    for (const workspace of workspaces) {
-      const workspaceId = workspace.name ?? '';
-      if (!workspaceId) continue;
-      const workspaceApis = await collectBounded(
-        this.client.workspaceApi.listByService(resourceGroup, serviceName, workspaceId),
-        `APIM workspace ${workspaceId} API list`
+      const workspaces = await collectBounded(
+        this.client.workspace.listByService(resourceGroup, serviceName),
+        'APIM workspace list'
       );
-      summaries.push(...workspaceApis.map((api) => toApiSummary(api, serviceName, resourceGroup, workspaceId)));
-    }
-    } catch {
-      // Tier without workspace support (or transient workspace-surface failure):
-      // proceed with service-level APIs only.
+      for (const workspace of workspaces) {
+        const workspaceId = workspace.name ?? '';
+        if (!workspaceId) continue;
+        const workspaceApis = await collectBounded(
+          this.client.workspaceApi.listByService(resourceGroup, serviceName, workspaceId),
+          `APIM workspace ${workspaceId} API list`
+        );
+        summaries.push(...workspaceApis.map((api) => toApiSummary(api, serviceName, resourceGroup, workspaceId)));
+      }
+    } catch (error) {
+      if (!isUnsupportedWorkspaceTierError(error)) throw error;
     }
     return retainCurrentApis(summaries);
   }
