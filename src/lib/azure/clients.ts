@@ -209,6 +209,11 @@ export class ApimSdkClient implements AzureApimClient {
   public async listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]> {
     const serviceApis = await collectBounded(this.client.api.listByService(resourceGroup, serviceName), 'APIM API list');
     const summaries = serviceApis.map((api) => toApiSummary(api, serviceName, resourceGroup));
+    // Workspaces exist only on Premium v2 / workspace-capable tiers; every other tier
+    // (Consumption, Developer, Basic, Standard) rejects the workspace surface outright.
+    // Workspace enumeration is therefore additive and fail-soft: a workspace listing
+    // failure must never take down service-level API discovery.
+    try {
     const workspaces = await collectBounded(
       this.client.workspace.listByService(resourceGroup, serviceName),
       'APIM workspace list'
@@ -221,6 +226,10 @@ export class ApimSdkClient implements AzureApimClient {
         `APIM workspace ${workspaceId} API list`
       );
       summaries.push(...workspaceApis.map((api) => toApiSummary(api, serviceName, resourceGroup, workspaceId)));
+    }
+    } catch {
+      // Tier without workspace support (or transient workspace-surface failure):
+      // proceed with service-level APIs only.
     }
     return retainCurrentApis(summaries);
   }
