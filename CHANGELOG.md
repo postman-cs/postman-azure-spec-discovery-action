@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.1
+
+Patch release after `v1.0.0` packaging failure.
+
+- Add `package.json` `repository.url` so npm provenance publish succeeds.
+- Keep APIM Consumption-tier workspace fail-soft recognition for `MethodNotAllowedInPricingTier`.
+
 ## v1.0.0
 
 Initial release.

@@ -12,6 +12,7 @@ interface PackageJson {
   files?: string[];
   dependencies: Record<string, string>;
   bin?: Record<string, string>;
+  repository?: { type?: string; url?: string };
 }
 
 const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as PackageJson;
@@ -31,9 +32,11 @@ const AZURE_PINS: Record<string, string> = {
 describe('package contract', () => {
   it('AZ-CONTRACT-006: name, version, engine, Azure pins, and packaged files are locked', () => {
     expect(pkg.name).toBe('@postman-cse/onboarding-azure-spec-discovery');
-    expect(pkg.version).toBe('1.0.0');
+    expect(pkg.version).toBe('1.0.1');
     expect(pkg.engines?.node).toBe('>=24');
     expect(pkg.bin?.['postman-azure-spec-discovery']).toBe('dist/cli.cjs');
+    expect(pkg.repository?.type).toBe('git');
+    expect(pkg.repository?.url).toBe('https://github.com/postman-cs/postman-azure-spec-discovery-action');
 
     for (const [name, version] of Object.entries(AZURE_PINS)) {
       expect(pkg.dependencies[name], `${name} must be pinned exactly`).toBe(version);

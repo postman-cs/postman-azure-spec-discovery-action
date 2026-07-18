@@ -1,6 +1,6 @@
 {
   "name": "@postman-cse/onboarding-azure-spec-discovery",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Discover Azure-hosted API specs and hand the result to Postman API onboarding.",
   "type": "module",
   "main": "dist/index.cjs",
@@ -39,6 +39,10 @@
     "api-onboarding"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/postman-cs/postman-azure-spec-discovery-action"
+  },
   "publishConfig": {
     "access": "public"
   },
