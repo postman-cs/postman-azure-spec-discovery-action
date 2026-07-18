@@ -214,20 +214,47 @@ describe('azure sdk client wrappers', () => {
         workspaceApi: { listByService: ReturnType<typeof vi.fn> };
       };
     }).client;
-    sdk.api.listByService.mockReturnValue((async function* () {
+    sdk.api.listByService.mockImplementation(() => (async function* () {
       yield { name: 'service-current', displayName: 'Service current', apiType: 'http', isCurrent: true };
     })());
     // Consumption/Developer/Basic/Standard tiers reject the workspace surface.
+    // Live ARM commonly returns MethodNotAllowedInPricingTier (message may live on RestError.response).
+    const pricingTierError = Object.assign(
+      new Error("Operation returned an invalid status code 'BadRequest'"),
+      {
+        code: 'MethodNotAllowedInPricingTier',
+        statusCode: 400,
+        response: {
+          bodyAsText: JSON.stringify({
+            error: {
+              code: 'MethodNotAllowedInPricingTier',
+              message: 'Method not allowed in Consumption pricing tier'
+            }
+          })
+        }
+      }
+    );
     sdk.workspace.listByService.mockReturnValue({
       async *[Symbol.asyncIterator]() {
         yield* [];
-        throw new Error('ValidationError: The workspace feature is not supported in this service tier');
+        throw pricingTierError;
       }
     });
 
     const apis = await client.listApis('rg', 'svc');
     expect(apis.map((api) => api.apiId)).toEqual(['service-current']);
     expect(sdk.workspaceApi.listByService).not.toHaveBeenCalled();
+
+    // Documented workspace-feature wording remains accepted.
+    sdk.workspace.listByService.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield* [];
+        throw new Error('ValidationError: The workspace feature is not supported in this service tier');
+      }
+    });
+    await expect(client.listApis('rg', 'svc')).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ apiId: 'service-current' })])
+    );
   });
 
   it('AZ-APIM-001c: unexpected workspace listing and workspace API failures are not masked', async () => {

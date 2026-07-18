@@ -153,9 +153,46 @@ function isAuthorizationError(error: unknown): boolean {
   return /authorizationfailed|forbidden|unauthorized|\b401\b|\b403\b/i.test(message);
 }
 
+/**
+ * Flatten Azure SDK / RestError surfaces into one searchable string.
+ * RestError keeps `response` non-enumerable, so String(error) alone can miss
+ * the pricing-tier body that ARM returns for workspace calls on Consumption.
+ */
+function azureErrorText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const record = error as Error & {
+    code?: unknown;
+    statusCode?: unknown;
+    response?: { bodyAsText?: unknown; parsedBody?: unknown };
+    details?: unknown;
+  };
+  const parts = [
+    error.message,
+    record.code,
+    record.statusCode,
+    record.response?.bodyAsText,
+    typeof record.response?.parsedBody === 'string'
+      ? record.response.parsedBody
+      : record.response?.parsedBody
+        ? JSON.stringify(record.response.parsedBody)
+        : undefined,
+    typeof record.details === 'string' ? record.details : record.details ? JSON.stringify(record.details) : undefined
+  ];
+  return parts.filter((part) => part !== undefined && part !== null && `${part}`.length > 0).join(' ');
+}
+
 function isUnsupportedWorkspaceTierError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /workspace feature is not supported in this service tier/i.test(message);
+  const text = azureErrorText(error);
+  // Documented Consumption/classic-tier rejection for the workspace ARM surface.
+  if (/workspace feature is not supported in this service tier/i.test(text)) return true;
+  // Live ARM often returns MethodNotAllowedInPricingTier for SKU-gated APIM APIs.
+  if (/MethodNotAllowedInPricingTier/i.test(text)) return true;
+  if (/method not allowed in .*(pricing tier|sku)/i.test(text)) return true;
+  // Broader workspace+SKU wording observed across portal/SDK wrappers.
+  if (/workspace/i.test(text) && /not supported|unsupported|not available|pricing tier|\bsku\b/i.test(text)) {
+    return true;
+  }
+  return false;
 }
 
 function sdkMaxRetries(options?: AzureSdkOptions): number {
