@@ -216,7 +216,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
             '--url',
             `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.ApiManagement/service/${apimName}/apis/payments-live?export=true&format=openapi%2Bjson-link&api-version=2022-08-01`
           ]);
-          if (exportProbe?.value?.link || exportProbe?.properties?.value?.link) {
+          if (exportProbe?.link || exportProbe?.value?.link || exportProbe?.properties?.value?.link) {
             ready = true;
             break;
           }
