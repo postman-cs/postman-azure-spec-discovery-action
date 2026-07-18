@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so commitlint can lint the PR commit range.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Bundle once before fan-out so pack tests and the dist assert only read
+      # dist/. Typecheck stays in the fan-out so it runs exactly once.
+      - run: npm run bundle
+      # Keep at most two checks active on the two-vCPU runner. Failures aggregate
+      # under ::group:: logs so one pass still shows every result.
+      - name: Run gates
+        run: |
+          set -uo pipefail
+          declare -A pid=()
+          declare -A result=()
+          declare -a names=()
+          MAX_PARALLEL_GATES=2
+          finish_one() {
+            local finished_pid status n
+            if wait -n -p finished_pid "${pid[@]}"; then status=0; else status=$?; fi
+            for n in "${!pid[@]}"; do
+              if [ "${pid[$n]}" = "$finished_pid" ]; then
+                result[$n]=$status
+                unset 'pid[$n]'
+                return
+              fi
+            done
+          }
+          run() {
+            while [ "${#pid[@]}" -ge "$MAX_PARALLEL_GATES" ]; do finish_one; done
+            local n=$1; shift
+            names+=("$n")
+            ( "$@" ) >"$n.log" 2>&1 & pid[$n]=$!
+          }
+
+          run lint       npm run lint
+          run typecheck  npm run typecheck
+          run test       npm test
+          run dist       npm run verify:dist:assert
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            run commitlint npx commitlint \
+              --from "${{ github.event.pull_request.base.sha }}" \
+              --to "${{ github.event.pull_request.head.sha }}"
+          fi
+
+          while [ "${#pid[@]}" -gt 0 ]; do finish_one; done
+          fail=0
+          for n in "${names[@]}"; do
+            if [ "${result[$n]}" -eq 0 ]; then echo "gate:$n=pass"; else echo "gate:$n=fail"; fail=1; fi
+          done
+          for n in "${names[@]}"; do
+            echo "::group::$n"; cat "$n.log"; echo "::endgroup::"
+          done
+          exit $fail
+      - name: Upload expected dist on mismatch
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: expected-dist
+          path: dist/

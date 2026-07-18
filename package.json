@@ -1,0 +1,68 @@
+{
+  "name": "@postman-cse/onboarding-azure-spec-discovery",
+  "version": "1.0.0",
+  "description": "Discover Azure-hosted API specs and hand the result to Postman API onboarding.",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "bin": {
+    "postman-azure-spec-discovery": "dist/cli.cjs"
+  },
+  "files": [
+    "action.yml",
+    "dist",
+    "README.md",
+    "docs",
+    "SECURITY.md",
+    "SUPPORT.md",
+    "RELEASE_POLICY.md"
+  ],
+  "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
+    "bundle": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --banner:js='#!/usr/bin/env node' --outfile=dist/cli.cjs && chmod 755 dist/cli.cjs",
+    "build": "npm run typecheck && npm run bundle",
+    "verify:dist:assert": "git diff --ignore-space-at-eol --text --exit-code -- dist && node scripts/verify-dist-artifact.mjs",
+    "verify:dist": "npm run build && npm run verify:dist:assert",
+    "docs:tables": "node scripts/render-action-tables.mjs",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "keywords": [
+    "github-action",
+    "postman",
+    "azure",
+    "azure-api-management",
+    "apim",
+    "app-service",
+    "openapi",
+    "api-onboarding"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@azure/arm-apimanagement": "10.0.0",
+    "@azure/arm-appservice": "19.0.0",
+    "@azure/arm-resourcegraph": "4.2.1",
+    "@azure/arm-resources": "8.0.0",
+    "@azure/arm-subscriptions": "6.0.0",
+    "@azure/identity": "4.13.1",
+    "@postman-cse/automation-telemetry-core": "^0.2.0",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.18.0",
+    "vitest": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

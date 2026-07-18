@@ -1,0 +1,6 @@
+# Raw live-run artifacts must never be committed: manifests, deployment output,
+# zips, and any .local.json evidence stay local.
+*.local.json
+*.zip
+deployment-output*
+live-resource-manifest*

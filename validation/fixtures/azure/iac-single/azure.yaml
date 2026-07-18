@@ -1,0 +1,7 @@
+# azd project hint for the live-validation local IaC surface.
+name: payments-iac
+services:
+  payments:
+    project: .
+    language: js
+    host: appservice

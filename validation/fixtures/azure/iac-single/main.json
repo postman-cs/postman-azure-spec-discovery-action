@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "resources": [
+    {
+      "type": "Microsoft.ApiManagement/service/apis",
+      "apiVersion": "2023-05-01-preview",
+      "name": "apim-live/payments-iac",
+      "properties": {
+        "displayName": "Payments IaC API",
+        "path": "payments-iac",
+        "protocols": ["https"],
+        "format": "openapi+json",
+        "value": "{\"openapi\":\"3.0.3\",\"info\":{\"title\":\"Payments IaC API\",\"version\":\"1.0.0\"},\"paths\":{\"/payments\":{\"get\":{\"operationId\":\"listPayments\",\"responses\":{\"200\":{\"description\":\"ok\"}}}}}}"
+      }
+    }
+  ]
+}
