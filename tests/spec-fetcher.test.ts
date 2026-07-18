@@ -67,6 +67,27 @@ describe('spec fetcher', () => {
     );
   });
 
+  it('stops reading a stream without content-length at the byte cap instead of buffering it fully', async () => {
+    let pulls = 0;
+    let canceled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(8));
+      },
+      cancel() {
+        canceled = true;
+      }
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(body, { status: 200 }));
+
+    await expect(fetchSpecFromUrl('https://x.example/spec.json', { maxBytes: 32 })).rejects.toThrow(
+      'Response body too large'
+    );
+    expect(canceled).toBe(true);
+    expect(pulls).toBeLessThanOrEqual(6);
+  });
+
   it('rejects non-OK statuses', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('nope', { status: 404 }));
     await expect(fetchSpecFromUrl('https://x.example/spec.json')).rejects.toThrow('HTTP 404');

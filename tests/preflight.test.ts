@@ -4,7 +4,13 @@ import path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { execute, resolveInputs, type AzureDependencies, type ReporterLike } from '../src/runtime.js';
+import {
+  execute,
+  resolveInputs,
+  resolveSubscriptionId,
+  type AzureDependencies,
+  type ReporterLike
+} from '../src/runtime.js';
 import type { SpecProvider } from '../src/lib/providers/types.js';
 
 let repoRoot: string;
@@ -53,6 +59,43 @@ describe('subscription preflight', () => {
     const inputs = resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_EXPECTED_SERVICE_NAME: 'payments' });
     await expect(execute(inputs, dependencies)).rejects.toThrow('Subscription listing failed with HTTP 401');
     expect(listCandidates).not.toHaveBeenCalled();
+  });
+
+  it('AZ-CLIENT-002: denied explicit lookup falls back to listing and rejects when the subscription is not visible', async () => {
+    const get = vi.fn(async () => {
+      throw new Error('Subscription lookup failed with HTTP 403');
+    });
+    const list = vi.fn(async () => [{ subscriptionId: 'other-subscription', state: 'Enabled' }]);
+
+    await expect(resolveSubscriptionId('explicit-subscription', { get, list })).rejects.toThrow(
+      'The explicit --subscription-id could not be verified: direct lookup was denied and the subscription is not visible via listing.'
+    );
+    expect(get).toHaveBeenCalledOnce();
+    expect(list).toHaveBeenCalledOnce();
+  });
+
+  it('AZ-CLIENT-002b: denied explicit lookup proceeds when listing contains the subscription', async () => {
+    const get = vi.fn(async () => {
+      throw new Error('Subscription lookup failed with HTTP 401');
+    });
+    const list = vi.fn(async () => [{ subscriptionId: 'explicit-subscription', state: 'Enabled' }]);
+
+    await expect(resolveSubscriptionId('explicit-subscription', { get, list })).resolves.toBe('explicit-subscription');
+    expect(get).toHaveBeenCalledOnce();
+    expect(list).toHaveBeenCalledOnce();
+  });
+
+  it('AZ-CLIENT-002c: non-auth explicit lookup failures propagate without listing', async () => {
+    const get = vi.fn(async () => {
+      throw new Error('Subscription lookup failed with HTTP 500');
+    });
+    const list = vi.fn(async () => [{ subscriptionId: 'explicit-subscription', state: 'Enabled' }]);
+
+    await expect(resolveSubscriptionId('explicit-subscription', { get, list })).rejects.toThrow(
+      'Subscription lookup failed with HTTP 500'
+    );
+    expect(get).toHaveBeenCalledOnce();
+    expect(list).not.toHaveBeenCalled();
   });
 
   it('AZ-CLIENT-003: probe statuses stay ordered and fail-soft without raw ARM IDs in evidence', async () => {
