@@ -218,9 +218,12 @@ describe('azure sdk client wrappers', () => {
       yield { name: 'service-current', displayName: 'Service current', apiType: 'http', isCurrent: true };
     })());
     // Consumption/Developer/Basic/Standard tiers reject the workspace surface.
-    sdk.workspace.listByService.mockReturnValue((async function* () {
-      throw new Error('ValidationError: The workspace feature is not supported in this service tier');
-    })());
+    sdk.workspace.listByService.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield* [];
+        throw new Error('ValidationError: The workspace feature is not supported in this service tier');
+      }
+    });
 
     const apis = await client.listApis('rg', 'svc');
     expect(apis.map((api) => api.apiId)).toEqual(['service-current']);
