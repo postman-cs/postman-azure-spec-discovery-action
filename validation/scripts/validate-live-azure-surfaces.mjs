@@ -54,6 +54,11 @@ export function classifyProbeError(message) {
   return 'retryable';
 }
 
+export function isResourceNotFoundError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /ResourceNotFound|could not be found|was not found/i.test(message);
+}
+
 export function parseFlags(argv) {
   return {
     provision: argv.includes('--provision'),
@@ -201,6 +206,8 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
 
   let provisioned = Boolean(resumeSuffix);
   const results = [];
+  let evidence;
+  let cleanupFailure;
   try {
     if (flags.provision) {
       if (ownsResourceGroup) {
@@ -296,7 +303,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
     const caseResults = await runCases({ runner, log, manifest, subscriptionId, cliPath });
     results.push(...caseResults);
 
-    const evidence = buildEvidence(results);
+    evidence = buildEvidence(results);
     await writeFile(
       path.join(repoRoot, 'validation/evidence/live-azure-surfaces.json'),
       `${JSON.stringify(evidence, null, 2)}\n`,
@@ -307,7 +314,6 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
     if (evidence.failed > 0) {
       throw new Error(`${evidence.failed} live validation case(s) failed`);
     }
-    return evidence;
   } finally {
     if (flags.teardown && provisioned) {
       if (ownsResourceGroup) {
@@ -323,6 +329,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
           log(`Teardown error for ${resourceGroup}: ${error instanceof Error ? error.message : String(error)}`);
         }
       } else {
+        const cleanupErrors = [];
         const resources = [
           { name: siteName, type: 'Microsoft.Web/sites' },
           { name: planName, type: 'Microsoft.Web/serverfarms' },
@@ -349,17 +356,42 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
               log(`REFUSING deletion: ${resource.name} failed the run-marker/resource identity check.`);
             }
           } catch (error) {
-            log(`Teardown error for ${resource.name}: ${error instanceof Error ? error.message : String(error)}`);
+            if (isResourceNotFoundError(error)) {
+              log(`Run-marked ${resource.type} ${resource.name} is already absent`);
+            } else {
+              cleanupErrors.push(error);
+              log(`Teardown error for ${resource.name}: ${error instanceof Error ? error.message : String(error)}`);
+            }
           }
         }
         try {
           az(runner, ['deployment', 'group', 'delete', '--resource-group', resourceGroup, '--name', deploymentName]);
         } catch (error) {
-          log(`Deployment-record cleanup error for ${deploymentName}: ${error instanceof Error ? error.message : String(error)}`);
+          if (!isResourceNotFoundError(error)) {
+            cleanupErrors.push(error);
+            log(`Deployment-record cleanup error for ${deploymentName}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        try {
+          const residual = azJson(runner, [
+            'resource', 'list',
+            '--resource-group', resourceGroup,
+            '--tag', `${RESOURCE_RUN_MARKER_TAG}=${runMarker}`
+          ]) ?? [];
+          if (residual.length > 0) {
+            cleanupErrors.push(new Error(`${residual.length} run-marked resource(s) remain`));
+          }
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+        if (cleanupErrors.length > 0) {
+          cleanupFailure = new Error(`Shared-group teardown did not complete: ${cleanupErrors.length} cleanup check(s) failed`);
         }
       }
     }
   }
+  if (cleanupFailure) throw cleanupFailure;
+  return evidence;
 }
 
 function runCli(runner, cliPath, args, cwd) {

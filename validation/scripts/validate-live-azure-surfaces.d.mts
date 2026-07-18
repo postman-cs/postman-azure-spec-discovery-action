@@ -28,6 +28,7 @@ export interface Evidence {
 
 export function parseFlags(argv: string[]): LiveFlags;
 export function classifyProbeError(message: string | null | undefined): 'fatal' | 'retryable';
+export function isResourceNotFoundError(error: unknown): boolean;
 export function requiredEnv(env: Record<string, string | undefined>): LiveEnv;
 export function resolveSubscriptionId(
   env: Record<string, string | undefined>,

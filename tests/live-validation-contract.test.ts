@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildEvidence,
   classifyProbeError,
+  isResourceNotFoundError,
   parseFlags,
   requiredEnv,
   resolveSubscriptionId,
@@ -118,6 +119,12 @@ describe('live validation control flow', () => {
     expect(classifyProbeError('ServiceUpdating: the service is being updated')).toBe('retryable');
     expect(classifyProbeError('Request failed with status 503')).toBe('retryable');
     expect(classifyProbeError('')).toBe('retryable');
+  });
+
+  it('AZ-LIVE-002: teardown treats an already-absent resource as successfully cleaned', () => {
+    expect(isResourceNotFoundError(new Error("ResourceNotFound: the resource was not found"))).toBe(true);
+    expect(isResourceNotFoundError("Resource group could not be found")).toBe(true);
+    expect(isResourceNotFoundError(new Error('AuthorizationFailed'))).toBe(false);
   });
 
   it('AZ-LIVE-002: evidence construction sanitizes case results down to the committed schema', () => {
