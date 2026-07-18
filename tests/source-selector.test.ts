@@ -71,3 +71,22 @@ describe('source selector', () => {
     expect(result.status).toBe('unresolved');
   });
 });
+
+describe('exact tag equality precedence (AZ-RESOLVE-EXACT)', () => {
+  it('exact tag match outranks substring containment so near-name siblings cannot tie', () => {
+    const hints = signals({ serviceHints: ['payments-live'] });
+    const apimCandidate = input(
+      '/subscriptions/s/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments-live',
+      { name: 'Payments Live API', tags: { 'postman:project-name': 'payments-live' } }
+    );
+    const siteCandidate = input(
+      '/subscriptions/s/resourceGroups/rg/providers/Microsoft.Web/sites/pmspecsite',
+      { name: 'pmspecsite', providerType: 'app-service', tags: { 'postman:project-name': 'payments-live-site' } }
+    );
+    const ranked = rankServiceCandidates([apimCandidate, siteCandidate], hints);
+    expect(ranked[0]?.resourceId).toBe(apimCandidate.id);
+    expect(ranked[0] && ranked[1] && ranked[0].confidence > ranked[1].confidence).toBe(true);
+    const resolved = resolveServiceCandidate([apimCandidate, siteCandidate], hints);
+    expect(resolved?.ambiguous).not.toBe(true);
+  });
+});

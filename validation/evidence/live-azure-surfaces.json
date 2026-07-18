@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-18",
+  "cases": 6,
+  "passed": 6,
+  "failed": 0,
+  "results": [
+    {
+      "name": "apim-explicit-api-id",
+      "status": "pass",
+      "sourceType": "apim-export",
+      "providerType": "apim",
+      "specFormat": "openapi-json"
+    },
+    {
+      "name": "apim-discovery",
+      "status": "pass",
+      "sourceType": "apim-export",
+      "providerType": "apim",
+      "specFormat": "openapi-json"
+    },
+    {
+      "name": "app-service-api-definition",
+      "status": "pass",
+      "sourceType": "app-service-api-definition",
+      "providerType": "app-service",
+      "specFormat": "openapi-json"
+    },
+    {
+      "name": "discover-many",
+      "status": "pass",
+      "sourceType": "discover-many",
+      "providerType": "apim",
+      "specFormat": "openapi-json"
+    },
+    {
+      "name": "iac-single",
+      "status": "pass",
+      "sourceType": "iac-embedded",
+      "providerType": "iac-local",
+      "specFormat": "openapi-json"
+    },
+    {
+      "name": "ambiguity",
+      "status": "pass",
+      "sourceType": "manual-review",
+      "providerType": "",
+      "specFormat": ""
+    }
+  ]
+}

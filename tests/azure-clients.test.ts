@@ -110,4 +110,53 @@ describe('azure sdk client wrappers', () => {
     await expect(client.listServices()).rejects.toThrow('401');
     expect(calls).toBe(1);
   });
+
+  it('AZ-CLIENT-005: exportApi reads the link from the runtime properties.value shape', async () => {
+    const credential = fakeCredential();
+    const client = new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
+    // The live ARM API nests the SAS link under properties.value.link, not the
+    // value.link shape the generated SDK model claims.
+    sdk.apiExport.get.mockResolvedValue({
+      id: '/subscriptions/sub-1/.../apis/payments-live',
+      name: 'payments-live',
+      properties: { format: 'openapi+json-link', value: { link: 'https://blob.example/export.json?sig=REDACTED' } }
+    });
+    const spec = JSON.stringify({ openapi: '3.0.3', info: { title: 'x', version: '1' }, paths: {} });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(spec, { status: 200 }) as unknown as Response
+    );
+    try {
+      const content = await client.exportApi('rg', 'svc', 'payments-live');
+      expect(content).toContain('"openapi":"3.0.3"');
+      expect(fetchSpy).toHaveBeenCalledWith('https://blob.example/export.json?sig=REDACTED', { redirect: 'follow' });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('AZ-CLIENT-005: exportApi still reads the flat value.link shape', async () => {
+    const credential = fakeCredential();
+    const client = new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
+    sdk.apiExport.get.mockResolvedValue({ value: { link: 'https://blob.example/flat.json' } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"openapi":"3.0.3","info":{"title":"x","version":"1"},"paths":{}}', { status: 200 }) as unknown as Response
+    );
+    try {
+      const content = await client.exportApi('rg', 'svc', 'payments-live');
+      expect(content).toContain('"openapi":"3.0.3"');
+      expect(fetchSpy).toHaveBeenCalledWith('https://blob.example/flat.json', { redirect: 'follow' });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('AZ-CLIENT-005: exportApi throws when neither link shape is present', async () => {
+    const credential = fakeCredential();
+    const client = new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
+    sdk.apiExport.get.mockResolvedValue({ properties: { format: 'openapi+json-link', value: {} } });
+    await expect(client.exportApi('rg', 'svc', 'payments-live')).rejects.toThrow('no download link');
+  });
 });

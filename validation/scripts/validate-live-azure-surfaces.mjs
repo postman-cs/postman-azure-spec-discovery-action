@@ -141,15 +141,23 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   az(runner, ['account', 'set', '--subscription', subscriptionId]);
   az(runner, ['account', 'show']);
 
-  const suffix = randomBytes(4).toString('hex');
-  const runMarker = `run-${now()}-${suffix}`;
+  // Crash recovery: AZURE_LIVE_RESUME_SUFFIX + AZURE_LIVE_RESUME_MARKER reuse a
+  // stack a previous interrupted run provisioned (teardown guard still verifies
+  // the run-marker tag on the group before deleting anything).
+  const resumeSuffix = String(env.AZURE_LIVE_RESUME_SUFFIX ?? '').trim();
+  const resumeMarker = String(env.AZURE_LIVE_RESUME_MARKER ?? '').trim();
+  if (Boolean(resumeSuffix) !== Boolean(resumeMarker)) {
+    throw new Error('AZURE_LIVE_RESUME_SUFFIX and AZURE_LIVE_RESUME_MARKER must be set together');
+  }
+  const suffix = resumeSuffix || randomBytes(4).toString('hex');
+  const runMarker = resumeMarker || `run-${now()}-${suffix}`;
   const resourceGroup = `postman-azure-spec-live-${suffix}`;
   const apimName = `pmspecapim${suffix}`;
   const planName = `pmspecplan${suffix}`;
   const siteName = `pmspecsite${suffix}`;
   const manifest = { resourceGroup, runMarker, subscriptionId, apimName, planName, siteName };
 
-  let provisioned = false;
+  let provisioned = Boolean(resumeSuffix);
   const results = [];
   try {
     if (flags.provision) {
@@ -365,7 +373,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath 
       '--subscription-id', subscriptionId,
       '--resource-group', manifest.resourceGroup,
       '--expected-service-name', 'payments-live-site',
-      '--api-filter', 'payments-live-site',
+      '--api-filter', manifest.siteName,
       '--repo-root', workspace,
       '--result-json', 'result.json'
     ], workspace);

@@ -82,6 +82,28 @@ export interface AzureSubscriptionsClient {
 
 const EXPORT_FORMAT_OPENAPI_JSON = 'openapi+json-link';
 
+/**
+ * The ARM `apiExport.get` response nests the download link at either
+ * `value.link` (the shape the SDK model claims) or `properties.value.link`
+ * (the shape the live 2024-05-01 API actually returns). The generated SDK
+ * mapper does not reliably project the runtime `properties.value` payload onto
+ * `ApiExportResult.value`, so read both shapes defensively.
+ */
+function extractExportLink(result: unknown): string | undefined {
+  const record = (result ?? {}) as Record<string, unknown>;
+  const direct = (record.value as { link?: unknown } | undefined)?.link;
+  if (typeof direct === 'string' && direct) {
+    return direct;
+  }
+  const properties = record.properties as { value?: { link?: unknown } } | undefined;
+  const nested = properties?.value?.link;
+  if (typeof nested === 'string' && nested) {
+    return nested;
+  }
+  return undefined;
+}
+
+
 export class ApimSdkClient implements AzureApimClient {
   private readonly client: ApiManagementClient;
 
@@ -116,7 +138,7 @@ export class ApimSdkClient implements AzureApimClient {
    */
   public async exportApi(resourceGroup: string, serviceName: string, apiId: string): Promise<string> {
     const result = await this.client.apiExport.get(resourceGroup, serviceName, apiId, EXPORT_FORMAT_OPENAPI_JSON, 'true');
-    const link = result.value?.link;
+    const link = extractExportLink(result);
     if (!link) {
       throw new Error(`APIM export for ${apiId} returned no download link`);
     }

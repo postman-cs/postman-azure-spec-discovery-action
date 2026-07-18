@@ -51,7 +51,12 @@ function scoreCandidate(candidate: AzureCandidateInput, signals: RepoSignals): {
   }
 
   const tagValues = Object.values(candidate.tags).map((value) => value.toLowerCase());
-  if (serviceHints.some((hint) => hint && tagValues.some((tag) => tag.includes(hint)))) {
+  if (serviceHints.some((hint) => hint && tagValues.some((tag) => tag === hint))) {
+    // Exact tag equality is a stronger signal than substring containment and
+    // must outrank it so "payments-live" cannot tie with "payments-live-site".
+    score += 60;
+    evidence.push('Resource tag exactly matches service hint');
+  } else if (serviceHints.some((hint) => hint && tagValues.some((tag) => tag.includes(hint)))) {
     score += 40;
     evidence.push('Resource tags match service hint');
   }
