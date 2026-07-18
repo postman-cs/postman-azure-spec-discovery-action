@@ -18,7 +18,8 @@ const CANDIDATE_TYPES = [
   'microsoft.resources/templatespecs/versions',
   'microsoft.eventgrid/topics',
   'microsoft.eventgrid/domains',
-  'microsoft.eventgrid/systemtopics'
+  'microsoft.eventgrid/systemtopics',
+  'microsoft.servicebus/namespaces/topics'
 ];
 
 export function buildCandidateQuery(resourceGroup?: string): string {

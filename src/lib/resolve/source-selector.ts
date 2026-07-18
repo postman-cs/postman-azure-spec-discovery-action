@@ -31,6 +31,8 @@ export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sou
       return 'template-spec-embedded';
     case 'event-grid':
       return 'event-grid-webhook';
+    case 'service-bus':
+      return 'service-bus-topic';
   }
 }
 

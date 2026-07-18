@@ -18,7 +18,8 @@ import type {
   AzureResourceGraphClient,
   AzureSubscriptionsClient,
   AzureTemplateSpecsClient,
-  AzureEventGridClient
+  AzureEventGridClient,
+  AzureServiceBusClient
 } from './lib/azure/clients.js';
 import { sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
@@ -42,6 +43,7 @@ import { CustomApisProvider } from './lib/providers/custom-apis.js';
 import { LogicAppsProvider } from './lib/providers/logic-apps.js';
 import { TemplateSpecsProvider } from './lib/providers/template-specs.js';
 import { EventGridProvider } from './lib/providers/event-grid.js';
+import { ServiceBusProvider } from './lib/providers/service-bus.js';
 import { IacLocalProvider } from './lib/providers/iac-local.js';
 import { resolvePathWithinRoot } from './lib/utils/resolve-path-within-root.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './lib/providers/types.js';
@@ -85,6 +87,7 @@ export interface AzureDependencies {
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
   createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
   createEventGridClient?: (subscriptionId: string) => AzureEventGridClient;
+  createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -451,6 +454,9 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
       : []),
     ...(dependencies.createEventGridClient
       ? [new EventGridProvider(dependencies.createEventGridClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      : []),
+    ...(dependencies.createServiceBusClient
+      ? [new ServiceBusProvider(dependencies.createServiceBusClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
       : []),
     new IacLocalProvider(iacScan)
   ];

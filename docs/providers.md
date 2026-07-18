@@ -1,6 +1,6 @@
 # Provider contracts
 
-Azure spec discovery ships seven providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships eight providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
 ## `apim` — Azure API Management
 
@@ -45,6 +45,13 @@ Azure spec discovery ships seven providers: `apim`, `app-service`, `custom-apis`
 - Export **synthesizes a deliberately partial OpenAPI 3.0 document** describing the webhook delivery contract: one POST operation per sanitized destination path, request bodies from the delivery schema envelope (Event Grid or CloudEvents 1.0), and `eventType`/`type` enums from `includedEventTypes` filters. Handler responses and event `data` payload schemas are not declared in Event Grid, so the export is `completeness: partial`.
 - Credential hygiene: only the server-populated `endpointBaseUrl` is ever read off the ARM response (`endpointUrl`, which may embed query-string tokens, is never projected; `getFullUrl` is never called), and every URL is still defensively stripped to origin + path before surfacing.
 
+## `service-bus` — Service Bus topic publish contracts
+
+- Enumerates Service Bus namespaces, their topics, subscriptions, and rules via `@azure/arm-servicebus` (Reader GETs, bounded pagination).
+- A topic is a supported candidate when it has at least one subscription — an asynchronous publish contract whose consumers are declared control-plane-side. Topics without subscriptions stay visible as unsupported candidates.
+- Export **synthesizes a deliberately partial OpenAPI 3.0 document** for the publish surface: one POST operation mirroring the Service Bus data-plane message path (`/<topic>/messages`), with every subscription and its SQL / correlation filter metadata described on the operation. Message payload schemas are not declared in ARM, so the export is `completeness: partial`.
+- Credential hygiene: authorization-rule surfaces and `listKeys` (which return connection strings) are never called; the namespace's public `serviceBusEndpoint` origin is the only URL surfaced.
+
 ## `iac-local` — repository Azure IaC
 
 - Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
@@ -52,4 +59,4 @@ Azure spec discovery ships seven providers: `apim`, `app-service`, `custom-apis`
 
 ## Ordering and narrowing
 
-Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.
+Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.

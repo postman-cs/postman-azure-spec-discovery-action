@@ -1,5 +1,6 @@
 import { ApiManagementClient } from '@azure/arm-apimanagement';
 import { EventGridManagementClient } from '@azure/arm-eventgrid';
+import { ServiceBusManagementClient } from '@azure/arm-servicebus';
 import type { ApiContract, ApiManagementServiceResource } from '@azure/arm-apimanagement';
 import { WebSiteManagementClient } from '@azure/arm-appservice';
 import { ResourceGraphClient } from '@azure/arm-resourcegraph';
@@ -1241,6 +1242,145 @@ export class EventGridSdkClient implements AzureEventGridClient {
     const iterator = resourceGroup
       ? this.client.topics.listByResourceGroup(resourceGroup)
       : this.client.topics.listBySubscription();
+    await iterator[Symbol.asyncIterator]().next();
+  }
+}
+
+export interface ServiceBusNamespaceSummary {
+  id: string;
+  name: string;
+  resourceGroup: string;
+  tags: Record<string, string>;
+  serviceBusEndpoint?: string;
+}
+
+export interface ServiceBusRuleSummary {
+  name: string;
+  sqlExpression?: string;
+  correlationSummary?: string;
+}
+
+export interface ServiceBusSubscriptionSummary {
+  name: string;
+  rules: ServiceBusRuleSummary[];
+}
+
+export interface ServiceBusTopicSummary {
+  id: string;
+  name: string;
+  subscriptions: ServiceBusSubscriptionSummary[];
+}
+
+export interface AzureServiceBusClient {
+  listNamespaces(resourceGroup?: string): Promise<ServiceBusNamespaceSummary[]>;
+  listTopics(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicSummary[]>;
+  probeServiceBusReadAccess(resourceGroup?: string): Promise<void>;
+}
+
+interface CorrelationFilterLike {
+  correlationId?: string;
+  messageId?: string;
+  to?: string;
+  replyTo?: string;
+  label?: string;
+  sessionId?: string;
+  contentType?: string;
+}
+
+function correlationSummary(filter: CorrelationFilterLike | undefined): string | undefined {
+  if (!filter) return undefined;
+  const parts = Object.entries({
+    correlationId: filter.correlationId,
+    messageId: filter.messageId,
+    to: filter.to,
+    replyTo: filter.replyTo,
+    label: filter.label,
+    sessionId: filter.sessionId,
+    contentType: filter.contentType
+  })
+    .filter(([, value]) => typeof value === 'string' && value.length > 0)
+    .map(([key, value]) => `${key}=${value}`);
+  return parts.length > 0 ? parts.join(', ') : undefined;
+}
+
+/**
+ * Service Bus management surface via @azure/arm-servicebus: namespaces,
+ * topics, subscriptions, and rules, all Reader GETs with bounded pagination.
+ * Authorization-rule surfaces and listKeys (which return connection strings)
+ * are never called.
+ */
+export class ServiceBusSdkClient implements AzureServiceBusClient {
+  private readonly client: ServiceBusManagementClient;
+
+  public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
+    this.client = new ServiceBusManagementClient(credential, subscriptionId, {
+      retryOptions: { maxRetries: sdkMaxRetries(options) }
+    });
+  }
+
+  public async listNamespaces(resourceGroup?: string): Promise<ServiceBusNamespaceSummary[]> {
+    const iterator = resourceGroup
+      ? this.client.namespaces.listByResourceGroup(resourceGroup)
+      : this.client.namespaces.list();
+    const namespaces = await collectBounded(iterator, 'Service Bus namespace list');
+    const summaries: ServiceBusNamespaceSummary[] = [];
+    for (const namespace of namespaces) {
+      const id = namespace.id ?? '';
+      const name = namespace.name ?? '';
+      if (!id || !name) continue;
+      summaries.push({
+        id,
+        name,
+        resourceGroup: extractResourceGroup(id),
+        tags: (namespace.tags ?? {}) as Record<string, string>,
+        ...(namespace.serviceBusEndpoint ? { serviceBusEndpoint: namespace.serviceBusEndpoint } : {})
+      });
+    }
+    return summaries;
+  }
+
+  public async listTopics(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicSummary[]> {
+    const topics = await collectBounded(
+      this.client.topics.listByNamespace(resourceGroup, namespaceName),
+      'Service Bus topic list'
+    );
+    const summaries: ServiceBusTopicSummary[] = [];
+    for (const topic of topics) {
+      const id = topic.id ?? '';
+      const name = topic.name ?? '';
+      if (!id || !name) continue;
+      const subscriptions = await collectBounded(
+        this.client.subscriptions.listByTopic(resourceGroup, namespaceName, name),
+        `Service Bus topic ${name} subscription list`
+      );
+      const subscriptionSummaries: ServiceBusSubscriptionSummary[] = [];
+      for (const subscription of subscriptions) {
+        const subscriptionName = subscription.name ?? '';
+        if (!subscriptionName) continue;
+        const rules = await collectBounded(
+          this.client.rules.listBySubscriptions(resourceGroup, namespaceName, name, subscriptionName),
+          `Service Bus subscription ${subscriptionName} rule list`
+        );
+        subscriptionSummaries.push({
+          name: subscriptionName,
+          rules: rules
+            .filter((rule) => Boolean(rule.name))
+            .map((rule) => ({
+              name: rule.name ?? '',
+              ...(rule.sqlFilter?.sqlExpression ? { sqlExpression: rule.sqlFilter.sqlExpression } : {}),
+              ...(correlationSummary(rule.correlationFilter) ? { correlationSummary: correlationSummary(rule.correlationFilter) } : {})
+            }))
+        });
+      }
+      summaries.push({ id, name, subscriptions: subscriptionSummaries });
+    }
+    return summaries;
+  }
+
+  public async probeServiceBusReadAccess(resourceGroup?: string): Promise<void> {
+    const iterator = resourceGroup
+      ? this.client.namespaces.listByResourceGroup(resourceGroup)
+      : this.client.namespaces.list();
     await iterator[Symbol.asyncIterator]().next();
   }
 }
