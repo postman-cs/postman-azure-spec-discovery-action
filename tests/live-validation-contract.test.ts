@@ -12,6 +12,7 @@ import {
   requiredEnv,
   resolveSubscriptionId,
   shouldDeleteGroup,
+  shouldDeleteResource,
   toEvidenceResult
 } from '../validation/scripts/validate-live-azure-surfaces.mjs';
 
@@ -32,7 +33,17 @@ describe('live validation control flow', () => {
     expect(() => requiredEnv({ AZURE_SUBSCRIPTION_ID: 'sub-1' })).toThrow('AZURE_LOCATION is required');
     expect(requiredEnv({ AZURE_SUBSCRIPTION_ID: 'sub-1', AZURE_LOCATION: 'eastus2' })).toEqual({
       subscriptionId: 'sub-1',
-      location: 'eastus2'
+      location: 'eastus2',
+      resourceGroup: ''
+    });
+    expect(requiredEnv({
+      AZURE_SUBSCRIPTION_ID: 'sub-1',
+      AZURE_LOCATION: 'eastus2',
+      AZURE_RESOURCE_GROUP: 'CSE-Azure-Team'
+    })).toEqual({
+      subscriptionId: 'sub-1',
+      location: 'eastus2',
+      resourceGroup: 'CSE-Azure-Team'
     });
 
     // Explicit env wins; otherwise the azure-cse-pilot-builders AzureCLI@2 identity is used.
@@ -70,6 +81,28 @@ describe('live validation control flow', () => {
     ).toBe(false);
     expect(shouldDeleteGroup({ manifest, groupShow: null, subscriptionId: 'sub-1' })).toBe(false);
     expect(shouldDeleteGroup({ manifest: {}, groupShow: matchingGroup, subscriptionId: 'sub-1' })).toBe(false);
+
+    const matchingResource = {
+      name: 'pmspecsiteabcd1234',
+      type: 'Microsoft.Web/sites',
+      id: '/subscriptions/sub-1/resourceGroups/CSE-Azure-Team/providers/Microsoft.Web/sites/pmspecsiteabcd1234',
+      tags: { 'postman:run-marker': manifest.runMarker }
+    };
+    const sharedManifest = { ...manifest, resourceGroup: 'CSE-Azure-Team' };
+    const deleteInput = {
+      manifest: sharedManifest,
+      resourceShow: matchingResource,
+      subscriptionId: 'sub-1',
+      expectedName: matchingResource.name,
+      expectedType: matchingResource.type
+    };
+    expect(shouldDeleteResource(deleteInput)).toBe(true);
+    expect(shouldDeleteResource({ ...deleteInput, subscriptionId: 'sub-2' })).toBe(false);
+    expect(shouldDeleteResource({ ...deleteInput, expectedName: 'another-site' })).toBe(false);
+    expect(shouldDeleteResource({
+      ...deleteInput,
+      resourceShow: { ...matchingResource, tags: { 'postman:run-marker': 'another-run' } }
+    })).toBe(false);
   });
 
   it('AZ-LIVE-002: export-probe errors are classified so fatal failures never poll out the ceiling', () => {

@@ -6,6 +6,7 @@ export interface LiveFlags {
 export interface LiveEnv {
   subscriptionId: string;
   location: string;
+  resourceGroup: string;
 }
 
 export interface EvidenceResult {
@@ -36,6 +37,13 @@ export function shouldDeleteGroup(input: {
   manifest: { resourceGroup?: string; runMarker?: string } | null | undefined;
   groupShow: { name?: string; id?: string; tags?: Record<string, string> } | null | undefined;
   subscriptionId: string;
+}): boolean;
+export function shouldDeleteResource(input: {
+  manifest: { resourceGroup?: string; runMarker?: string } | null | undefined;
+  resourceShow: { name?: string; id?: string; type?: string; tags?: Record<string, string> } | null | undefined;
+  subscriptionId: string;
+  expectedName: string;
+  expectedType: string;
 }): boolean;
 export function toEvidenceResult(
   name: string,

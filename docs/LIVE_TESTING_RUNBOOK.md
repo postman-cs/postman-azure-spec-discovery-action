@@ -8,6 +8,7 @@ Live validation provisions disposable real Azure resources, exercises the compil
 - Project: `CSE Pilots`
 - Azure Resource Manager service connection: `azure-cse-pilot-builders`
 - Scope: the service connection's `Active Azure Subscription`
+- Resource group: `CSE-Azure-Team` (the connection's Contributor scope)
 
 Do not provision live-validation resources from a personal Azure subscription. The Azure DevOps `AzureCLI@2` task authenticates with the workload-identity service connection and derives `AZURE_SUBSCRIPTION_ID` from `az account show`; no personal login, tenant, or subscription ID belongs in the pipeline or committed evidence.
 
@@ -30,21 +31,21 @@ Download the sanitized `azure-spec-discovery-live-evidence` pipeline artifact an
 The runner:
 
 1. Derives and pins the subscription supplied by `azure-cse-pilot-builders` (`az account show` then `az account set`).
-2. Creates a run-marked resource group with a collision-resistant suffix and deploys `validation/fixtures/azure/live-stack.bicep` (APIM Consumption + current HTTP API + App Service plan/site).
+2. Deploys collision-resistant, run-tagged resources into `CSE-Azure-Team` using `validation/fixtures/azure/live-stack.bicep` (APIM Consumption + current HTTP API + App Service plan/site).
 3. Deploys the local App Service stub zip and points `siteConfig.apiDefinition.url` at the stub's `/openapi.json`.
 4. Polls APIM until export is available (5-minute ceiling, 10-second interval).
 5. Runs six CLI cases: explicit APIM `api-id`; APIM discovery; App Service API definition; `discover-many`; local IaC single resolve; ambiguity fixture.
 6. Writes sanitized evidence to `validation/evidence/live-azure-surfaces.json` (schema 1: totals plus per-case `{name,status,sourceType,providerType,specFormat}` — no IDs, hosts, URLs, or spec bodies).
-7. In `finally`, requests `az group delete --yes --no-wait` for the generated group only after verifying its run marker tag and subscription. A marker mismatch refuses deletion and prints the group name for manual cleanup.
+7. In `finally`, deletes only the exact App Service site, plan, and APIM service whose identity and run-marker tag match the manifest, then removes the deployment record. It never deletes the shared resource group. Outside ADO, the fallback dedicated-group mode retains its guarded group deletion.
 
 ## Flags
 
 - `--provision` — required to create any Azure resource.
-- `--teardown` — required to delete the run's resource group.
+- `--teardown` — required to delete the run-created resources.
 - Omit both to re-validate an existing stack from a `.local.json` manifest within the same service-connection subscription.
 
 ## Safety rules
 
-- The runner deletes only the resource group it created, verified by run marker tag + subscription.
+- Shared-group mode deletes only exact run-created resources verified by name, type, subscription, group, and run marker. Dedicated-group mode deletes only the group it created, verified by run marker and subscription.
 - Raw manifests, deployment outputs, and zips are gitignored (`validation/.gitignore`); only sanitized evidence is committed.
 - Never substitute a personal service connection, personal `az login`, or production subscription.

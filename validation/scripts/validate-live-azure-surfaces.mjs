@@ -29,6 +29,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const repoRoot = process.cwd();
 const RUN_MARKER_TAG = 'postman-azure-spec-discovery-live-run';
+const RESOURCE_RUN_MARKER_TAG = 'postman:run-marker';
 // Consumption-tier APIM activates in minutes and `az deployment group create`
 // already blocks until the service + API report Succeeded, so the export probe
 // only needs to absorb short control-plane consistency lag — not the 45-minute
@@ -63,13 +64,14 @@ export function parseFlags(argv) {
 export function requiredEnv(env) {
   const subscriptionId = String(env.AZURE_SUBSCRIPTION_ID ?? '').trim();
   const location = String(env.AZURE_LOCATION ?? '').trim();
+  const resourceGroup = String(env.AZURE_RESOURCE_GROUP ?? '').trim();
   if (!subscriptionId) {
     throw new Error(
       'AZURE_SUBSCRIPTION_ID is required (set it explicitly, or authenticate az so `az account show` returns the azure-cse-pilot-builders subscription)'
     );
   }
   if (!location) throw new Error('AZURE_LOCATION is required');
-  return { subscriptionId, location };
+  return { subscriptionId, location, resourceGroup };
 }
 
 /**
@@ -84,6 +86,15 @@ export function shouldDeleteGroup({ manifest, groupShow, subscriptionId }) {
   if (groupSubscription !== subscriptionId) return false;
   const marker = groupShow.tags?.[RUN_MARKER_TAG];
   return marker === manifest.runMarker;
+}
+
+/** Delete a shared-group resource only when its exact identity and run tag match. */
+export function shouldDeleteResource({ manifest, resourceShow, subscriptionId, expectedName, expectedType }) {
+  if (!manifest?.resourceGroup || !manifest?.runMarker || !resourceShow?.id) return false;
+  if (resourceShow.name !== expectedName || resourceShow.type?.toLowerCase() !== expectedType.toLowerCase()) return false;
+  const expectedPrefix = `/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}/providers/`.toLowerCase();
+  if (!String(resourceShow.id).toLowerCase().startsWith(expectedPrefix)) return false;
+  return resourceShow.tags?.[RESOURCE_RUN_MARKER_TAG] === manifest.runMarker;
 }
 
 /** Sanitize a case result down to the committed evidence schema (no IDs/hosts/URLs). */
@@ -160,7 +171,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
 
   const flags = parseFlags(argv);
   const subscriptionId = resolveSubscriptionId(env, runner);
-  const { location } = requiredEnv({ ...env, AZURE_SUBSCRIPTION_ID: subscriptionId });
+  const { location, resourceGroup: sharedResourceGroup } = requiredEnv({ ...env, AZURE_SUBSCRIPTION_ID: subscriptionId });
 
   const cliPath = path.join(repoRoot, 'dist', 'cli.cjs');
   if (!existsSync(cliPath)) {
@@ -180,23 +191,34 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   }
   const suffix = resumeSuffix || randomBytes(4).toString('hex');
   const runMarker = resumeMarker || `run-${now()}-${suffix}`;
-  const resourceGroup = `postman-azure-spec-live-${suffix}`;
+  const resourceGroup = sharedResourceGroup || `postman-azure-spec-live-${suffix}`;
+  const ownsResourceGroup = !sharedResourceGroup;
+  const deploymentName = `postman-azure-spec-live-${suffix}`;
   const apimName = `pmspecapim${suffix}`;
   const planName = `pmspecplan${suffix}`;
   const siteName = `pmspecsite${suffix}`;
-  const manifest = { resourceGroup, runMarker, subscriptionId, apimName, planName, siteName };
+  const manifest = { resourceGroup, runMarker, subscriptionId, apimName, planName, siteName, deploymentName, ownsResourceGroup };
 
   let provisioned = Boolean(resumeSuffix);
   const results = [];
   try {
     if (flags.provision) {
-      log(`Creating resource group ${resourceGroup} in ${location}`);
-      az(runner, [
-        'group', 'create',
-        '--name', resourceGroup,
-        '--location', location,
-        '--tags', `${RUN_MARKER_TAG}=${runMarker}`
-      ]);
+      if (ownsResourceGroup) {
+        log(`Creating resource group ${resourceGroup} in ${location}`);
+        az(runner, [
+          'group', 'create',
+          '--name', resourceGroup,
+          '--location', location,
+          '--tags', `${RUN_MARKER_TAG}=${runMarker}`
+        ]);
+      } else {
+        log(`Using shared resource group ${resourceGroup} in ${location}`);
+        const groupShow = azJson(runner, ['group', 'show', '--name', resourceGroup]);
+        const groupSubscription = String(groupShow?.id ?? '').split('/')[2] ?? '';
+        if (groupShow?.name !== resourceGroup || groupSubscription !== subscriptionId) {
+          throw new Error(`AZURE_RESOURCE_GROUP ${resourceGroup} is not in the selected subscription`);
+        }
+      }
       provisioned = true;
       await writeFile(
         path.join(repoRoot, 'validation/evidence/live-resource-manifest.local.json'),
@@ -207,6 +229,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
       log('Deploying live-stack.bicep (APIM Consumption + App Service)');
       az(runner, [
         'deployment', 'group', 'create',
+        '--name', deploymentName,
         '--resource-group', resourceGroup,
         '--template-file', 'validation/fixtures/azure/live-stack.bicep',
         '--parameters',
@@ -287,16 +310,53 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
     return evidence;
   } finally {
     if (flags.teardown && provisioned) {
-      try {
-        const groupShow = azJson(runner, ['group', 'show', '--name', resourceGroup]);
-        if (shouldDeleteGroup({ manifest, groupShow, subscriptionId })) {
-          log(`Requesting deletion of run-marked resource group ${resourceGroup}`);
-          az(runner, ['group', 'delete', '--yes', '--no-wait', '--name', resourceGroup]);
-        } else {
-          log(`REFUSING deletion: ${resourceGroup} failed the run-marker/subscription check; delete manually after review.`);
+      if (ownsResourceGroup) {
+        try {
+          const groupShow = azJson(runner, ['group', 'show', '--name', resourceGroup]);
+          if (shouldDeleteGroup({ manifest, groupShow, subscriptionId })) {
+            log(`Requesting deletion of run-marked resource group ${resourceGroup}`);
+            az(runner, ['group', 'delete', '--yes', '--no-wait', '--name', resourceGroup]);
+          } else {
+            log(`REFUSING deletion: ${resourceGroup} failed the run-marker/subscription check; delete manually after review.`);
+          }
+        } catch (error) {
+          log(`Teardown error for ${resourceGroup}: ${error instanceof Error ? error.message : String(error)}`);
         }
-      } catch (error) {
-        log(`Teardown error for ${resourceGroup}: ${error instanceof Error ? error.message : String(error)}`);
+      } else {
+        const resources = [
+          { name: siteName, type: 'Microsoft.Web/sites' },
+          { name: planName, type: 'Microsoft.Web/serverfarms' },
+          { name: apimName, type: 'Microsoft.ApiManagement/service' }
+        ];
+        for (const resource of resources) {
+          try {
+            const resourceShow = azJson(runner, [
+              'resource', 'show',
+              '--resource-group', resourceGroup,
+              '--resource-type', resource.type,
+              '--name', resource.name
+            ]);
+            if (shouldDeleteResource({
+              manifest,
+              resourceShow,
+              subscriptionId,
+              expectedName: resource.name,
+              expectedType: resource.type
+            })) {
+              log(`Deleting run-marked ${resource.type} ${resource.name} from shared group ${resourceGroup}`);
+              az(runner, ['resource', 'delete', '--ids', resourceShow.id]);
+            } else {
+              log(`REFUSING deletion: ${resource.name} failed the run-marker/resource identity check.`);
+            }
+          } catch (error) {
+            log(`Teardown error for ${resource.name}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        try {
+          az(runner, ['deployment', 'group', 'delete', '--resource-group', resourceGroup, '--name', deploymentName]);
+        } catch (error) {
+          log(`Deployment-record cleanup error for ${deploymentName}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   }
