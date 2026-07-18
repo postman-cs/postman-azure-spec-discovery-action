@@ -12,7 +12,8 @@ import {
   LogicWorkflowsSdkClient,
   createAzureCredential,
   ResourceGraphSdkClient,
-  SubscriptionsSdkClient
+  SubscriptionsSdkClient,
+  TemplateSpecsSdkClient
 } from './lib/azure/clients.js';
 import { formatUserSafeError, sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { prepareTelemetryCredentials, resolveTelemetryTeamId } from './lib/postman/telemetry-credentials.js';
@@ -290,6 +291,7 @@ export async function runCli(
             createAppServiceClient: (subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions),
             createCustomApisClient: (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions),
             createLogicWorkflowsClient: (subscriptionId) => new LogicWorkflowsSdkClient(credential!, subscriptionId, sdkOptions),
+            createTemplateSpecsClient: (subscriptionId) => new TemplateSpecsSdkClient(credential!, subscriptionId, sdkOptions),
             createResourceGraphClient: () => new ResourceGraphSdkClient(credential!, sdkOptions),
             writeSpecFile: defaultWriteSpecFile
           }

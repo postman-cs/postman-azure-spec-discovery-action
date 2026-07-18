@@ -1,6 +1,6 @@
 # Provider contracts
 
-Azure spec discovery ships five providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships six providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
 ## `apim` — Azure API Management
 
@@ -30,6 +30,14 @@ Azure spec discovery ships five providers: `apim`, `app-service`, `custom-apis`,
 - Export **synthesizes a deliberately partial OpenAPI 3.0 document** from the Request triggers: paths from `relativePath` (fallback `/triggers/<name>/invoke`), methods, and declared request schemas. Responses are not declared in workflow definitions, so operations carry a `default` response and the export is marked `completeness: partial` — the derived-OpenAPI outputs report `partial` even though the document parses as complete OpenAPI 3.x.
 - Credential hygiene: `listCallbackUrl` (SAS token in the URL) and `listSwagger` (POST outside plain Reader) are never called. The SAS-free `accessEndpoint` is the only URL surfaced, as the OpenAPI `servers` entry.
 
+## `template-specs` — Template Spec embedded APIM documents
+
+- Enumerates `Microsoft.Resources/templateSpecs` and their versions via generic ARM REST (`api-version 2022-02-01`). Reader GETs only: each version's `mainTemplate` is read directly from the version resource — `exportTemplate` (a POST action) is never called.
+- A version is a supported candidate per embedded APIM API resource (`Microsoft.ApiManagement/service/apis` with an inline `openapi`/`swagger` `properties.value`), including templates nested inside `Microsoft.Resources/deployments` resources. Versions without one stay visible as unsupported candidates.
+- Resource group deployment history (`deployments` list, a Reader GET whose response carries no template content) contributes "referenced by deployment" evidence only.
+- Export validates and normalizes the embedded document and declares `completeness: partial`: an embedded template document may carry unresolved ARM template expressions, so it is not guaranteed to equal the deployed literal.
+- Secret hygiene is structural: `Microsoft.Resources/deploymentScripts` subtrees (script content, environment variables) are never walked, and an embedded document that contains a secure parameter default (`secureString`/`secureObject` `defaultValue`) is withheld — its candidate flips to unsupported and the document is never surfaced.
+
 ## `iac-local` — repository Azure IaC
 
 - Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
@@ -37,4 +45,4 @@ Azure spec discovery ships five providers: `apim`, `app-service`, `custom-apis`,
 
 ## Ordering and narrowing
 
-Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.
+Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.

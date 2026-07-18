@@ -27,6 +27,8 @@ export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sou
       return 'custom-api-swagger';
     case 'logic-apps':
       return 'logic-apps-workflow';
+    case 'template-specs':
+      return 'template-spec-embedded';
   }
 }
 

@@ -14,7 +14,8 @@ const CANDIDATE_TYPES = [
   'microsoft.apimanagement/service/workspaces/apis',
   'microsoft.web/sites',
   'microsoft.web/customapis',
-  'microsoft.logic/workflows'
+  'microsoft.logic/workflows',
+  'microsoft.resources/templatespecs/versions'
 ];
 
 export function buildCandidateQuery(resourceGroup?: string): string {

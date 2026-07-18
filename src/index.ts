@@ -13,12 +13,14 @@ import {
   LogicWorkflowsSdkClient,
   ResourceGraphSdkClient,
   SubscriptionsSdkClient,
+  TemplateSpecsSdkClient,
   type AzureApimClient,
   type AzureAppServiceClient,
   type AzureCustomApisClient,
   type AzureLogicWorkflowsClient,
   type AzureResourceGraphClient,
-  type AzureSubscriptionsClient
+  type AzureSubscriptionsClient,
+  type AzureTemplateSpecsClient
 } from './lib/azure/clients.js';
 import { formatUserSafeError } from './lib/logging/sanitize.js';
 import { appendAmbiguityStepSummary } from './lib/logging/step-summary.js';
@@ -45,6 +47,7 @@ export interface GitHubActionDependencies {
   createAppServiceClient?: (subscriptionId: string) => AzureAppServiceClient;
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
+  createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile?: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -108,6 +111,9 @@ async function runActionInner(
     createLogicWorkflowsClient:
       dependencies.createLogicWorkflowsClient ??
       (useProductionProviders ? (subscriptionId) => new LogicWorkflowsSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
+    createTemplateSpecsClient:
+      dependencies.createTemplateSpecsClient ??
+      (useProductionProviders ? (subscriptionId) => new TemplateSpecsSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
     createResourceGraphClient:
       dependencies.createResourceGraphClient ??
       (useProductionProviders ? () => new ResourceGraphSdkClient(credential!, sdkOptions) : undefined),

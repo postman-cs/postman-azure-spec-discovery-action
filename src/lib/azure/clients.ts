@@ -902,3 +902,203 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
     throw new Error(`${operation} exhausted its attempt limit`);
   }
 }
+
+export interface TemplateSpecSummary {
+  id: string;
+  name: string;
+  resourceGroup: string;
+  tags: Record<string, string>;
+}
+
+export interface TemplateSpecVersionSummary {
+  id: string;
+  name: string;
+}
+
+export interface DeploymentSummary {
+  name: string;
+  templateSpecVersionId?: string;
+}
+
+export interface AzureTemplateSpecsClient {
+  listTemplateSpecs(resourceGroup?: string): Promise<TemplateSpecSummary[]>;
+  listVersions(resourceGroup: string, templateSpecName: string): Promise<TemplateSpecVersionSummary[]>;
+  getVersionMainTemplate(resourceGroup: string, templateSpecName: string, version: string): Promise<unknown>;
+  listDeployments(resourceGroup: string): Promise<DeploymentSummary[]>;
+  probeTemplateSpecsReadAccess(resourceGroup?: string): Promise<void>;
+}
+
+const TEMPLATE_SPECS_API_VERSION = '2022-02-01';
+const DEPLOYMENTS_API_VERSION = '2021-04-01';
+
+interface TemplateSpecArmEnvelope {
+  id?: string;
+  name?: string;
+  tags?: Record<string, string>;
+}
+
+interface TemplateSpecVersionArmEnvelope {
+  id?: string;
+  name?: string;
+  properties?: { mainTemplate?: unknown };
+}
+
+interface DeploymentArmEnvelope {
+  name?: string;
+  properties?: { templateLink?: { id?: unknown } };
+}
+
+/**
+ * Template Specs (Microsoft.Resources/templateSpecs) via generic ARM REST with
+ * the same token/retry/pagination discipline as CustomApisSdkClient. Reader
+ * GETs only: version documents are read directly (never exportTemplate, which
+ * is a POST action), and resource group deployment history comes from the
+ * deployments list GET whose response never includes template content.
+ */
+export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
+  private readonly credential: TokenCredential;
+  private readonly subscriptionId: string;
+  private readonly maxAttempts: number;
+  private readonly requestTimeoutMs: number;
+
+  public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
+    this.credential = credential;
+    this.subscriptionId = subscriptionId;
+    this.maxAttempts = options?.maxAttempts ?? 3;
+    this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+  }
+
+  public async listTemplateSpecs(resourceGroup?: string): Promise<TemplateSpecSummary[]> {
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs`
+      : 'providers/Microsoft.Resources/templateSpecs';
+    const first =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${TEMPLATE_SPECS_API_VERSION}`;
+    const entries = await this.listPaged<TemplateSpecArmEnvelope>(first, 'Template spec listing');
+    const summaries: TemplateSpecSummary[] = [];
+    for (const entry of entries) {
+      const id = entry.id ?? '';
+      const name = entry.name ?? '';
+      if (!id || !name) continue;
+      summaries.push({ id, name, resourceGroup: extractResourceGroup(id), tags: entry.tags ?? {} });
+    }
+    return summaries;
+  }
+
+  public async listVersions(resourceGroup: string, templateSpecName: string): Promise<TemplateSpecVersionSummary[]> {
+    const first =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs/${encodeURIComponent(templateSpecName)}` +
+      `/versions?api-version=${TEMPLATE_SPECS_API_VERSION}`;
+    const entries = await this.listPaged<TemplateSpecVersionArmEnvelope>(first, 'Template spec version listing');
+    const summaries: TemplateSpecVersionSummary[] = [];
+    for (const entry of entries) {
+      const id = entry.id ?? '';
+      const name = entry.name ?? '';
+      if (!id || !name) continue;
+      summaries.push({ id, name });
+    }
+    return summaries;
+  }
+
+  public async getVersionMainTemplate(resourceGroup: string, templateSpecName: string, version: string): Promise<unknown> {
+    const token = await this.getArmToken();
+    const url =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs/${encodeURIComponent(templateSpecName)}` +
+      `/versions/${encodeURIComponent(version)}?api-version=${TEMPLATE_SPECS_API_VERSION}`;
+    const response = await this.fetchArm(url, token, 'Template spec version read');
+    if (!response.ok) {
+      throw new Error(`Template spec version read failed with HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as TemplateSpecVersionArmEnvelope;
+    return body.properties?.mainTemplate;
+  }
+
+  public async listDeployments(resourceGroup: string): Promise<DeploymentSummary[]> {
+    const first =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      `/resourcegroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/deployments/?api-version=${DEPLOYMENTS_API_VERSION}`;
+    const entries = await this.listPaged<DeploymentArmEnvelope>(first, 'Deployment listing');
+    const summaries: DeploymentSummary[] = [];
+    for (const entry of entries) {
+      const name = entry.name ?? '';
+      if (!name) continue;
+      const templateLinkId = entry.properties?.templateLink?.id;
+      summaries.push({
+        name,
+        ...(typeof templateLinkId === 'string' && templateLinkId ? { templateSpecVersionId: templateLinkId } : {})
+      });
+    }
+    return summaries;
+  }
+
+  public async probeTemplateSpecsReadAccess(resourceGroup?: string): Promise<void> {
+    const token = await this.getArmToken();
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs`
+      : 'providers/Microsoft.Resources/templateSpecs';
+    const url =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${TEMPLATE_SPECS_API_VERSION}&$top=1`;
+    const response = await this.fetchArm(url, token, 'Template spec probe');
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`AuthorizationFailed: template spec probe returned HTTP ${response.status}`);
+    }
+    if (!response.ok) {
+      throw new Error(`Template spec probe failed with HTTP ${response.status}`);
+    }
+  }
+
+  private async listPaged<T>(firstUrl: string, operation: string): Promise<T[]> {
+    const token = await this.getArmToken();
+    let url: string | undefined = firstUrl;
+    const entries: T[] = [];
+    let pages = 0;
+    while (url) {
+      pages += 1;
+      if (pages > MAX_LIST_PAGES) {
+        throw new Error(`${operation} pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
+      }
+      const response = await this.fetchArm(url, token, operation);
+      if (!response.ok) {
+        throw new Error(`${operation} failed with HTTP ${response.status}`);
+      }
+      const body = (await response.json()) as { value?: T[]; nextLink?: string };
+      entries.push(...(body.value ?? []));
+      const next: string | undefined = body.nextLink;
+      if (next !== undefined && next === url) {
+        throw new Error(`${operation} pagination returned a repeated nextLink; aborting`);
+      }
+      url = next;
+    }
+    return entries;
+  }
+
+  private async getArmToken(): Promise<string> {
+    const token = await this.credential.getToken('https://management.azure.com/.default');
+    if (!token) {
+      throw new Error('Azure credential produced no ARM token');
+    }
+    return token.token;
+  }
+
+  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: controller.signal
+        });
+        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
+        if (attempt === this.maxAttempts) return response;
+      } catch (error) {
+        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error(`${operation} exhausted its attempt limit`);
+  }
+}

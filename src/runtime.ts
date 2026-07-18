@@ -16,7 +16,8 @@ import type {
   AzureCustomApisClient,
   AzureLogicWorkflowsClient,
   AzureResourceGraphClient,
-  AzureSubscriptionsClient
+  AzureSubscriptionsClient,
+  AzureTemplateSpecsClient
 } from './lib/azure/clients.js';
 import { sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
@@ -38,6 +39,7 @@ import { ApimProvider } from './lib/providers/apim.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
 import { CustomApisProvider } from './lib/providers/custom-apis.js';
 import { LogicAppsProvider } from './lib/providers/logic-apps.js';
+import { TemplateSpecsProvider } from './lib/providers/template-specs.js';
 import { IacLocalProvider } from './lib/providers/iac-local.js';
 import { resolvePathWithinRoot } from './lib/utils/resolve-path-within-root.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './lib/providers/types.js';
@@ -79,6 +81,7 @@ export interface AzureDependencies {
   createAppServiceClient: (subscriptionId: string) => AzureAppServiceClient;
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
+  createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -439,6 +442,9 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
       : []),
     ...(dependencies.createLogicWorkflowsClient
       ? [new LogicAppsProvider(dependencies.createLogicWorkflowsClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      : []),
+    ...(dependencies.createTemplateSpecsClient
+      ? [new TemplateSpecsProvider(dependencies.createTemplateSpecsClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
       : []),
     new IacLocalProvider(iacScan)
   ];
