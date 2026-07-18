@@ -63,26 +63,27 @@ describe('APIM provider', () => {
         }
       ]),
       exportApi: vi.fn(async () => VALID_OPENAPI),
+      getGraphqlSchema: vi.fn(async () => 'type Query { ping: String! }'),
       probeApimReadAccess: vi.fn(async () => undefined),
       ...overrides
     };
   }
 
-  it('AZ-APIM-001: lists current APIs; http supported, soap visible-unsupported, non-current dropped', async () => {
+  it('AZ-APIM-001: lists current APIs; http and soap supported, non-current dropped', async () => {
     const provider = new ApimProvider(apimClient(), { subscriptionId: 'sub-1' });
     const candidates = await provider.listCandidates();
     expect(candidates).toHaveLength(3);
     const http = candidates.find((c) => c.meta.apiId === 'payments');
     const soap = candidates.find((c) => c.meta.apiId === 'payments-soap');
     expect(http?.supported).toBe(true);
-    expect(soap?.supported).toBe(false);
+    expect(soap?.supported).toBe(true);
     expect(http?.apiId).toBe(buildApimApiArmId('sub-1', 'rg', 'svc', 'payments'));
     expect(candidates.find((c) => c.meta.workspaceId === 'team-a')?.apiId).toBe(
       buildApimApiArmId('sub-1', 'rg', 'svc', 'workspace-payments', 'team-a')
     );
   });
 
-  it('AZ-APIM-002: export validates OpenAPI and rejects unsupported candidates', async () => {
+  it('AZ-APIM-002: export validates OpenAPI and exports SOAP as WSDL', async () => {
     const provider = new ApimProvider(apimClient(), { subscriptionId: 'sub-1' });
     const candidates = await provider.listCandidates();
     const http = candidates.find((c) => c.meta.apiId === 'payments');
@@ -94,7 +95,7 @@ describe('APIM provider', () => {
     expect(exported.content.endsWith('\n')).toBe(true);
     expect(exported.content).toBe(`${JSON.stringify(JSON.parse(VALID_OPENAPI), null, 2)}\n`);
 
-    await expect(provider.exportSpec(soap!)).rejects.toThrow('not exportable in v1');
+    await expect(provider.exportSpec(soap!)).resolves.toMatchObject({ format: 'wsdl', filename: 'service.wsdl' });
   });
 
   it('AZ-APIM-005: malformed export content rejects', async () => {

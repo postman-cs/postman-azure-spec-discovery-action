@@ -15,7 +15,7 @@ export interface SpecCandidate {
 export interface SpecExportResult {
   content: string;
   format: SpecFormat;
-  filename: 'index.json' | 'index.yaml';
+  filename: string;
   evidence: string[];
   /**
    * Provider-declared completeness of the exported document. Omitted means

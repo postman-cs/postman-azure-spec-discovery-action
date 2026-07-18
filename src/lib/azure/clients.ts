@@ -69,7 +69,8 @@ export function createAzureCredential(): TokenCredential {
 export interface AzureApimClient {
   listServices(resourceGroup?: string): Promise<ApimServiceSummary[]>;
   listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]>;
-  exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string>;
+  exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string, format?: ApimExportFormat): Promise<string>;
+  getGraphqlSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string>;
   probeApimReadAccess(resourceGroup?: string): Promise<void>;
 }
 
@@ -146,7 +147,8 @@ export interface AzureSubscriptionsClient {
   list(): Promise<SubscriptionSummary[]>;
 }
 
-const EXPORT_FORMAT_OPENAPI_JSON = 'openapi+json-link';
+export type ApimExportFormat = 'openapi+json-link' | 'wsdl-link';
+const EXPORT_FORMAT_OPENAPI_JSON: ApimExportFormat = 'openapi+json-link';
 
 /**
  * Absolute ceiling on pages consumed from any Azure list/pagination surface.
@@ -341,7 +343,13 @@ export class ApimSdkClient implements AzureApimClient {
    * APIM export is a two-step protocol: the ARM call returns a Storage Blob SAS link
    * (TTL 5 minutes), and the bytes must be fetched from that link immediately.
    */
-  public async exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string> {
+  public async exportApi(
+    resourceGroup: string,
+    serviceName: string,
+    apiId: string,
+    workspaceId?: string,
+    format: ApimExportFormat = EXPORT_FORMAT_OPENAPI_JSON
+  ): Promise<string> {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       const result = workspaceId
         ? await this.client.workspaceApiExport.get(
@@ -349,10 +357,10 @@ export class ApimSdkClient implements AzureApimClient {
             serviceName,
             workspaceId,
             apiId,
-            EXPORT_FORMAT_OPENAPI_JSON,
+            format,
             'true'
           )
-        : await this.client.apiExport.get(resourceGroup, serviceName, apiId, EXPORT_FORMAT_OPENAPI_JSON, 'true');
+        : await this.client.apiExport.get(resourceGroup, serviceName, apiId, format, 'true');
       const link = extractExportLink(result);
       if (!link) {
         throw new Error(`APIM export for ${apiId} returned no download link`);
@@ -368,6 +376,27 @@ export class ApimSdkClient implements AzureApimClient {
       }
     }
     throw new Error('APIM export exhausted its attempt limit');
+  }
+
+  public async getGraphqlSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string> {
+    const schemas = workspaceId
+      ? await collectBounded(
+          this.client.workspaceApiSchema.listByApi(resourceGroup, serviceName, workspaceId, apiId),
+          `APIM workspace ${workspaceId} API schema list`
+        )
+      : await collectBounded(this.client.apiSchema.listByApi(resourceGroup, serviceName, apiId), 'APIM API schema list');
+    const schema = schemas.find((entry) => entry.name?.toLowerCase() === 'graphql')
+      ?? schemas.find((entry) => entry.contentType?.toLowerCase().includes('graphql'));
+    if (!schema?.name) {
+      throw new Error(`APIM GraphQL API ${apiId} returned no GraphQL schema`);
+    }
+    const detail = workspaceId
+      ? await this.client.workspaceApiSchema.get(resourceGroup, serviceName, workspaceId, apiId, schema.name)
+      : await this.client.apiSchema.get(resourceGroup, serviceName, apiId, schema.name);
+    if (typeof detail.value !== 'string' || !detail.value.trim()) {
+      throw new Error(`APIM GraphQL schema ${schema.name} returned no SDL value`);
+    }
+    return detail.value;
   }
 
   public async probeApimReadAccess(resourceGroup?: string): Promise<void> {

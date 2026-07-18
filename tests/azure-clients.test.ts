@@ -16,6 +16,8 @@ vi.mock('@azure/arm-apimanagement', () => ({
     public workspace = { listByService: vi.fn() };
     public workspaceApi = { listByService: vi.fn() };
     public workspaceApiExport = { get: vi.fn() };
+    public apiSchema = { listByApi: vi.fn(), get: vi.fn() };
+    public workspaceApiSchema = { listByApi: vi.fn(), get: vi.fn() };
     public constructor(...args: unknown[]) {
       apimCtorSpy(...args);
     }
@@ -179,6 +181,33 @@ describe('azure sdk client wrappers', () => {
     const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
     sdk.apiExport.get.mockResolvedValue({ properties: { format: 'openapi+json-link', value: {} } });
     await expect(client.exportApi('rg', 'svc', 'payments-live')).rejects.toThrow('no download link');
+  });
+
+  it('AZ-CLIENT-005b: exportApi passes the requested WSDL link format', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
+    sdk.apiExport.get.mockResolvedValue({ value: { link: 'https://blob.example/service.wsdl' } });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<definitions/>', { status: 200 }));
+
+    await expect(client.exportApi('rg', 'svc', 'soap-api', undefined, 'wsdl-link')).resolves.toBe('<definitions/>');
+    expect(sdk.apiExport.get).toHaveBeenCalledWith('rg', 'svc', 'soap-api', 'wsdl-link', 'true');
+  });
+
+  it('AZ-CLIENT-005c: getGraphqlSchema prefers graphql schema id and reads flattened SDL value', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as {
+      client: {
+        apiSchema: { listByApi: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
+      };
+    }).client;
+    sdk.apiSchema.listByApi.mockReturnValue((async function* () {
+      yield { name: 'fallback', contentType: 'application/vnd.ms-azure-apim.graphql.schema' };
+      yield { name: 'graphql', contentType: 'application/vnd.ms-azure-apim.graphql.schema' };
+    })());
+    sdk.apiSchema.get.mockResolvedValue({ value: 'type Query { ping: String! }' });
+
+    await expect(client.getGraphqlSchema('rg', 'svc', 'graphql-api')).resolves.toContain('type Query');
+    expect(sdk.apiSchema.get).toHaveBeenCalledWith('rg', 'svc', 'graphql-api', 'graphql');
   });
 
   it('AZ-APIM-001: service and workspace APIs retain current revisions and full scope metadata', async () => {

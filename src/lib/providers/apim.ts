@@ -29,10 +29,8 @@ export function buildApimApiArmId(
 }
 
 /**
- * APIM provider: enumerates HTTP APIs on every visible APIM service and exports the
- * current revision as OpenAPI 3.0 JSON via the ARM export + SAS-link protocol.
- * Non-HTTP API types stay visible as unsupported candidates so ambiguity output can
- * name them without ever exporting them.
+ * APIM provider: exports current HTTP revisions as OpenAPI, SOAP as native WSDL,
+ * and GraphQL as native SDL. Remaining API types stay visible for manual review.
  */
 export class ApimProvider implements SpecProvider {
   public readonly type = 'apim' as const;
@@ -62,7 +60,7 @@ export class ApimProvider implements SpecProvider {
       for (const api of apis) {
         if (api.isCurrent === false) continue;
         const apiType = (api.apiType || 'http').toLowerCase();
-        const supported = apiType === 'http';
+        const supported = apiType === 'http' || apiType === 'soap' || apiType === 'graphql';
         if (!APIM_API_TYPES.has(apiType)) continue;
         const armId = buildApimApiArmId(
           this.options.subscriptionId,
@@ -81,7 +79,7 @@ export class ApimProvider implements SpecProvider {
           supported,
           evidence: [
             `APIM service ${service.name} exposes ${apiType.toUpperCase()} API ${api.displayName || api.apiId}`,
-            ...(supported ? [] : [`APIM API type ${apiType} is not exportable in v1.0.0`])
+            ...(supported ? [] : [`APIM API type ${apiType} has no supported discovery export path`])
           ],
           meta: {
             serviceName: service.name,
@@ -98,13 +96,31 @@ export class ApimProvider implements SpecProvider {
 
   public async exportSpec(candidate: SpecCandidate): Promise<SpecExportResult> {
     if (!candidate.supported) {
-      throw new Error(`APIM API type ${candidate.meta.apiType ?? 'unknown'} is not exportable in v1.0.0`);
+      throw new Error(`APIM API type ${candidate.meta.apiType ?? 'unknown'} has no supported discovery export path`);
     }
     const resourceGroup = candidate.meta.resourceGroup ?? '';
     const serviceName = candidate.meta.serviceName ?? '';
     const apiId = candidate.meta.apiId ?? '';
     if (!resourceGroup || !serviceName || !apiId) {
       throw new Error('APIM candidate is missing service coordinates');
+    }
+    if (candidate.meta.apiType === 'soap') {
+      const content = await this.client.exportApi(resourceGroup, serviceName, apiId, candidate.meta.workspaceId, 'wsdl-link');
+      return {
+        content,
+        format: 'wsdl',
+        filename: 'service.wsdl',
+        evidence: [`Exported current revision of APIM SOAP API ${apiId} from service ${serviceName} as WSDL`]
+      };
+    }
+    if (candidate.meta.apiType === 'graphql') {
+      const content = await this.client.getGraphqlSchema(resourceGroup, serviceName, apiId, candidate.meta.workspaceId);
+      return {
+        content,
+        format: 'graphql-sdl',
+        filename: 'schema.graphql',
+        evidence: [`Read GraphQL SDL for current APIM API ${apiId} from service ${serviceName}`]
+      };
     }
     const content = await this.client.exportApi(resourceGroup, serviceName, apiId, candidate.meta.workspaceId);
     const parsed = parseAndValidateOpenApi(content);

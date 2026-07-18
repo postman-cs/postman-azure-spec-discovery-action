@@ -59,6 +59,43 @@ function openApiVersion(document: ParsedDocument): '3.0.3' | '3.1.0' | undefined
  *  - Anything unparseable yields undefined; the caller then omits derived outputs.
  */
 export function deriveOpenApiDocument(input: OpenApiDerivationInput): OpenApiDerivationResult | undefined {
+  if (input.format === 'graphql-sdl') {
+    const title = input.title?.trim() || 'Discovered GraphQL API';
+    const document: OpenApiDocument = {
+      openapi: '3.0.3',
+      info: { title, version: '1.0.0' },
+      paths: {
+        '/graphql': {
+          post: {
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['query'],
+                    properties: {
+                      query: { type: 'string' },
+                      operationName: { type: 'string', nullable: true },
+                      variables: { type: 'object', additionalProperties: true }
+                    }
+                  }
+                }
+              }
+            },
+            responses: { '200': { description: 'GraphQL response' } }
+          }
+        }
+      }
+    };
+    return {
+      content: `${JSON.stringify(document, null, 2)}\n`,
+      format: 'openapi-json',
+      version: '3.0.3',
+      completeness: 'partial',
+      evidence: ['Synthesized partial OpenAPI 3.0 GraphQL POST shell from GraphQL SDL']
+    };
+  }
   const parsed = parseDocument(input.content);
   if (!parsed) {
     return undefined;

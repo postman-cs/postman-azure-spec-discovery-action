@@ -59,7 +59,7 @@ outputs:
   provider-type:
     description: 'Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings.'
   spec-format:
-    description: 'Format of the resolved spec: openapi-yaml or openapi-json.'
+    description: 'Format of the resolved spec: openapi-yaml, openapi-json, wsdl, or graphql-sdl.'
   contract-origin:
     description: Compatibility output; always empty in v1.
   contract-metadata-path:

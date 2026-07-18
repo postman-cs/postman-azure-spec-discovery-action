@@ -6,8 +6,8 @@ Azure spec discovery ships nine providers: `apim`, `app-service`, `custom-apis`,
 
 - Enumerates every visible APIM service (subscription-wide or scoped by `resource-group`) plus each service workspace and lists both service- and workspace-scoped APIs.
 - Only **current revisions** are candidates; non-current revisions are dropped at enumeration.
-- Only **HTTP** APIs are exportable. SOAP, GraphQL, WebSocket, gRPC, and OData APIs stay visible as unsupported candidates so ambiguity output can name them, but selecting one resolves to manual review and never writes a file.
-- Export uses the ARM export protocol: the management call returns a short-lived Storage SAS link, and the document is fetched from that link immediately. A 403 discards the expired link and repeats the whole export/fetch cycle within `max-attempts`; links are never logged. The exported document is validated (`Swagger 2.0`/`OpenAPI 3.x`, non-empty `paths`) before it is written.
+- **HTTP** APIs export OpenAPI JSON. **SOAP** APIs use the same ARM export protocol with `wsdl-link` and write native `service.wsdl`. **GraphQL** APIs read the `graphql` schema (or the first GraphQL content type) through the Reader GET schema surface and write native `schema.graphql`; derivation also emits a deliberately partial OpenAPI 3.0.3 `/graphql` POST shell. WebSocket, gRPC, and OData APIs stay visible as unsupported candidates for manual review.
+- ARM HTTP/WSDL export returns a short-lived Storage SAS link, and the document is fetched immediately. A 403 discards the expired link and repeats the whole export/fetch cycle within `max-attempts`; links are never logged. HTTP OpenAPI is validated before writing. WSDL remains native and is not converted to OpenAPI.
 - The full APIM API ARM resource ID appears only in the `api-id` output and `resolution-json.apiId`. Logs, evidence, and Step Summaries redact it.
 
 ## `app-service` — App Service API definition

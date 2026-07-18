@@ -46,12 +46,15 @@ function clientForApiType(apiType: string): AzureApimClient {
     exportApi: vi.fn(async () => {
       throw new Error('export must never be attempted for unsupported types');
     }),
+    getGraphqlSchema: vi.fn(async () => {
+      throw new Error('schema read must never be attempted for unsupported types');
+    }),
     probeApimReadAccess: vi.fn(async () => undefined)
   };
 }
 
 describe('APIM unsupported API types', () => {
-  it.each(['soap', 'graphql', 'websocket', 'grpc', 'odata'])(
+  it.each(['websocket', 'grpc', 'odata'])(
     'AZ-APIM-004: selected %s candidate resolves to manual review without writes',
     async (apiType) => {
       const provider = new ApimProvider(clientForApiType(apiType), { subscriptionId: 'sub-1' });
@@ -77,10 +80,38 @@ describe('APIM unsupported API types', () => {
 
       expect(result.resolution?.status).toBe('unresolved');
       expect(result.resolution?.sourceType).toBe('manual-review');
-      expect(JSON.stringify(result.resolution)).toContain(`APIM API type ${apiType} is not exportable in v1.0.0`);
+      expect(JSON.stringify(result.resolution)).toContain(`APIM API type ${apiType} has no supported discovery export path`);
       expect(writeSpecFile).not.toHaveBeenCalled();
     }
   );
+});
+
+describe('APIM SOAP and GraphQL exports', () => {
+  it('exports SOAP as native WSDL', async () => {
+    const client = clientForApiType('soap');
+    vi.mocked(client.exportApi).mockResolvedValue('<definitions/>');
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+
+    expect(candidate.supported).toBe(true);
+    await expect(provider.exportSpec(candidate)).resolves.toMatchObject({
+      content: '<definitions/>', format: 'wsdl', filename: 'service.wsdl'
+    });
+    expect(client.exportApi).toHaveBeenCalledWith('rg', 'svc', 'payments', undefined, 'wsdl-link');
+  });
+
+  it('exports GraphQL SDL for partial OpenAPI derivation', async () => {
+    const client = clientForApiType('graphql');
+    vi.mocked(client.getGraphqlSchema).mockResolvedValue('type Query { ping: String! }');
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+
+    expect(candidate.supported).toBe(true);
+    await expect(provider.exportSpec(candidate)).resolves.toMatchObject({
+      format: 'graphql-sdl', filename: 'schema.graphql'
+    });
+    expect(client.getGraphqlSchema).toHaveBeenCalledWith('rg', 'svc', 'payments', undefined);
+  });
 });
 
 describe('APIM export link lifecycle', () => {

@@ -35,7 +35,7 @@ export type SourceType =
   | 'manual-review'
   | 'discover-many';
 
-export type SpecFormat = 'openapi-yaml' | 'openapi-json';
+export type SpecFormat = 'openapi-yaml' | 'openapi-json' | 'wsdl' | 'graphql-sdl';
 
 export type ProviderProbeStatus = 'available' | 'skipped:iam' | 'skipped:error';
 
@@ -187,7 +187,7 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings.'
     },
     'spec-format': {
-      description: 'Format of the resolved spec: openapi-yaml or openapi-json.'
+      description: 'Format of the resolved spec: openapi-yaml, openapi-json, wsdl, or graphql-sdl.'
     },
     'contract-origin': {
       description: 'Compatibility output; always empty in v1.'
