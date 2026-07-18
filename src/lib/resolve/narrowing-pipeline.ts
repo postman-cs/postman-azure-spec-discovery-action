@@ -1,6 +1,7 @@
 import type { NarrowingTier } from '../../contracts.js';
 import type { RepoSignals } from '../repo/signals.js';
 import type { AzureResourceGraphClient } from '../azure/clients.js';
+import { buildRepoTagLookupQuery } from './resource-graph-query.js';
 
 export type NarrowingMode = 'select' | 'narrow';
 
@@ -15,6 +16,9 @@ export interface NarrowingResult {
 export interface NarrowingContext {
   repoSlug?: string;
   subscriptionId?: string;
+  resourceGroup?: string;
+  /** Extra select-grade tag keys beside postman:repo, matched case-insensitively. */
+  repoTagKeys?: string[];
   serviceHints: string[];
   signals: RepoSignals;
   resourceGraphClient?: AzureResourceGraphClient;
@@ -73,37 +77,71 @@ function tierResourceGroupCorrelation(candidates: NarrowingCandidate[], ctx: Nar
 }
 
 const CANONICAL_REPO_TAG = 'postman:repo';
+const FOX_ORG_TAG = 'githuborg';
+const FOX_REPO_TAG = 'githubrepo';
 const GENERIC_TAG_KEYS = ['repo', 'repository', 'service', 'github:repository'];
 
+/** Lowercase every tag key and trim values so lookups ignore tag-name casing (Azure tag names are case-insensitive). */
+function normalizeTagBag(tags: Record<string, string> | undefined): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(tags ?? {})) {
+    normalized[key.toLowerCase()] = (value ?? '').trim();
+  }
+  return normalized;
+}
+
+/** Case-insensitive comparison that tolerates a trailing .git on either side. */
+function slugEquals(a: string, b: string): boolean {
+  const strip = (value: string) => value.trim().replace(/\.git$/i, '').toLowerCase();
+  const left = strip(a);
+  return left.length > 0 && left === strip(b);
+}
+
 /**
- * T3: tag pre-filter. Prefers candidate tags already enumerated; falls back to a Resource Graph
- * query when a client is available. Only one exact canonical postman:repo=<repoSlug> match may select.
+ * T3: tag pre-filter. Selects on exactly one candidate whose select-grade repo
+ * tag matches the repo slug: canonical postman:repo, any caller-supplied
+ * repo-tag-keys, or the Fox-style GithubOrg/GithubRepo pair composed as
+ * org/repo. Tag keys compare case-insensitively (Azure tag names are
+ * case-insensitive) and values ignore case and a trailing .git. When no
+ * candidate tag matches and a Resource Graph client is available, a targeted
+ * tag lookup runs once as a fallback before generic tags narrow.
  */
 async function tierTagPreFilter(candidates: NarrowingCandidate[], ctx: NarrowingContext): Promise<TierHit | undefined> {
   if (!ctx.repoSlug) return undefined;
+  const repoSlug = ctx.repoSlug;
 
-  const exactMatches = candidates.filter((candidate) => (candidate.tags?.[CANONICAL_REPO_TAG] ?? '') === ctx.repoSlug);
-  const uniqueExact = [...new Set(exactMatches.map((candidate) => candidate.id))];
+  const selectKeys = [CANONICAL_REPO_TAG, ...(ctx.repoTagKeys ?? []).map((key) => key.toLowerCase())];
+  const selectMatches = candidates.filter((candidate) => {
+    const tags = normalizeTagBag(candidate.tags);
+    if (selectKeys.some((key) => slugEquals(tags[key] ?? '', repoSlug))) return true;
+    const org = tags[FOX_ORG_TAG] ?? '';
+    const repo = tags[FOX_REPO_TAG] ?? '';
+    return org.length > 0 && repo.length > 0 && slugEquals(`${org}/${repo}`, repoSlug);
+  });
+  const uniqueExact = [...new Set(selectMatches.map((candidate) => candidate.id))];
   if (uniqueExact.length === 1) {
     return {
       ids: uniqueExact,
       selectId: uniqueExact[0],
-      evidence: [`Exactly one API tagged ${CANONICAL_REPO_TAG}=${ctx.repoSlug}`]
+      evidence: [`Exactly one API carries a select-grade repo tag matching ${repoSlug}`]
     };
   }
   if (uniqueExact.length > 1) {
     return {
       ids: uniqueExact,
-      evidence: [`Found ${uniqueExact.length} APIs tagged ${CANONICAL_REPO_TAG}=${ctx.repoSlug}`]
+      evidence: [`Found ${uniqueExact.length} APIs with select-grade repo tags matching ${repoSlug}`]
     };
   }
 
-  const repoName = ctx.repoSlug.split('/').pop()?.trim();
+  const graphHit = await tierTagGraphFallback(candidates, ctx);
+  if (graphHit) return graphHit;
+
+  const repoName = repoSlug.split('/').pop()?.trim();
   const genericMatches = candidates.filter((candidate) => {
-    const tags = candidate.tags ?? {};
+    const tags = normalizeTagBag(candidate.tags);
     return GENERIC_TAG_KEYS.some((key) => {
       const value = tags[key] ?? '';
-      return value === ctx.repoSlug || (repoName !== undefined && value === repoName);
+      return slugEquals(value, repoSlug) || (repoName !== undefined && slugEquals(value, repoName));
     });
   });
   if (genericMatches.length > 0) {
@@ -113,6 +151,53 @@ async function tierTagPreFilter(candidates: NarrowingCandidate[], ctx: Narrowing
     };
   }
   return undefined;
+}
+
+/**
+ * Resource Graph fallback for T3: one targeted tag-lookup query maps
+ * select-grade repo tags to ARM IDs when enumerated candidates carried no
+ * matching tag bag (for example providers that cannot surface tags). Returned
+ * IDs intersect case-insensitively with the enumerated candidate set; exactly
+ * one intersecting hit is select-grade. Fail-soft: query errors narrow nothing.
+ */
+async function tierTagGraphFallback(
+  candidates: NarrowingCandidate[],
+  ctx: NarrowingContext
+): Promise<TierHit | undefined> {
+  if (!ctx.resourceGraphClient || !ctx.subscriptionId || !ctx.repoSlug) return undefined;
+  let rows;
+  try {
+    rows = await ctx.resourceGraphClient.queryResources(
+      ctx.subscriptionId,
+      buildRepoTagLookupQuery(ctx.repoSlug, ctx.repoTagKeys ?? [], ctx.resourceGroup)
+    );
+  } catch {
+    return undefined;
+  }
+  if (rows.length === 0) return undefined;
+
+  const byLowerId = new Map(candidates.map((candidate) => [candidate.id.toLowerCase(), candidate.id]));
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const canonical = byLowerId.get(row.id.toLowerCase());
+    if (canonical !== undefined && !seen.has(canonical)) {
+      seen.add(canonical);
+      matched.push(canonical);
+    }
+  }
+  if (matched.length === 0) return undefined;
+  if (matched.length === 1) {
+    return {
+      ids: matched,
+      selectId: matched[0],
+      evidence: [`Resource Graph tag lookup matched exactly one enumerated candidate for ${ctx.repoSlug}`]
+    };
+  }
+  return {
+    ids: matched,
+    evidence: [`Resource Graph tag lookup matched ${matched.length} enumerated candidate(s) for ${ctx.repoSlug}`]
+  };
 }
 
 /** T4: Naming heuristic -- match repo slug against API display names. Rank signal only, never selects. */

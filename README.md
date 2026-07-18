@@ -11,7 +11,7 @@ The action resolves the best specification source for the current repository in 
 3. **App Service API definition** — a site whose `apiDefinition.url` points at a reachable OpenAPI document.
 4. **Local Azure IaC** — OpenAPI content embedded in ARM/Bicep templates or referenced by `azure.yaml` in the repository.
 
-When several Azure candidates match, a four-tier narrowing pipeline (IaC fingerprint, resource-group correlation, `postman:*` tag prefilter, naming heuristic) orders them, and genuinely ambiguous results surface as a ranked GitHub Step Summary table instead of a guess.
+When several Azure candidates match, a four-tier narrowing pipeline (IaC fingerprint, resource-group correlation, repo-tag prefilter, naming heuristic) orders them, and genuinely ambiguous results surface as a ranked GitHub Step Summary table instead of a guess. The tag prefilter selects outright when exactly one candidate carries a select-grade repo tag for the calling repository: canonical `postman:repo=<org>/<repo>`, the Fox-style `GithubOrg`/`GithubRepo` pair, or any extra keys supplied via the CLI-only `--repo-tag-keys-json` flag. Tag names and values compare case-insensitively (a trailing `.git` is tolerated), and when enumerated candidates carry no matching tags a single targeted Resource Graph tag lookup runs as a fallback — so a gateway tagged with its owning repo resolves automatically, per service repo, with zero further configuration.
 
 ## Auth and Postman handoff
 

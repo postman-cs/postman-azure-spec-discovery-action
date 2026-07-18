@@ -138,4 +138,127 @@ describe('narrowing pipeline', () => {
     expect(capped[0]?.id).toBe('/x/target');
     expect(partitioned.length - capped.length).toBe(25);
   });
+
+  it('AZ-NARROW-007: select-grade tags match case-insensitively and tolerate trailing .git', async () => {
+    const mixedKeyCase = await runNarrowingPipeline(
+      { repoSlug: 'Org/Payments', serviceHints: [], signals: signals() },
+      [candidate('/x/a', { tags: { 'Postman:Repo': 'org/payments' } }), candidate('/x/b')]
+    );
+    expect(mixedKeyCase?.tier).toBe('tag-prefilter');
+    expect(mixedKeyCase?.mode).toBe('select');
+    expect(mixedKeyCase?.apiIds).toEqual(['/x/a']);
+
+    const gitSuffix = await runNarrowingPipeline(
+      { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
+      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments.git' } }), candidate('/x/b')]
+    );
+    expect(gitSuffix?.mode).toBe('select');
+
+    const slugSuffix = await runNarrowingPipeline(
+      { repoSlug: 'org/payments.git', serviceHints: [], signals: signals() },
+      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments' } }), candidate('/x/b')]
+    );
+    expect(slugSuffix?.mode).toBe('select');
+  });
+
+  it('AZ-NARROW-008: Fox-style GithubOrg/GithubRepo pair composes to a select-grade match', async () => {
+    const single = await runNarrowingPipeline(
+      { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
+      [
+        candidate('/x/a', { tags: { GithubOrg: 'Org', GithubRepo: 'Payments' } }),
+        candidate('/x/b', { tags: { GithubOrg: 'org', GithubRepo: 'other' } })
+      ]
+    );
+    expect(single?.tier).toBe('tag-prefilter');
+    expect(single?.mode).toBe('select');
+    expect(single?.apiIds).toEqual(['/x/a']);
+
+    // Two candidates carrying the same pair narrow instead of selecting.
+    const double = await runNarrowingPipeline(
+      { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
+      [
+        candidate('/x/a', { tags: { GithubOrg: 'org', GithubRepo: 'payments' } }),
+        candidate('/x/b', { tags: { githuborg: 'org', githubrepo: 'payments' } })
+      ]
+    );
+    expect(double?.mode).toBe('narrow');
+    expect(double?.apiIds).toEqual(['/x/a', '/x/b']);
+
+    // Org-only or repo-only never matches.
+    const partial = await runNarrowingPipeline(
+      { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
+      [candidate('/x/a', { tags: { GithubOrg: 'org' } }), candidate('/x/b', { tags: { GithubRepo: 'payments' } })]
+    );
+    expect(partial?.tier).not.toBe('tag-prefilter');
+  });
+
+  it('AZ-NARROW-009: caller-supplied repo-tag-keys are select-grade', async () => {
+    const custom = await runNarrowingPipeline(
+      { repoSlug: 'org/payments', repoTagKeys: ['team:source-repo'], serviceHints: [], signals: signals() },
+      [candidate('/x/a', { tags: { 'Team:Source-Repo': 'org/payments' } }), candidate('/x/b')]
+    );
+    expect(custom?.tier).toBe('tag-prefilter');
+    expect(custom?.mode).toBe('select');
+    expect(custom?.apiIds).toEqual(['/x/a']);
+
+    // Without the key registered, the same tag is not select-grade.
+    const unregistered = await runNarrowingPipeline(
+      { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
+      [candidate('/x/a', { tags: { 'Team:Source-Repo': 'org/payments' } }), candidate('/x/b')]
+    );
+    expect(unregistered?.mode).not.toBe('select');
+  });
+
+  it('AZ-NARROW-010: Resource Graph fallback maps tag hits to enumerated candidates and stays fail-soft', async () => {
+    const graphClient = {
+      queryResources: async () => [
+        { id: '/X/A', name: 'a', type: 't', resourceGroup: 'rg', tags: { 'postman:repo': 'org/payments' } }
+      ]
+    };
+    const selectViaGraph = await runNarrowingPipeline(
+      {
+        repoSlug: 'org/payments',
+        subscriptionId: 'sub-1',
+        serviceHints: [],
+        signals: signals(),
+        resourceGraphClient: graphClient
+      },
+      [candidate('/x/a'), candidate('/x/b')]
+    );
+    expect(selectViaGraph?.tier).toBe('tag-prefilter');
+    expect(selectViaGraph?.mode).toBe('select');
+    expect(selectViaGraph?.apiIds).toEqual(['/x/a']);
+
+    // Query failure narrows nothing and falls through to later tiers.
+    const failing = {
+      queryResources: async () => {
+        throw new Error('graph unavailable');
+      }
+    };
+    const failSoft = await runNarrowingPipeline(
+      {
+        repoSlug: 'org/payments',
+        subscriptionId: 'sub-1',
+        serviceHints: [],
+        signals: signals(),
+        resourceGraphClient: failing
+      },
+      [candidate('/x/payments-api', { name: 'payments-api' }), candidate('/x/orders', { name: 'orders' })]
+    );
+    expect(failSoft?.tier).toBe('naming-heuristic');
+
+    // No subscription id: fallback is skipped entirely (no query issued).
+    let queried = 0;
+    const counting = {
+      queryResources: async () => {
+        queried += 1;
+        return [];
+      }
+    };
+    await runNarrowingPipeline(
+      { repoSlug: 'org/payments', serviceHints: [], signals: signals(), resourceGraphClient: counting },
+      [candidate('/x/a')]
+    );
+    expect(queried).toBe(0);
+  });
 });

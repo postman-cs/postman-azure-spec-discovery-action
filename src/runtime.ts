@@ -72,6 +72,8 @@ export interface ResolvedInputs {
   expectedApiIds: string[];
   apiFilter?: RegExp;
   serviceMapping: Record<string, string>;
+  /** Extra select-grade repo tag keys beside postman:repo (CLI-only repo-tag-keys-json). */
+  repoTagKeys: string[];
   outputDir: string;
   maxCandidates: number;
   dryRun: boolean;
@@ -222,6 +224,8 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
     (value): value is string => Boolean(value)
   );
 
+  const repoTagKeysRaw = getInput('repo-tag-keys-json', env) ?? '[]';
+
   return {
     mode,
     subscriptionId,
@@ -233,6 +237,7 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
     expectedApiIds: [...new Set(expectedApiIds)],
     apiFilter,
     serviceMapping: parseServiceMapping(serviceMappingRaw),
+    repoTagKeys: [...new Set(parseStringArrayJson(repoTagKeysRaw, 'repo-tag-keys-json').map((key) => key.toLowerCase()))],
     outputDir,
     maxCandidates: parseBoundedInteger(getInput('max-candidates', env), 'max-candidates', 50, 1, 10000),
     dryRun: parseBoolean(getInput('dry-run', env), 'dry-run', false),
@@ -759,8 +764,11 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     {
       repoSlug: inputs.repoContext.repoSlug,
       subscriptionId,
+      resourceGroup: inputs.resourceGroup,
+      repoTagKeys: inputs.repoTagKeys,
       serviceHints: signals.serviceHints,
-      signals
+      signals,
+      resourceGraphClient: dependencies.createResourceGraphClient?.()
     },
     enumerated.map((candidate): NarrowingCandidate => ({
       id: candidate.id,
@@ -893,8 +901,11 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
     {
       repoSlug: inputs.repoContext.repoSlug,
       subscriptionId,
+      resourceGroup: inputs.resourceGroup,
+      repoTagKeys: inputs.repoTagKeys,
       serviceHints: signals.serviceHints,
-      signals
+      signals,
+      resourceGraphClient: dependencies.createResourceGraphClient?.()
     },
     enumerated.map((candidate): NarrowingCandidate => ({
       id: candidate.id,
