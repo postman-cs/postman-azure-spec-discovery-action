@@ -1,6 +1,6 @@
 # Provider contracts
 
-Azure spec discovery ships six providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships seven providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
 ## `apim` — Azure API Management
 
@@ -38,6 +38,13 @@ Azure spec discovery ships six providers: `apim`, `app-service`, `custom-apis`, 
 - Export validates and normalizes the embedded document and declares `completeness: partial`: an embedded template document may carry unresolved ARM template expressions, so it is not guaranteed to equal the deployed literal.
 - Secret hygiene is structural: `Microsoft.Resources/deploymentScripts` subtrees (script content, environment variables) are never walked, and an embedded document that contains a secure parameter default (`secureString`/`secureObject` `defaultValue`) is withheld — its candidate flips to unsupported and the document is never surfaced.
 
+## `event-grid` — Event Grid webhook delivery contracts
+
+- Enumerates Event Grid custom topics, domains, and system topics plus their event subscriptions via `@azure/arm-eventgrid` (Reader GETs, bounded pagination).
+- A source is a supported candidate when at least one event subscription delivers to a **WebHook** destination; sources with only service-to-service destinations (Event Hubs, Service Bus, queues, functions) stay visible as unsupported candidates with their destination kinds as evidence.
+- Export **synthesizes a deliberately partial OpenAPI 3.0 document** describing the webhook delivery contract: one POST operation per sanitized destination path, request bodies from the delivery schema envelope (Event Grid or CloudEvents 1.0), and `eventType`/`type` enums from `includedEventTypes` filters. Handler responses and event `data` payload schemas are not declared in Event Grid, so the export is `completeness: partial`.
+- Credential hygiene: only the server-populated `endpointBaseUrl` is ever read off the ARM response (`endpointUrl`, which may embed query-string tokens, is never projected; `getFullUrl` is never called), and every URL is still defensively stripped to origin + path before surfacing.
+
 ## `iac-local` — repository Azure IaC
 
 - Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
@@ -45,4 +52,4 @@ Azure spec discovery ships six providers: `apim`, `app-service`, `custom-apis`, 
 
 ## Ordering and narrowing
 
-Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.
+Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.

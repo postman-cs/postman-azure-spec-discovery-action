@@ -15,7 +15,10 @@ const CANDIDATE_TYPES = [
   'microsoft.web/sites',
   'microsoft.web/customapis',
   'microsoft.logic/workflows',
-  'microsoft.resources/templatespecs/versions'
+  'microsoft.resources/templatespecs/versions',
+  'microsoft.eventgrid/topics',
+  'microsoft.eventgrid/domains',
+  'microsoft.eventgrid/systemtopics'
 ];
 
 export function buildCandidateQuery(resourceGroup?: string): string {

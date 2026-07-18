@@ -14,13 +14,15 @@ import {
   ResourceGraphSdkClient,
   SubscriptionsSdkClient,
   TemplateSpecsSdkClient,
+  EventGridSdkClient,
   type AzureApimClient,
   type AzureAppServiceClient,
   type AzureCustomApisClient,
   type AzureLogicWorkflowsClient,
   type AzureResourceGraphClient,
   type AzureSubscriptionsClient,
-  type AzureTemplateSpecsClient
+  type AzureTemplateSpecsClient,
+  type AzureEventGridClient
 } from './lib/azure/clients.js';
 import { formatUserSafeError } from './lib/logging/sanitize.js';
 import { appendAmbiguityStepSummary } from './lib/logging/step-summary.js';
@@ -48,6 +50,7 @@ export interface GitHubActionDependencies {
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
   createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
+  createEventGridClient?: (subscriptionId: string) => AzureEventGridClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile?: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -114,6 +117,9 @@ async function runActionInner(
     createTemplateSpecsClient:
       dependencies.createTemplateSpecsClient ??
       (useProductionProviders ? (subscriptionId) => new TemplateSpecsSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
+    createEventGridClient:
+      dependencies.createEventGridClient ??
+      (useProductionProviders ? (subscriptionId) => new EventGridSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
     createResourceGraphClient:
       dependencies.createResourceGraphClient ??
       (useProductionProviders ? () => new ResourceGraphSdkClient(credential!, sdkOptions) : undefined),

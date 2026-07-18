@@ -1,4 +1,5 @@
 import { ApiManagementClient } from '@azure/arm-apimanagement';
+import { EventGridManagementClient } from '@azure/arm-eventgrid';
 import type { ApiContract, ApiManagementServiceResource } from '@azure/arm-apimanagement';
 import { WebSiteManagementClient } from '@azure/arm-appservice';
 import { ResourceGraphClient } from '@azure/arm-resourcegraph';
@@ -1100,5 +1101,146 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
       }
     }
     throw new Error(`${operation} exhausted its attempt limit`);
+  }
+}
+
+export interface EventGridSourceSummary {
+  id: string;
+  name: string;
+  resourceGroup: string;
+  tags: Record<string, string>;
+  kind: 'topic' | 'domain' | 'system-topic';
+  topicType?: string;
+}
+
+export interface EventGridSubscriptionSummary {
+  name: string;
+  destinationKind?: string;
+  webhookBaseUrl?: string;
+  includedEventTypes: string[];
+  subjectBeginsWith?: string;
+  subjectEndsWith?: string;
+  deliverySchema?: string;
+}
+
+export interface AzureEventGridClient {
+  listSources(resourceGroup?: string): Promise<EventGridSourceSummary[]>;
+  listSubscriptions(source: { kind: EventGridSourceSummary['kind']; resourceGroup: string; name: string }): Promise<EventGridSubscriptionSummary[]>;
+  probeEventGridReadAccess(resourceGroup?: string): Promise<void>;
+}
+
+interface EventGridDestinationLike {
+  endpointType?: string;
+  endpointBaseUrl?: string;
+}
+
+interface EventGridEventSubscriptionLike {
+  name?: string;
+  destination?: EventGridDestinationLike;
+  filter?: { includedEventTypes?: string[]; subjectBeginsWith?: string; subjectEndsWith?: string };
+  eventDeliverySchema?: string;
+}
+
+function toEventGridSubscriptionSummary(subscription: EventGridEventSubscriptionLike): EventGridSubscriptionSummary | undefined {
+  const name = subscription.name ?? '';
+  if (!name) return undefined;
+  const destination = subscription.destination;
+  const endpointType = destination?.endpointType ?? '';
+  const isWebhook = endpointType.toLowerCase() === 'webhook';
+  // Secret hygiene: only the server-populated endpointBaseUrl is ever read.
+  // The writable endpointUrl (which may embed query-string tokens) is never
+  // projected off the ARM response.
+  const webhookBaseUrl = isWebhook && typeof destination?.endpointBaseUrl === 'string' ? destination.endpointBaseUrl : undefined;
+  return {
+    name,
+    ...(endpointType ? { destinationKind: endpointType } : {}),
+    ...(webhookBaseUrl ? { webhookBaseUrl } : {}),
+    includedEventTypes: subscription.filter?.includedEventTypes ?? [],
+    ...(subscription.filter?.subjectBeginsWith ? { subjectBeginsWith: subscription.filter.subjectBeginsWith } : {}),
+    ...(subscription.filter?.subjectEndsWith ? { subjectEndsWith: subscription.filter.subjectEndsWith } : {}),
+    ...(subscription.eventDeliverySchema ? { deliverySchema: subscription.eventDeliverySchema } : {})
+  };
+}
+
+/**
+ * Event Grid management surface via @azure/arm-eventgrid: custom topics,
+ * domains, and system topics plus their event subscriptions, all Reader GETs
+ * with bounded pagination. getFullUrl (the POST that returns the complete
+ * webhook URL including query-string secrets) is never called.
+ */
+export class EventGridSdkClient implements AzureEventGridClient {
+  private readonly client: EventGridManagementClient;
+
+  public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
+    this.client = new EventGridManagementClient(credential, subscriptionId, {
+      retryOptions: { maxRetries: sdkMaxRetries(options) }
+    });
+  }
+
+  public async listSources(resourceGroup?: string): Promise<EventGridSourceSummary[]> {
+    const [topics, domains, systemTopics] = await Promise.all([
+      collectBounded(
+        resourceGroup ? this.client.topics.listByResourceGroup(resourceGroup) : this.client.topics.listBySubscription(),
+        'Event Grid topic list'
+      ),
+      collectBounded(
+        resourceGroup ? this.client.domains.listByResourceGroup(resourceGroup) : this.client.domains.listBySubscription(),
+        'Event Grid domain list'
+      ),
+      collectBounded(
+        resourceGroup
+          ? this.client.systemTopics.listByResourceGroup(resourceGroup)
+          : this.client.systemTopics.listBySubscription(),
+        'Event Grid system topic list'
+      )
+    ]);
+    const summaries: EventGridSourceSummary[] = [];
+    const push = (
+      entry: { id?: string; name?: string; tags?: Record<string, string>; topicType?: string },
+      kind: EventGridSourceSummary['kind']
+    ): void => {
+      const id = entry.id ?? '';
+      const name = entry.name ?? '';
+      if (!id || !name) return;
+      summaries.push({
+        id,
+        name,
+        resourceGroup: extractResourceGroup(id),
+        tags: entry.tags ?? {},
+        kind,
+        ...(entry.topicType ? { topicType: entry.topicType } : {})
+      });
+    };
+    for (const topic of topics) push(topic, 'topic');
+    for (const domain of domains) push(domain, 'domain');
+    for (const systemTopic of systemTopics) push(systemTopic, 'system-topic');
+    return summaries;
+  }
+
+  public async listSubscriptions(source: {
+    kind: EventGridSourceSummary['kind'];
+    resourceGroup: string;
+    name: string;
+  }): Promise<EventGridSubscriptionSummary[]> {
+    const iterator =
+      source.kind === 'topic'
+        ? this.client.topicEventSubscriptions.list(source.resourceGroup, source.name)
+        : source.kind === 'domain'
+          ? this.client.domainEventSubscriptions.list(source.resourceGroup, source.name)
+          : this.client.systemTopicEventSubscriptions.listBySystemTopic(source.resourceGroup, source.name);
+    const subscriptions = await collectBounded(iterator, `Event Grid ${source.kind} subscription list`);
+    const summaries: EventGridSubscriptionSummary[] = [];
+    for (const subscription of subscriptions) {
+      const summary = toEventGridSubscriptionSummary(subscription as EventGridEventSubscriptionLike);
+      if (summary) summaries.push(summary);
+    }
+    return summaries;
+  }
+
+  public async probeEventGridReadAccess(resourceGroup?: string): Promise<void> {
+    const iterator = resourceGroup
+      ? this.client.topics.listByResourceGroup(resourceGroup)
+      : this.client.topics.listBySubscription();
+    await iterator[Symbol.asyncIterator]().next();
   }
 }

@@ -29,6 +29,8 @@ export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sou
       return 'logic-apps-workflow';
     case 'template-specs':
       return 'template-spec-embedded';
+    case 'event-grid':
+      return 'event-grid-webhook';
   }
 }
 
