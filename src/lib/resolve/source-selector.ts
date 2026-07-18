@@ -33,6 +33,8 @@ export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sou
       return 'event-grid-webhook';
     case 'service-bus':
       return 'service-bus-topic';
+    case 'function-bindings':
+      return 'function-bindings-trigger';
   }
 }
 

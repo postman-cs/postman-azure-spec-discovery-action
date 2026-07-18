@@ -1,6 +1,6 @@
 # Provider contracts
 
-Azure spec discovery ships eight providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships nine providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
 ## `apim` — Azure API Management
 
@@ -52,6 +52,13 @@ Azure spec discovery ships eight providers: `apim`, `app-service`, `custom-apis`
 - Export **synthesizes a deliberately partial OpenAPI 3.0 document** for the publish surface: one POST operation mirroring the Service Bus data-plane message path (`/<topic>/messages`), with every subscription and its SQL / correlation filter metadata described on the operation. Message payload schemas are not declared in ARM, so the export is `completeness: partial`.
 - Credential hygiene: authorization-rule surfaces and `listKeys` (which return connection strings) are never called; the namespace's public `serviceBusEndpoint` origin is the only URL surfaced.
 
+## `function-bindings` — Azure Functions trigger bindings
+
+- Enumerates App Service sites of `kind` containing `functionapp` and their functions via generic ARM REST (`api-version 2023-12-01`). Reader GETs only.
+- A function app is a supported candidate when at least one function declares a trigger binding. Apps without triggers stay visible as unsupported candidates. Candidate IDs append `/functions` so they never collide with the `app-service` provider for the same site.
+- Export **synthesizes a deliberately partial OpenAPI 3.0 document** from the trigger topology: `httpTrigger` bindings become real HTTP operations (`/api/<route>` with declared methods); event-source triggers (queue, Service Bus, Event Grid, Event Hubs, blob, timer) become `x-azure-trigger-documented` POST entries under `/functions/<name>/invocations` so the event surface stays visible without inventing public routes. Response contracts are not declared in bindings, so every operation carries a default response and the export is `completeness: partial`.
+- Credential hygiene: `listFunctionKeys`, `listHostKeys`, `listFunctionSecrets`, and app-settings values are never called. Binding `connection` properties are setting **names** only; the client projects known structural fields and never serializes raw binding payloads beyond them.
+
 ## `iac-local` — repository Azure IaC
 
 - Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
@@ -59,4 +66,4 @@ Azure spec discovery ships eight providers: `apim`, `app-service`, `custom-apis`
 
 ## Ordering and narrowing
 
-Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.
+Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.

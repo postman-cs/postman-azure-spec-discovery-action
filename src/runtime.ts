@@ -19,7 +19,8 @@ import type {
   AzureSubscriptionsClient,
   AzureTemplateSpecsClient,
   AzureEventGridClient,
-  AzureServiceBusClient
+  AzureServiceBusClient,
+  AzureFunctionsClient
 } from './lib/azure/clients.js';
 import { sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
@@ -44,6 +45,7 @@ import { LogicAppsProvider } from './lib/providers/logic-apps.js';
 import { TemplateSpecsProvider } from './lib/providers/template-specs.js';
 import { EventGridProvider } from './lib/providers/event-grid.js';
 import { ServiceBusProvider } from './lib/providers/service-bus.js';
+import { FunctionBindingsProvider } from './lib/providers/function-bindings.js';
 import { IacLocalProvider } from './lib/providers/iac-local.js';
 import { resolvePathWithinRoot } from './lib/utils/resolve-path-within-root.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './lib/providers/types.js';
@@ -88,6 +90,7 @@ export interface AzureDependencies {
   createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
   createEventGridClient?: (subscriptionId: string) => AzureEventGridClient;
   createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
+  createFunctionsClient?: (subscriptionId: string) => AzureFunctionsClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -457,6 +460,9 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
       : []),
     ...(dependencies.createServiceBusClient
       ? [new ServiceBusProvider(dependencies.createServiceBusClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      : []),
+    ...(dependencies.createFunctionsClient
+      ? [new FunctionBindingsProvider(dependencies.createFunctionsClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
       : []),
     new IacLocalProvider(iacScan)
   ];

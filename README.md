@@ -108,7 +108,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | --- | --- |
 | `resolution-json` | JSON resolution result describing status, source type, confidence, and evidence. |
 | `resolution-status` | Resolution status: resolved or unresolved. |
-| `source-type` | Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, manual-review, or discover-many. |
+| `source-type` | Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, or discover-many. |
 | `mapping-confidence` | Numeric confidence score for the selected service candidate. |
 | `spec-path` | Path to the resolved or generated specification when available. |
 | `api-id` | Full APIM API ARM resource ID for APIM resolutions; empty for App Service or IaC-local resolutions. |
@@ -117,7 +117,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `service-count` | discover-many output: number of exported services. |
 | `export-summary-json` | JSON summary of attempted, exported, failed, and skipped candidates. |
 | `candidates-json` | Ranked ambiguous candidates as JSON when resolution is unresolved with at least two candidates; empty otherwise. |
-| `provider-type` | Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, or service-bus. |
+| `provider-type` | Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings. |
 | `spec-format` | Format of the resolved spec: openapi-yaml or openapi-json. |
 | `contract-origin` | Compatibility output; always empty in v1. |
 | `contract-metadata-path` | Compatibility output; always empty in v1. |
@@ -141,9 +141,10 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `template-specs` | Template Spec version embedded APIM inline documents (`Microsoft.Resources/templateSpecs/versions`) | OpenAPI/Swagger JSON (partial) |
 | `event-grid` | Event Grid topic/domain/system-topic webhook subscriptions (synthesized delivery contract) | OpenAPI 3.0 JSON (partial) |
 | `service-bus` | Service Bus topic/subscription/rule metadata (synthesized publish contract) | OpenAPI 3.0 JSON (partial) |
+| `function-bindings` | Azure Functions trigger bindings (`sites/functions` config.bindings) | OpenAPI 3.0 JSON (partial) |
 | `iac-local` | OpenAPI embedded in repo ARM/Bicep templates or referenced by `azure.yaml` | OpenAPI JSON or YAML |
 
-Non-HTTP APIM API types (SOAP, GraphQL, WebSocket, gRPC, OData) are surfaced as visible-unsupported candidates and routed to manual review; they are never exported. Service- and workspace-scoped APIM APIs are both enumerated. Custom connectors without an inline swagger document stay visible as manual-review candidates. Azure API Center, Functions, Container Apps, and management-group enumeration are out of scope for now.
+Non-HTTP APIM API types (SOAP, GraphQL, WebSocket, gRPC, OData) are surfaced as visible-unsupported candidates and routed to manual review; they are never exported. Service- and workspace-scoped APIM APIs are both enumerated. Custom connectors without an inline swagger document stay visible as manual-review candidates. Azure API Center, Container Apps, and management-group enumeration are out of scope for now.
 
 ## How it works
 

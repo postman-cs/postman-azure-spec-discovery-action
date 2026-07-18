@@ -1384,3 +1384,244 @@ export class ServiceBusSdkClient implements AzureServiceBusClient {
     await iterator[Symbol.asyncIterator]().next();
   }
 }
+
+export interface FunctionAppSummary {
+  id: string;
+  name: string;
+  resourceGroup: string;
+  tags: Record<string, string>;
+  defaultHostName?: string;
+}
+
+export interface FunctionBindingSummary {
+  type: string;
+  direction?: string;
+  name?: string;
+  route?: string;
+  methods?: string[];
+  authLevel?: string;
+  /** Connection APP SETTING NAME only -- values are never read. */
+  connectionSettingName?: string;
+  queueName?: string;
+  topicName?: string;
+  subscriptionName?: string;
+  eventHubName?: string;
+  path?: string;
+  schedule?: string;
+}
+
+export interface FunctionSummary {
+  name: string;
+  bindings: FunctionBindingSummary[];
+}
+
+export interface AzureFunctionsClient {
+  listFunctionApps(resourceGroup?: string): Promise<FunctionAppSummary[]>;
+  listFunctions(resourceGroup: string, appName: string): Promise<FunctionSummary[]>;
+  probeFunctionsReadAccess(resourceGroup?: string): Promise<void>;
+}
+
+const FUNCTIONS_API_VERSION = '2023-12-01';
+
+interface FunctionAppArmEnvelope {
+  id?: string;
+  name?: string;
+  kind?: string;
+  tags?: Record<string, string>;
+  properties?: { defaultHostName?: string };
+}
+
+interface FunctionArmEnvelope {
+  name?: string;
+  properties?: { config?: { bindings?: unknown } };
+}
+
+interface RawBinding {
+  type?: unknown;
+  direction?: unknown;
+  name?: unknown;
+  route?: unknown;
+  methods?: unknown;
+  authLevel?: unknown;
+  connection?: unknown;
+  queueName?: unknown;
+  topicName?: unknown;
+  subscriptionName?: unknown;
+  eventHubName?: unknown;
+  path?: unknown;
+  schedule?: unknown;
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+/**
+ * Project a raw binding onto the structural summary. Only known fields are
+ * read; `connection` is an app SETTING NAME (never a value) and everything
+ * else in the raw payload is dropped, never serialized.
+ */
+function toBindingSummary(raw: RawBinding): FunctionBindingSummary | undefined {
+  const type = str(raw.type);
+  if (!type) return undefined;
+  const methods = Array.isArray(raw.methods)
+    ? raw.methods.filter((m): m is string => typeof m === 'string')
+    : undefined;
+  return {
+    type,
+    ...(str(raw.direction) ? { direction: str(raw.direction) } : {}),
+    ...(str(raw.name) ? { name: str(raw.name) } : {}),
+    ...(str(raw.route) ? { route: str(raw.route) } : {}),
+    ...(methods && methods.length > 0 ? { methods } : {}),
+    ...(str(raw.authLevel) ? { authLevel: str(raw.authLevel) } : {}),
+    ...(str(raw.connection) ? { connectionSettingName: str(raw.connection) } : {}),
+    ...(str(raw.queueName) ? { queueName: str(raw.queueName) } : {}),
+    ...(str(raw.topicName) ? { topicName: str(raw.topicName) } : {}),
+    ...(str(raw.subscriptionName) ? { subscriptionName: str(raw.subscriptionName) } : {}),
+    ...(str(raw.eventHubName) ? { eventHubName: str(raw.eventHubName) } : {}),
+    ...(str(raw.path) ? { path: str(raw.path) } : {}),
+    ...(str(raw.schedule) ? { schedule: str(raw.schedule) } : {})
+  };
+}
+
+/**
+ * Azure Functions surface (Microsoft.Web/sites of kind functionapp and their
+ * functions) via generic ARM REST with the same token/retry/pagination
+ * discipline as CustomApisSdkClient. Reader GETs only: listFunctionKeys,
+ * listHostKeys, listFunctionSecrets, and app settings list (POSTs returning
+ * secrets) are never called.
+ */
+export class FunctionsSdkClient implements AzureFunctionsClient {
+  private readonly credential: TokenCredential;
+  private readonly subscriptionId: string;
+  private readonly maxAttempts: number;
+  private readonly requestTimeoutMs: number;
+
+  public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
+    this.credential = credential;
+    this.subscriptionId = subscriptionId;
+    this.maxAttempts = options?.maxAttempts ?? 3;
+    this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+  }
+
+  public async listFunctionApps(resourceGroup?: string): Promise<FunctionAppSummary[]> {
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/sites`
+      : 'providers/Microsoft.Web/sites';
+    const first =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${FUNCTIONS_API_VERSION}`;
+    const entries = await this.listPaged<FunctionAppArmEnvelope>(first, 'Function app listing');
+    const summaries: FunctionAppSummary[] = [];
+    for (const entry of entries) {
+      const id = entry.id ?? '';
+      const name = entry.name ?? '';
+      const kind = (entry.kind ?? '').toLowerCase();
+      if (!id || !name) continue;
+      if (!kind.includes('functionapp')) continue;
+      summaries.push({
+        id,
+        name,
+        resourceGroup: extractResourceGroup(id),
+        tags: entry.tags ?? {},
+        ...(entry.properties?.defaultHostName ? { defaultHostName: entry.properties.defaultHostName } : {})
+      });
+    }
+    return summaries;
+  }
+
+  public async listFunctions(resourceGroup: string, appName: string): Promise<FunctionSummary[]> {
+    const first =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/sites/${encodeURIComponent(appName)}` +
+      `/functions?api-version=${FUNCTIONS_API_VERSION}`;
+    const entries = await this.listPaged<FunctionArmEnvelope>(first, 'Function listing');
+    const summaries: FunctionSummary[] = [];
+    for (const entry of entries) {
+      const fullName = entry.name ?? '';
+      if (!fullName) continue;
+      // ARM names functions as <app>/<function>; keep the short segment.
+      const name = fullName.includes('/') ? fullName.split('/').pop() ?? fullName : fullName;
+      const rawBindings = entry.properties?.config?.bindings;
+      const bindings: FunctionBindingSummary[] = [];
+      if (Array.isArray(rawBindings)) {
+        for (const raw of rawBindings) {
+          if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+            const summary = toBindingSummary(raw as RawBinding);
+            if (summary) bindings.push(summary);
+          }
+        }
+      }
+      summaries.push({ name, bindings });
+    }
+    return summaries;
+  }
+
+  public async probeFunctionsReadAccess(resourceGroup?: string): Promise<void> {
+    const token = await this.getArmToken();
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/sites`
+      : 'providers/Microsoft.Web/sites';
+    const url =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${FUNCTIONS_API_VERSION}&$top=1`;
+    const response = await this.fetchArm(url, token, 'Function app probe');
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`AuthorizationFailed: function app probe returned HTTP ${response.status}`);
+    }
+    if (!response.ok) {
+      throw new Error(`Function app probe failed with HTTP ${response.status}`);
+    }
+  }
+
+  private async listPaged<T>(firstUrl: string, operation: string): Promise<T[]> {
+    const token = await this.getArmToken();
+    let url: string | undefined = firstUrl;
+    const entries: T[] = [];
+    let pages = 0;
+    while (url) {
+      pages += 1;
+      if (pages > MAX_LIST_PAGES) {
+        throw new Error(`${operation} pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
+      }
+      const response = await this.fetchArm(url, token, operation);
+      if (!response.ok) {
+        throw new Error(`${operation} failed with HTTP ${response.status}`);
+      }
+      const body = (await response.json()) as { value?: T[]; nextLink?: string };
+      entries.push(...(body.value ?? []));
+      const next: string | undefined = body.nextLink;
+      if (next !== undefined && next === url) {
+        throw new Error(`${operation} pagination returned a repeated nextLink; aborting`);
+      }
+      url = next;
+    }
+    return entries;
+  }
+
+  private async getArmToken(): Promise<string> {
+    const token = await this.credential.getToken('https://management.azure.com/.default');
+    if (!token) {
+      throw new Error('Azure credential produced no ARM token');
+    }
+    return token.token;
+  }
+
+  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: controller.signal
+        });
+        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
+        if (attempt === this.maxAttempts) return response;
+      } catch (error) {
+        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error(`${operation} exhausted its attempt limit`);
+  }
+}

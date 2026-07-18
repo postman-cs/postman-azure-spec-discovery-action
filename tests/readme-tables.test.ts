@@ -18,12 +18,12 @@ describe('README action tables', () => {
     const readme = readFileSync(resolve(repoRoot, 'README.md'), 'utf8');
     const providersDoc = readFileSync(resolve(repoRoot, 'docs/providers.md'), 'utf8');
 
-    for (const provider of ['`apim`', '`app-service`', '`iac-local`']) {
+    for (const provider of ['`apim`', '`app-service`', '`function-bindings`', '`iac-local`']) {
       expect(readme).toContain(provider);
       expect(providersDoc).toContain(provider);
     }
     // Non-goals must be documented so users do not expect them.
-    for (const nonGoal of ['API Center', 'Functions', 'Container Apps']) {
+    for (const nonGoal of ['API Center', 'Container Apps']) {
       expect(readme).toContain(nonGoal);
     }
     expect(readme).toContain('manual review');
