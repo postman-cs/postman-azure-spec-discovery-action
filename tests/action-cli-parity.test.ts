@@ -24,6 +24,7 @@ const CLI_ONLY_INPUTS = [
   'expected-api-ids-json',
   'api-filter',
   'service-mapping-json',
+  'repo-tag-keys-json',
   'max-candidates',
   'dry-run',
   'preflight-checks',

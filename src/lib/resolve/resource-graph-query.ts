@@ -38,3 +38,61 @@ export function buildCandidateQuery(resourceGroup?: string): string {
   );
   return lines.join('\n');
 }
+
+/**
+ * Case variants of a tag key as they commonly appear in ARM tag bags. KQL bag
+ * lookups are key-case-sensitive, so the query enumerates the usual casings
+ * while value comparison stays case-insensitive via =~.
+ */
+function tagKeyCaseVariants(key: string): string[] {
+  const lower = key.toLowerCase();
+  const upperFirst = lower.charAt(0).toUpperCase() + lower.slice(1);
+  const pascalized = lower
+    .split(/[:_-]/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+  return [...new Set([key, lower, upperFirst, pascalized])];
+}
+
+/** GithubOrg/GithubRepo pair tag-key casings mirrored from estate enumeration's KQL key list. */
+const GITHUB_ORG_KEY_VARIANTS = ['GithubOrg', 'githuborg', 'Githuborg', 'GitHubOrg'];
+const GITHUB_REPO_KEY_VARIANTS = ['GithubRepo', 'githubrepo', 'Githubrepo', 'GitHubRepo'];
+
+/**
+ * Targeted tag-association lookup for the narrowing tag-prefilter fallback.
+ * Matches resources whose select-grade repo tag equals the repo slug
+ * (canonical postman:repo plus any caller-supplied keys), or whose the customer-style
+ * GithubOrg/GithubRepo pair composes to the slug. Values compare
+ * case-insensitively; a trailing .git on the tag value is tolerated.
+ */
+export function buildRepoTagLookupQuery(repoSlug: string, repoTagKeys: string[] = [], resourceGroup?: string): string {
+  const slug = repoSlug.trim().replace(/\.git$/i, '');
+  const slugEscaped = escapeKqlString(slug);
+  const clauses: string[] = [];
+  for (const key of ['postman:repo', ...repoTagKeys]) {
+    for (const variant of tagKeyCaseVariants(key)) {
+      clauses.push(`tostring(tags['${escapeKqlString(variant)}']) =~ '${slugEscaped}'`);
+      clauses.push(`tostring(tags['${escapeKqlString(variant)}']) =~ '${slugEscaped}.git'`);
+    }
+  }
+  const [org, ...repoParts] = slug.split('/');
+  const repoName = repoParts.join('/');
+  if (org && repoName) {
+    const orgEscaped = escapeKqlString(org);
+    const repoEscaped = escapeKqlString(repoName);
+    for (const orgVariant of GITHUB_ORG_KEY_VARIANTS) {
+      for (const repoVariant of GITHUB_REPO_KEY_VARIANTS) {
+        clauses.push(
+          `(tostring(tags['${orgVariant}']) =~ '${orgEscaped}' and tostring(tags['${repoVariant}']) =~ '${repoEscaped}')`
+        );
+      }
+    }
+  }
+  const lines = ['Resources', `| where ${clauses.join(' or ')}`];
+  const trimmedGroup = (resourceGroup ?? '').trim();
+  if (trimmedGroup) {
+    lines.push(`| where resourceGroup =~ '${escapeKqlString(trimmedGroup)}'`);
+  }
+  lines.push('| project id, name, type, resourceGroup, tags');
+  return lines.join('\n');
+}

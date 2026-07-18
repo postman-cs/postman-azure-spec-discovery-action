@@ -69,6 +69,7 @@ const CLI_INPUT_NAMES = [
   'expected-api-ids-json',
   'api-filter',
   'service-mapping-json',
+  'repo-tag-keys-json',
   'output-dir',
   'max-candidates',
   'dry-run',

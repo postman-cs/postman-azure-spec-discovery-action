@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.0
+
+Gateway-tag repo resolution: per-service-repo automatic discovery via ownership tags (discovery-hub concept applied at the repo level).
+
+- `tag-prefilter` narrowing now matches tag keys and values case-insensitively (Azure tag names are case-insensitive) and tolerates a trailing `.git` on either side.
+- the customer-style `GithubOrg`/`GithubRepo` tag pairs compose to `<org>/<repo>` and are select-grade beside canonical `postman:repo` — a gateway tagged with its owning repo resolves automatically for that repo's workflow run.
+- New CLI-only `repo-tag-keys-json` input registers extra select-grade tag keys (JSON string array, matched case-insensitively). Action inputs/outputs are unchanged; the 24-key output contract is untouched.
+- The Resource Graph fallback promised by the tag-prefilter tier is now wired: when enumerated candidates carry no matching tag bag, one targeted tag-lookup query (`buildRepoTagLookupQuery`) maps select-grade tags to ARM IDs and intersects with the enumerated set. Fail-soft: query errors narrow nothing.
+- Narrowing evidence now names the select path (`select-grade repo tag`) instead of assuming canonical-tag-only matching.
+
 ## v1.1.0
 
 Wave-2 discovery surface: six new providers, APIM WSDL/GraphQL exports, and a new discover-estate mode.

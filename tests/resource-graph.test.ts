@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ResourceGraphSdkClient } from '../src/lib/azure/clients.js';
-import { buildCandidateQuery } from '../src/lib/resolve/resource-graph-query.js';
+import { buildCandidateQuery, buildRepoTagLookupQuery } from '../src/lib/resolve/resource-graph-query.js';
 
 const fetchMock = vi.fn();
 
@@ -82,5 +82,33 @@ describe('resource graph paging (direct ARM REST)', () => {
     });
     const client = new ResourceGraphSdkClient(credentialStub());
     await expect(client.queryResources('sub-1', buildCandidateQuery())).resolves.toEqual([]);
+  });
+});
+
+describe('repo tag lookup query', () => {
+  it('AZ-GRAPH-003: query covers canonical, custom, and GithubOrg/GithubRepo pair keys with case-insensitive value matching', () => {
+    const kql = buildRepoTagLookupQuery('Org/Payments.git', ['team:source-repo'], 'my-rg');
+
+    // Slug is normalized (trailing .git stripped) and compared with =~.
+    expect(kql).toContain("=~ 'Org/Payments'");
+    expect(kql).toContain("=~ 'Org/Payments.git'");
+    // Canonical + custom keys appear in common casings.
+    expect(kql).toContain("tags['postman:repo']");
+    expect(kql).toContain("tags['team:source-repo']");
+    expect(kql).toContain("tags['TeamSourceRepo']");
+    // GithubOrg/GithubRepo pair composes org and repo halves.
+    expect(kql).toContain("tags['GithubOrg']");
+    expect(kql).toContain("tags['GithubRepo']");
+    expect(kql).toContain("=~ 'Org'");
+    expect(kql).toContain("=~ 'Payments'");
+    // Resource group scoping and projection stay intact.
+    expect(kql).toContain("resourceGroup =~ 'my-rg'");
+    expect(kql).toContain('| project id, name, type, resourceGroup, tags');
+  });
+
+  it('AZ-GRAPH-004: single-segment slug omits the pair clause and escapes quotes', () => {
+    const kql = buildRepoTagLookupQuery("o'rg");
+    expect(kql).not.toContain("tags['GithubOrg']");
+    expect(kql).toContain("\\'rg'");
   });
 });
