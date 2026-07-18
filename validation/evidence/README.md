@@ -19,4 +19,4 @@ Latest committed run: 6 cases, 6 passed, 0 failed.
 | `iac-single` | A repository containing one inline ARM-embedded OpenAPI spec resolves locally (cloud providers fail soft). |
 | `ambiguity` | Two equal local candidates surface as an unresolved ranked-candidate resolution instead of a guess. |
 
-Regenerate with `node validation/scripts/validate-live-azure-surfaces.mjs --provision --teardown` after `npm run build` (see `docs/LIVE_TESTING_RUNBOOK.md`).
+Regenerate by queueing `postman-azure-spec-discovery-live-validation` in `PostmanDevOps/CSE Pilots` (service connection `azure-cse-pilot-builders`). Download the sanitized artifact and commit only `live-azure-surfaces.json` after review (see `docs/LIVE_TESTING_RUNBOOK.md`).

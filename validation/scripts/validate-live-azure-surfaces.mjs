@@ -2,9 +2,16 @@
 /* global console, process, URL */
 // Live Azure validation runner.
 //
-// Usage (operator-run only; never in PR CI):
+// Operator-triggered only; never wired into pull-request CI. Preferred path is
+// the PostmanDevOps/CSE Pilots pipeline `postman-azure-spec-discovery-live-validation`,
+// which authenticates via the `azure-cse-pilot-builders` workload-identity service
+// connection (Active Azure Subscription). That pipeline derives
+// AZURE_SUBSCRIPTION_ID from `az account show` after AzureCLI@2 login.
+//
+// Local equivalent (only when already authenticated as that same service-
+// connection identity — never a personal subscription):
 //   npm run build
-//   AZURE_SUBSCRIPTION_ID=... AZURE_LOCATION=... \
+//   AZURE_LOCATION=eastus2 \
 //     node validation/scripts/validate-live-azure-surfaces.mjs --provision --teardown
 //
 // Provisions a run-marked disposable resource group (APIM Consumption + current
@@ -56,7 +63,11 @@ export function parseFlags(argv) {
 export function requiredEnv(env) {
   const subscriptionId = String(env.AZURE_SUBSCRIPTION_ID ?? '').trim();
   const location = String(env.AZURE_LOCATION ?? '').trim();
-  if (!subscriptionId) throw new Error('AZURE_SUBSCRIPTION_ID is required');
+  if (!subscriptionId) {
+    throw new Error(
+      'AZURE_SUBSCRIPTION_ID is required (set it explicitly, or authenticate az so `az account show` returns the azure-cse-pilot-builders subscription)'
+    );
+  }
   if (!location) throw new Error('AZURE_LOCATION is required');
   return { subscriptionId, location };
 }
@@ -117,6 +128,23 @@ function azJson(runner, args) {
 }
 
 /**
+ * Prefer an explicit AZURE_SUBSCRIPTION_ID; otherwise pin whatever subscription
+ * the current Azure CLI identity already selected (the ADO AzureCLI@2 task
+ * selects the azure-cse-pilot-builders subscription before this script runs).
+ */
+export function resolveSubscriptionId(env, runner) {
+  const fromEnv = String(env.AZURE_SUBSCRIPTION_ID ?? '').trim();
+  if (fromEnv) return fromEnv;
+  const fromAccount = String(az(runner, ['account', 'show', '--query', 'id', '-o', 'tsv']) ?? '').trim();
+  if (!fromAccount) {
+    throw new Error(
+      'AZURE_SUBSCRIPTION_ID is required (set it explicitly, or authenticate az so `az account show` returns the azure-cse-pilot-builders subscription)'
+    );
+  }
+  return fromAccount;
+}
+
+/**
  * Main control flow, dependency-injected for unit tests (AZ-LIVE-002):
  *   deps.runner  — execFileSync-compatible process runner
  *   deps.log     — line logger
@@ -131,7 +159,8 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   const runCases = deps.runCases ?? runDefaultCases;
 
   const flags = parseFlags(argv);
-  const { subscriptionId, location } = requiredEnv(env);
+  const subscriptionId = resolveSubscriptionId(env, runner);
+  const { location } = requiredEnv({ ...env, AZURE_SUBSCRIPTION_ID: subscriptionId });
 
   const cliPath = path.join(repoRoot, 'dist', 'cli.cjs');
   if (!existsSync(cliPath)) {

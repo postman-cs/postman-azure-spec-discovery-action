@@ -10,6 +10,7 @@ import {
   classifyProbeError,
   parseFlags,
   requiredEnv,
+  resolveSubscriptionId,
   shouldDeleteGroup,
   toEvidenceResult
 } from '../validation/scripts/validate-live-azure-surfaces.mjs';
@@ -17,13 +18,32 @@ import {
 const repoRoot = process.cwd();
 
 describe('live validation control flow', () => {
+  it('AZ-LIVE-001: provisioning is owned by the shared PostmanDevOps service connection', () => {
+    const runbook = readFileSync(join(repoRoot, 'docs/LIVE_TESTING_RUNBOOK.md'), 'utf8');
+
+    expect(runbook).toContain('https://dev.azure.com/PostmanDevOps');
+    expect(runbook).toContain('CSE Pilots');
+    expect(runbook).toContain('azure-cse-pilot-builders');
+    expect(runbook).toContain('Do not provision live-validation resources from a personal Azure subscription');
+  });
+
   it('AZ-LIVE-002: env guard, provision/teardown flags, and the teardown marker check are enforced', () => {
-    expect(() => requiredEnv({})).toThrow('AZURE_SUBSCRIPTION_ID is required');
+    expect(() => requiredEnv({})).toThrow(/AZURE_SUBSCRIPTION_ID is required/);
     expect(() => requiredEnv({ AZURE_SUBSCRIPTION_ID: 'sub-1' })).toThrow('AZURE_LOCATION is required');
     expect(requiredEnv({ AZURE_SUBSCRIPTION_ID: 'sub-1', AZURE_LOCATION: 'eastus2' })).toEqual({
       subscriptionId: 'sub-1',
       location: 'eastus2'
     });
+
+    // Explicit env wins; otherwise the azure-cse-pilot-builders AzureCLI@2 identity is used.
+    expect(resolveSubscriptionId({ AZURE_SUBSCRIPTION_ID: 'explicit-sub' }, () => 'ignored')).toBe('explicit-sub');
+    const runner = (command: string, args: string[]) => {
+      expect(command).toBe('az');
+      expect(args).toEqual(['account', 'show', '--query', 'id', '-o', 'tsv']);
+      return 'service-connection-sub\n';
+    };
+    expect(resolveSubscriptionId({}, runner)).toBe('service-connection-sub');
+    expect(() => resolveSubscriptionId({}, () => '   ')).toThrow(/AZURE_SUBSCRIPTION_ID is required/);
 
     expect(parseFlags([])).toEqual({ provision: false, teardown: false });
     expect(parseFlags(['--provision', '--teardown'])).toEqual({ provision: true, teardown: true });
