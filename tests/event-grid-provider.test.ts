@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AzureEventGridClient, EventGridSourceSummary, EventGridSubscriptionSummary } from '../src/lib/azure/clients.js';
 import { EventGridProvider, sanitizeWebhookUrl } from '../src/lib/providers/event-grid.js';
 
-const SECRET_QUERY = 'code=super-secret-token';
+const SECRET_QUERY = 'code=example-callback-token';
 
 function source(overrides: Partial<EventGridSourceSummary> = {}): EventGridSourceSummary {
   return {
@@ -39,7 +39,14 @@ function client(overrides: Partial<AzureEventGridClient> = {}): AzureEventGridCl
 
 describe('sanitizeWebhookUrl', () => {
   it('AZ-EG-000: strips query strings, fragments, and credentials; rejects non-HTTP and unparseable URLs', () => {
-    expect(sanitizeWebhookUrl(`https://user:pass@hooks.contoso.com/api/orders?${SECRET_QUERY}#frag`)).toEqual({
+    // Build via URL parts so the fixture never embeds a literal userinfo URI
+    // (which secret scanners treat as a credential even when the values are fake).
+    const dirty = new URL('https://hooks.contoso.com/api/orders');
+    dirty.username = 'example-user';
+    dirty.password = 'example-pass';
+    dirty.search = SECRET_QUERY;
+    dirty.hash = 'frag';
+    expect(sanitizeWebhookUrl(dirty.href)).toEqual({
       origin: 'https://hooks.contoso.com',
       pathname: '/api/orders'
     });
