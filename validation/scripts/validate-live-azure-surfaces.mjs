@@ -378,11 +378,11 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
           const cleanupDeadline = now() + CLEANUP_READY_TIMEOUT_MS;
           let residual = [];
           for (;;) {
-            residual = azJson(runner, [
+            const groupResources = azJson(runner, [
               'resource', 'list',
-              '--resource-group', resourceGroup,
-              '--tag', `${RESOURCE_RUN_MARKER_TAG}=${runMarker}`
+              '--resource-group', resourceGroup
             ]) ?? [];
+            residual = groupResources.filter((resource) => resource.tags?.[RESOURCE_RUN_MARKER_TAG] === runMarker);
             if (residual.length === 0 || now() >= cleanupDeadline) break;
             log(`Waiting for ${residual.length} run-marked resource deletion(s) to finish`);
             await sleep(CLEANUP_POLL_INTERVAL_MS);
@@ -392,6 +392,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
           }
         } catch (error) {
           cleanupErrors.push(error);
+          log(`Residual-resource audit error: ${error instanceof Error ? error.message : String(error)}`);
         }
         if (cleanupErrors.length > 0) {
           cleanupFailure = new Error(`Shared-group teardown did not complete: ${cleanupErrors.length} cleanup check(s) failed`);
