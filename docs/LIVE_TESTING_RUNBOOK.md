@@ -36,7 +36,7 @@ The runner:
 4. Polls APIM until export is available (5-minute ceiling, 10-second interval).
 5. Runs six CLI cases: explicit APIM `api-id`; APIM discovery; App Service API definition; `discover-many`; local IaC single resolve; ambiguity fixture.
 6. Writes sanitized evidence to `validation/evidence/live-azure-surfaces.json` (schema 1: totals plus per-case `{name,status,sourceType,providerType,specFormat}` — no IDs, hosts, URLs, or spec bodies).
-7. In `finally`, deletes only the exact App Service site, plan, and APIM service whose identity and run-marker tag match the manifest, removes the deployment record, and fails if any resource with that run marker remains. It never deletes the shared resource group. Outside ADO, the fallback dedicated-group mode retains its guarded group deletion.
+7. In `finally`, deletes only the exact App Service site, plan, and APIM service whose identity and run-marker tag match the manifest, removes the deployment record, and polls for up to five minutes before failing if any resource with that run marker remains. It never deletes the shared resource group. Outside ADO, the fallback dedicated-group mode retains its guarded group deletion.
 
 ## Flags
 

@@ -36,6 +36,8 @@ const RESOURCE_RUN_MARKER_TAG = 'postman:run-marker';
 // provisioning window of classic APIM tiers.
 const APIM_READY_TIMEOUT_MS = 5 * 60 * 1000;
 const APIM_POLL_INTERVAL_MS = 10 * 1000;
+const CLEANUP_READY_TIMEOUT_MS = 5 * 60 * 1000;
+const CLEANUP_POLL_INTERVAL_MS = 10 * 1000;
 
 /**
  * Classify an export-probe failure. Only states that self-heal after a
@@ -373,11 +375,18 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
           }
         }
         try {
-          const residual = azJson(runner, [
-            'resource', 'list',
-            '--resource-group', resourceGroup,
-            '--tag', `${RESOURCE_RUN_MARKER_TAG}=${runMarker}`
-          ]) ?? [];
+          const cleanupDeadline = now() + CLEANUP_READY_TIMEOUT_MS;
+          let residual = [];
+          for (;;) {
+            residual = azJson(runner, [
+              'resource', 'list',
+              '--resource-group', resourceGroup,
+              '--tag', `${RESOURCE_RUN_MARKER_TAG}=${runMarker}`
+            ]) ?? [];
+            if (residual.length === 0 || now() >= cleanupDeadline) break;
+            log(`Waiting for ${residual.length} run-marked resource deletion(s) to finish`);
+            await sleep(CLEANUP_POLL_INTERVAL_MS);
+          }
           if (residual.length > 0) {
             cleanupErrors.push(new Error(`${residual.length} run-marked resource(s) remain`));
           }
