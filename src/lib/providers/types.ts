@@ -17,6 +17,13 @@ export interface SpecExportResult {
   format: SpecFormat;
   filename: 'index.json' | 'index.yaml';
   evidence: string[];
+  /**
+   * Provider-declared completeness of the exported document. Omitted means
+   * 'full' (the provider exported a complete authored spec). Derivation may
+   * downgrade completeness but must never upgrade a provider-declared
+   * 'partial' to 'full'.
+   */
+  completeness?: 'full' | 'partial';
 }
 
 export interface SpecProvider {

@@ -15,7 +15,7 @@ function isResolvedCandidate(candidate: RankedServiceCandidate | undefined): can
   return Boolean(candidate && !candidate.ambiguous && candidate.supported && candidate.confidence >= MINIMUM_RESOLVED_CONFIDENCE);
 }
 
-function sourceTypeFor(providerType: ProviderType): ResolutionResult['sourceType'] {
+export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sourceType'] {
   switch (providerType) {
     case 'apim':
       return 'apim-export';
@@ -23,6 +23,8 @@ function sourceTypeFor(providerType: ProviderType): ResolutionResult['sourceType
       return 'app-service-api-definition';
     case 'iac-local':
       return 'iac-embedded';
+    case 'custom-apis':
+      return 'custom-api-swagger';
   }
 }
 

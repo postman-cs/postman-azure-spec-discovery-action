@@ -1,6 +1,6 @@
 # Provider contracts
 
-Azure spec discovery ships three providers in v1. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft: authorization failures map to `skipped:iam`, other failures to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships four providers: `apim`, `app-service`, `custom-apis`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
 ## `apim` — Azure API Management
 
@@ -16,6 +16,13 @@ Azure spec discovery ships three providers in v1. Each implements the same `Spec
 - A site is a candidate when its API definition URL is set. Export fetches the URL over HTTPS with a bounded, redirect-limited, content-validated fetch (private-address and non-HTTPS URLs are refused).
 - The fetched document is validated the same way as APIM exports before it is written.
 
+## `custom-apis` — Logic Apps custom connectors
+
+- Enumerates `Microsoft.Web/customApis` via generic ARM REST (`api-version 2016-06-01`; no management SDK models this surface). Plain Reader RBAC is enough.
+- A connector is a candidate when its `properties.swagger` inline document exists; connectors without one stay visible as unsupported candidates (their `apiDefinitions.originalSwaggerUrl` is surfaced as evidence but never auto-fetched).
+- Export re-reads the connector, extracts **only** the inline swagger document, validates it like every other export, and normalizes it to JSON.
+- Secret hygiene is structural: the ARM payload carries `connectionParameters.oAuthSettings.clientSecret` beside the swagger, so the client projects only `properties.swagger`, `apiDefinitions.*SwaggerUrl`, and `backendService.serviceUrl`. `connectionParameters` is never read, logged, or serialized.
+
 ## `iac-local` — repository Azure IaC
 
 - Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
@@ -23,4 +30,4 @@ Azure spec discovery ships three providers in v1. Each implements the same `Spec
 
 ## Ordering and narrowing
 
-Probe order is `apim`, `app-service`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.
+Probe order is `apim`, `app-service`, `custom-apis`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.

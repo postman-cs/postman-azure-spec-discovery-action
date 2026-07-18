@@ -108,7 +108,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | --- | --- |
 | `resolution-json` | JSON resolution result describing status, source type, confidence, and evidence. |
 | `resolution-status` | Resolution status: resolved or unresolved. |
-| `source-type` | Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, manual-review, or discover-many. |
+| `source-type` | Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, manual-review, or discover-many. |
 | `mapping-confidence` | Numeric confidence score for the selected service candidate. |
 | `spec-path` | Path to the resolved or generated specification when available. |
 | `api-id` | Full APIM API ARM resource ID for APIM resolutions; empty for App Service or IaC-local resolutions. |
@@ -117,7 +117,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `service-count` | discover-many output: number of exported services. |
 | `export-summary-json` | JSON summary of attempted, exported, failed, and skipped candidates. |
 | `candidates-json` | Ranked ambiguous candidates as JSON when resolution is unresolved with at least two candidates; empty otherwise. |
-| `provider-type` | Provider that produced the resolved spec: apim, app-service, or iac-local. |
+| `provider-type` | Provider that produced the resolved spec: apim, app-service, iac-local, or custom-apis. |
 | `spec-format` | Format of the resolved spec: openapi-yaml or openapi-json. |
 | `contract-origin` | Compatibility output; always empty in v1. |
 | `contract-metadata-path` | Compatibility output; always empty in v1. |
@@ -136,9 +136,10 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | --- | --- | --- |
 | `apim` | Azure API Management current HTTP API revision (ARM export + SAS link) | OpenAPI 3.0 JSON |
 | `app-service` | App Service `siteConfig.apiDefinition.url` document | OpenAPI JSON or YAML |
+| `custom-apis` | Logic Apps custom connector inline swagger (`Microsoft.Web/customApis`) | Swagger/OpenAPI JSON |
 | `iac-local` | OpenAPI embedded in repo ARM/Bicep templates or referenced by `azure.yaml` | OpenAPI JSON or YAML |
 
-Non-HTTP APIM API types (SOAP, GraphQL, WebSocket, gRPC, OData) are surfaced as visible-unsupported candidates and routed to manual review; they are never exported in v1. Service- and workspace-scoped APIM APIs are both enumerated. Azure API Center, Functions, Container Apps, and management-group enumeration are out of scope for v1.
+Non-HTTP APIM API types (SOAP, GraphQL, WebSocket, gRPC, OData) are surfaced as visible-unsupported candidates and routed to manual review; they are never exported. Service- and workspace-scoped APIM APIs are both enumerated. Custom connectors without an inline swagger document stay visible as manual-review candidates. Azure API Center, Functions, Container Apps, and management-group enumeration are out of scope for now.
 
 ## How it works
 

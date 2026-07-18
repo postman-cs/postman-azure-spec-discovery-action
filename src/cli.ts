@@ -8,6 +8,7 @@ import { resolveActionVersion } from './action-version.js';
 import {
   ApimSdkClient,
   AppServiceSdkClient,
+  CustomApisSdkClient,
   createAzureCredential,
   ResourceGraphSdkClient,
   SubscriptionsSdkClient
@@ -286,6 +287,7 @@ export async function runCli(
             subscriptions: new SubscriptionsSdkClient(credential!, sdkOptions),
             createApimClient: (subscriptionId) => new ApimSdkClient(credential!, subscriptionId, sdkOptions),
             createAppServiceClient: (subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions),
+            createCustomApisClient: (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions),
             createResourceGraphClient: () => new ResourceGraphSdkClient(credential!, sdkOptions),
             writeSpecFile: defaultWriteSpecFile
           }

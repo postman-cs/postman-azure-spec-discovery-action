@@ -273,3 +273,77 @@ describe('runtime execute', () => {
     expect(result.outputs['resolution-status']).toBe('unresolved');
   });
 });
+
+describe('probe resilience', () => {
+  let repoRoot: string;
+
+  beforeEach(async () => {
+    repoRoot = await mkdtemp(path.join(tmpdir(), 'az-probe-'));
+  });
+
+  afterEach(async () => {
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  function probeDependencies(providers: SpecProvider[]): AzureDependencies {
+    return {
+      core: reporter,
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
+      createApimClient: () => {
+        throw new Error('not used with injected providers');
+      },
+      createAppServiceClient: () => {
+        throw new Error('not used with injected providers');
+      },
+      writeSpecFile: vi.fn(async () => undefined),
+      providers
+    };
+  }
+
+  function probeInputs(): ResolvedInputs {
+    const resolved = resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_SUBSCRIPTION_ID: 'sub-1' });
+    return { ...resolved, repoRoot };
+  }
+
+  it('AZ-PROBE-001: a throwing probe degrades to skipped:error without blocking other providers', async () => {
+    const healthy = stubProvider([apimCandidate('payments', { tags: {} })]);
+    const broken: SpecProvider = {
+      type: 'custom-apis',
+      probe: vi.fn(async () => {
+        throw new Error('probe exploded');
+      }),
+      listCandidates: vi.fn(async () => []),
+      exportSpec: vi.fn(async () => {
+        throw new Error('never called');
+      })
+    };
+    const result = await execute(probeInputs(), probeDependencies([broken, healthy]));
+    const probes = result.resolution?.providerProbes ?? [];
+    expect(probes).toEqual([
+      { provider: 'custom-apis', status: 'skipped:error' },
+      { provider: 'apim', status: 'available' }
+    ]);
+    expect(healthy.listCandidates).toHaveBeenCalled();
+    expect(broken.listCandidates).not.toHaveBeenCalled();
+  });
+
+  it('AZ-PROBE-002: probes run concurrently, not serially', async () => {
+    let concurrent = 0;
+    let peak = 0;
+    const slowProbe = async (): Promise<'available'> => {
+      concurrent += 1;
+      peak = Math.max(peak, concurrent);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      concurrent -= 1;
+      return 'available';
+    };
+    const a: SpecProvider = { type: 'apim', probe: slowProbe, listCandidates: vi.fn(async () => []), exportSpec: vi.fn() };
+    const b: SpecProvider = { type: 'app-service', probe: slowProbe, listCandidates: vi.fn(async () => []), exportSpec: vi.fn() };
+    const c: SpecProvider = { type: 'custom-apis', probe: slowProbe, listCandidates: vi.fn(async () => []), exportSpec: vi.fn() };
+    await execute(probeInputs(), probeDependencies([a, b, c]));
+    expect(peak).toBeGreaterThanOrEqual(2);
+  });
+});

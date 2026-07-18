@@ -80,6 +80,28 @@ export interface AzureResourceGraphClient {
   queryResources(subscriptionId: string, kql: string): Promise<ResourceGraphRow[]>;
 }
 
+/**
+ * Logic Apps custom connector summary. Only secret-free fields are ever
+ * projected out of Microsoft.Web/customApis: the ARM payload carries
+ * connectionParameters.oAuthSettings.clientSecret beside the swagger, so the
+ * client must never surface raw properties.
+ */
+export interface CustomApiSummary {
+  id: string;
+  name: string;
+  resourceGroup: string;
+  tags: Record<string, string>;
+  hasSwagger: boolean;
+  backendServiceUrl?: string;
+  originalSwaggerUrl?: string;
+}
+
+export interface AzureCustomApisClient {
+  listCustomApis(resourceGroup?: string): Promise<CustomApiSummary[]>;
+  getSwagger(resourceGroup: string, name: string): Promise<string>;
+  probeCustomApisReadAccess(resourceGroup?: string): Promise<void>;
+}
+
 export interface AzureSubscriptionsClient {
   get(subscriptionId: string): Promise<SubscriptionSummary>;
   list(): Promise<SubscriptionSummary[]>;
@@ -506,6 +528,153 @@ export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
       url = next;
     }
     return subscriptions;
+  }
+
+  private async getArmToken(): Promise<string> {
+    const token = await this.credential.getToken('https://management.azure.com/.default');
+    if (!token) {
+      throw new Error('Azure credential produced no ARM token');
+    }
+    return token.token;
+  }
+
+  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: controller.signal
+        });
+        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
+        if (attempt === this.maxAttempts) return response;
+      } catch (error) {
+        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error(`${operation} exhausted its attempt limit`);
+  }
+}
+const CUSTOM_APIS_API_VERSION = '2016-06-01';
+
+interface CustomApiArmEnvelope {
+  id?: string;
+  name?: string;
+  tags?: Record<string, string>;
+  properties?: {
+    swagger?: unknown;
+    backendService?: { serviceUrl?: unknown };
+    apiDefinitions?: { originalSwaggerUrl?: unknown; modifiedSwaggerUrl?: unknown };
+  };
+}
+
+function toCustomApiSummary(entry: CustomApiArmEnvelope): CustomApiSummary | undefined {
+  const id = entry.id ?? '';
+  const name = entry.name ?? '';
+  if (!id || !name) return undefined;
+  const properties = entry.properties ?? {};
+  const backendServiceUrl = properties.backendService?.serviceUrl;
+  const originalSwaggerUrl = properties.apiDefinitions?.originalSwaggerUrl;
+  return {
+    id,
+    name,
+    resourceGroup: extractResourceGroup(id),
+    tags: entry.tags ?? {},
+    hasSwagger: properties.swagger !== undefined && properties.swagger !== null,
+    ...(typeof backendServiceUrl === 'string' && backendServiceUrl ? { backendServiceUrl } : {}),
+    ...(typeof originalSwaggerUrl === 'string' && originalSwaggerUrl ? { originalSwaggerUrl } : {})
+  };
+}
+
+/**
+ * Logic Apps custom connectors (Microsoft.Web/customApis) via generic ARM REST.
+ * No management SDK models this surface, so the client speaks ARM directly with
+ * the same token/retry/pagination discipline as SubscriptionsSdkClient.
+ *
+ * Secret hygiene is structural: list/get responses are projected through
+ * toCustomApiSummary / the swagger property ONLY. connectionParameters (which
+ * can carry oAuthSettings.clientSecret) is never read, logged, or returned.
+ */
+export class CustomApisSdkClient implements AzureCustomApisClient {
+  private readonly credential: TokenCredential;
+  private readonly subscriptionId: string;
+  private readonly maxAttempts: number;
+  private readonly requestTimeoutMs: number;
+
+  public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
+    this.credential = credential;
+    this.subscriptionId = subscriptionId;
+    this.maxAttempts = options?.maxAttempts ?? 3;
+    this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+  }
+
+  public async listCustomApis(resourceGroup?: string): Promise<CustomApiSummary[]> {
+    const token = await this.getArmToken();
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis`
+      : 'providers/Microsoft.Web/customApis';
+    let url: string | undefined =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${CUSTOM_APIS_API_VERSION}`;
+    const summaries: CustomApiSummary[] = [];
+    let pages = 0;
+    while (url) {
+      pages += 1;
+      if (pages > MAX_LIST_PAGES) {
+        throw new Error(`Custom API listing pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
+      }
+      const response = await this.fetchArm(url, token, 'Custom API listing');
+      if (!response.ok) {
+        throw new Error(`Custom API listing failed with HTTP ${response.status}`);
+      }
+      const body = (await response.json()) as { value?: CustomApiArmEnvelope[]; nextLink?: string };
+      for (const entry of body.value ?? []) {
+        const summary = toCustomApiSummary(entry);
+        if (summary) summaries.push(summary);
+      }
+      const next: string | undefined = body.nextLink;
+      if (next !== undefined && next === url) {
+        throw new Error('Custom API listing pagination returned a repeated nextLink; aborting');
+      }
+      url = next;
+    }
+    return summaries;
+  }
+
+  public async getSwagger(resourceGroup: string, name: string): Promise<string> {
+    const token = await this.getArmToken();
+    const url =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis/${encodeURIComponent(name)}` +
+      `?api-version=${CUSTOM_APIS_API_VERSION}`;
+    const response = await this.fetchArm(url, token, 'Custom API read');
+    if (!response.ok) {
+      throw new Error(`Custom API read failed with HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as CustomApiArmEnvelope;
+    const swagger = body.properties?.swagger;
+    if (swagger === undefined || swagger === null) {
+      throw new Error(`Custom API ${name} carries no inline swagger document`);
+    }
+    return `${JSON.stringify(swagger, null, 2)}\n`;
+  }
+
+  public async probeCustomApisReadAccess(resourceGroup?: string): Promise<void> {
+    const token = await this.getArmToken();
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis`
+      : 'providers/Microsoft.Web/customApis';
+    const url =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${CUSTOM_APIS_API_VERSION}&$top=1`;
+    const response = await this.fetchArm(url, token, 'Custom API probe');
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`AuthorizationFailed: custom API probe returned HTTP ${response.status}`);
+    }
+    if (!response.ok) {
+      throw new Error(`Custom API probe failed with HTTP ${response.status}`);
+    }
   }
 
   private async getArmToken(): Promise<string> {

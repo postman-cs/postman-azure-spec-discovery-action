@@ -49,6 +49,7 @@ import {
   AppServiceSdkClient,
   createAzureCredential,
   ResourceGraphSdkClient,
+  CustomApisSdkClient,
   SubscriptionsSdkClient
 } from '../src/lib/azure/clients.js';
 
@@ -396,5 +397,123 @@ describe('azure sdk client wrappers', () => {
     fetchSpy.mockResolvedValue(new Response('unauthorized', { status: 401 }));
     await expect(client.get('sub-1')).rejects.toThrow('HTTP 401');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CustomApisSdkClient', () => {
+  it('AZ-CAPI-010: listCustomApis projects only secret-free fields from the ARM payload', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const armEntry = {
+      id: '/subscriptions/sub-1/resourceGroups/rg-pay/providers/Microsoft.Web/customApis/pay',
+      name: 'pay',
+      tags: { team: 'payments' },
+      properties: {
+        swagger: { swagger: '2.0', info: { title: 'pay', version: '1' }, paths: {} },
+        backendService: { serviceUrl: 'https://api.contoso.com/pay' },
+        apiDefinitions: { originalSwaggerUrl: 'https://example.com/orig.json' },
+        connectionParameters: { token: { oAuthSettings: { clientSecret: 'SUPER-SECRET-VALUE' } } }
+      }
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ value: [armEntry] }), { status: 200 })
+    );
+    try {
+      const summaries = await client.listCustomApis();
+      expect(summaries).toHaveLength(1);
+      const summary = summaries[0]!;
+      expect(summary).toMatchObject({
+        name: 'pay',
+        resourceGroup: 'rg-pay',
+        hasSwagger: true,
+        backendServiceUrl: 'https://api.contoso.com/pay',
+        originalSwaggerUrl: 'https://example.com/orig.json'
+      });
+      expect(JSON.stringify(summary)).not.toContain('SUPER-SECRET-VALUE');
+      expect(JSON.stringify(summary)).not.toContain('connectionParameters');
+      const url = String(fetchSpy.mock.calls[0]?.[0]);
+      expect(url).toContain('/subscriptions/sub-1/providers/Microsoft.Web/customApis');
+      expect(url).toContain('api-version=2016-06-01');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('AZ-CAPI-011: getSwagger returns only the inline swagger document, never sibling properties', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: '/subscriptions/sub-1/resourceGroups/rg-pay/providers/Microsoft.Web/customApis/pay',
+          name: 'pay',
+          properties: {
+            swagger: { swagger: '2.0', info: { title: 'pay', version: '1' }, paths: {} },
+            connectionParameters: { token: { oAuthSettings: { clientSecret: 'SUPER-SECRET-VALUE' } } }
+          }
+        }),
+        { status: 200 }
+      )
+    );
+    try {
+      const content = await client.getSwagger('rg-pay', 'pay');
+      expect(content).toContain('"swagger": "2.0"');
+      expect(content).not.toContain('SUPER-SECRET-VALUE');
+      expect(content).not.toContain('connectionParameters');
+      const url = String(fetchSpy.mock.calls[0]?.[0]);
+      expect(url).toBe(
+        'https://management.azure.com/subscriptions/sub-1/resourceGroups/rg-pay/providers/Microsoft.Web/customApis/pay?api-version=2016-06-01'
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('AZ-CAPI-012: getSwagger rejects when the connector has no inline swagger', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'x', name: 'pay', properties: {} }), { status: 200 })
+    );
+    try {
+      await expect(client.getSwagger('rg-pay', 'pay')).rejects.toThrow('no inline swagger');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('AZ-CAPI-013: probe maps 403 to an authorization error and paginates via nextLink', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('denied', { status: 403 }));
+    try {
+      await expect(client.probeCustomApisReadAccess()).rejects.toThrow(/AuthorizationFailed/);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    const pagedSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const page = Number(new URL(url).searchParams.get('page') ?? '0');
+      if (page >= 2) {
+        return new Response(JSON.stringify({ value: [] }), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          value: [
+            {
+              id: `/subscriptions/sub-1/resourceGroups/rg-${page}/providers/Microsoft.Web/customApis/api-${page}`,
+              name: `api-${page}`,
+              properties: { swagger: {} }
+            }
+          ],
+          nextLink: `https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Web/customApis?api-version=2016-06-01&page=${page + 1}`
+        }),
+        { status: 200 }
+      );
+    });
+    try {
+      const summaries = await client.listCustomApis();
+      expect(summaries).toHaveLength(2);
+      expect(pagedSpy.mock.calls.length).toBe(3);
+    } finally {
+      pagedSpy.mockRestore();
+    }
   });
 });

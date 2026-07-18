@@ -73,7 +73,7 @@ function tierResourceGroupCorrelation(candidates: NarrowingCandidate[], ctx: Nar
 }
 
 const CANONICAL_REPO_TAG = 'postman:repo';
-const GENERIC_TAG_KEYS = ['repo', 'repository', 'service'];
+const GENERIC_TAG_KEYS = ['repo', 'repository', 'service', 'github:repository'];
 
 /**
  * T3: tag pre-filter. Prefers candidate tags already enumerated; falls back to a Resource Graph

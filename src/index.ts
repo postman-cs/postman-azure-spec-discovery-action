@@ -9,10 +9,12 @@ import {
   ApimSdkClient,
   AppServiceSdkClient,
   createAzureCredential,
+  CustomApisSdkClient,
   ResourceGraphSdkClient,
   SubscriptionsSdkClient,
   type AzureApimClient,
   type AzureAppServiceClient,
+  type AzureCustomApisClient,
   type AzureResourceGraphClient,
   type AzureSubscriptionsClient
 } from './lib/azure/clients.js';
@@ -39,6 +41,7 @@ export interface GitHubActionDependencies {
   subscriptions?: AzureSubscriptionsClient;
   createApimClient?: (subscriptionId: string) => AzureApimClient;
   createAppServiceClient?: (subscriptionId: string) => AzureAppServiceClient;
+  createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile?: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -96,6 +99,9 @@ async function runActionInner(
     createAppServiceClient:
       dependencies.createAppServiceClient ??
       ((subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions)),
+    createCustomApisClient:
+      dependencies.createCustomApisClient ??
+      (useProductionProviders ? (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
     createResourceGraphClient:
       dependencies.createResourceGraphClient ??
       (useProductionProviders ? () => new ResourceGraphSdkClient(credential!, sdkOptions) : undefined),

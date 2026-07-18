@@ -12,7 +12,8 @@ export function escapeKqlString(value: string): string {
 const CANDIDATE_TYPES = [
   'microsoft.apimanagement/service/apis',
   'microsoft.apimanagement/service/workspaces/apis',
-  'microsoft.web/sites'
+  'microsoft.web/sites',
+  'microsoft.web/customapis'
 ];
 
 export function buildCandidateQuery(resourceGroup?: string): string {

@@ -13,6 +13,7 @@ import {
 import type {
   AzureApimClient,
   AzureAppServiceClient,
+  AzureCustomApisClient,
   AzureResourceGraphClient,
   AzureSubscriptionsClient
 } from './lib/azure/clients.js';
@@ -21,7 +22,7 @@ import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
 import { findExistingRepoSpecTyped } from './lib/repo/specs.js';
 import { collectRepoSignals, type RepoSignals } from './lib/repo/signals.js';
 import { scanAzureIac, type IacScanResult } from './lib/repo/azure-iac-scanner.js';
-import { chooseSource } from './lib/resolve/source-selector.js';
+import { chooseSource, sourceTypeFor } from './lib/resolve/source-selector.js';
 import {
   rankServiceCandidates,
   resolveServiceCandidate,
@@ -34,6 +35,7 @@ import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
 import { deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
 import { ApimProvider } from './lib/providers/apim.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
+import { CustomApisProvider } from './lib/providers/custom-apis.js';
 import { IacLocalProvider } from './lib/providers/iac-local.js';
 import { resolvePathWithinRoot } from './lib/utils/resolve-path-within-root.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './lib/providers/types.js';
@@ -73,6 +75,7 @@ export interface AzureDependencies {
   subscriptions: AzureSubscriptionsClient;
   createApimClient: (subscriptionId: string) => AzureApimClient;
   createAppServiceClient: (subscriptionId: string) => AzureAppServiceClient;
+  createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -330,6 +333,13 @@ async function writeSpecExport(
 
   const derivation = deriveOpenApiDocument({ content: exportResult.content, format: exportResult.format, title: serviceName });
   if (derivation) {
+    // Provider-declared completeness may downgrade the derivation verdict but
+    // never upgrade it: a provider that synthesized a partial document keeps
+    // 'partial' even when the output parses as complete OpenAPI 3.x.
+    if (exportResult.completeness === 'partial' && derivation.completeness === 'full') {
+      derivation.completeness = 'partial';
+      derivation.evidence = [...derivation.evidence, 'Provider declared this export partial (synthesized from a non-spec surface)'];
+    }
     if (derivation.completeness === 'full' && exportResult.format === 'openapi-json') {
       // Already OpenAPI 3.x JSON: the exported file itself is the derived document.
       written.derived = {
@@ -374,18 +384,37 @@ interface ProbeOutcome {
   probes: ProviderProbeResult[];
 }
 
+/**
+ * Probe every provider concurrently. A hung or throwing probe must never
+ * block the others: each probe is raced against a deadline and a rejection
+ * (providers are expected to map auth errors to 'skipped:iam' themselves)
+ * degrades to 'skipped:error' instead of aborting discovery. Output order
+ * stays deterministic (input order), independent of settle order.
+ */
+const PROBE_DEADLINE_MS = 30000;
+
 async function probeProviders(providers: SpecProvider[], core: ReporterLike): Promise<ProbeOutcome> {
-  const available: SpecProvider[] = [];
-  const probes: ProviderProbeResult[] = [];
-  for (const provider of providers) {
-    const status = await provider.probe();
-    probes.push({ provider: provider.type, status });
-    if (status === 'available') {
-      available.push(provider);
-    }
-  }
+  const settled = await Promise.all(
+    providers.map(async (provider): Promise<ProviderProbeResult> => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const status = await Promise.race([
+          provider.probe(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`probe exceeded ${PROBE_DEADLINE_MS}ms`)), PROBE_DEADLINE_MS);
+          })
+        ]);
+        return { provider: provider.type, status };
+      } catch {
+        return { provider: provider.type, status: 'skipped:error' };
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    })
+  );
+  const available = providers.filter((provider, index) => settled[index]?.status === 'available');
   core.info(`Available providers: ${available.map((p) => p.type).join(', ') || 'none'}`);
-  return { providers: available, probes };
+  return { providers: available, probes: settled };
 }
 
 function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependencies: AzureDependencies, iacScan: IacScanResult): SpecProvider[] {
@@ -402,6 +431,9 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
       resourceGroup: inputs.resourceGroup,
       requestTimeoutMs: inputs.requestTimeoutMs
     }),
+    ...(dependencies.createCustomApisClient
+      ? [new CustomApisProvider(dependencies.createCustomApisClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      : []),
     new IacLocalProvider(iacScan)
   ];
 }
@@ -647,7 +679,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
         const resolution: ResolutionResult = {
           status: 'resolved',
-          sourceType: target.providerType === 'apim' ? 'apim-export' : target.providerType === 'app-service' ? 'app-service-api-definition' : 'iac-embedded',
+          sourceType: sourceTypeFor(target.providerType),
           serviceName,
           confidence: 100,
           specPath: written.specPath,
@@ -745,7 +777,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
         const resolution: ResolutionResult = {
           status: 'resolved',
-          sourceType: target.providerType === 'apim' ? 'apim-export' : target.providerType === 'app-service' ? 'app-service-api-definition' : 'iac-embedded',
+          sourceType: sourceTypeFor(target.providerType),
           serviceName,
           confidence: best.confidence,
           specPath: written.specPath,
