@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 // execute any az command (main is gated on argv[1]).
 import {
   buildEvidence,
+  classifyProbeError,
   parseFlags,
   requiredEnv,
   shouldDeleteGroup,
@@ -49,6 +50,21 @@ describe('live validation control flow', () => {
     ).toBe(false);
     expect(shouldDeleteGroup({ manifest, groupShow: null, subscriptionId: 'sub-1' })).toBe(false);
     expect(shouldDeleteGroup({ manifest: {}, groupShow: matchingGroup, subscriptionId: 'sub-1' })).toBe(false);
+  });
+
+  it('AZ-LIVE-002: export-probe errors are classified so fatal failures never poll out the ceiling', () => {
+    // Never self-heals: fail fast instead of spinning for the readiness window.
+    expect(classifyProbeError('AuthorizationFailed: the client does not have authorization')).toBe('fatal');
+    expect(classifyProbeError('InvalidAuthenticationToken: expired')).toBe('fatal');
+    expect(classifyProbeError('Operation returned 403 Forbidden')).toBe('fatal');
+    expect(classifyProbeError('BadRequest: unsupported format parameter')).toBe('fatal');
+    expect(classifyProbeError('Request failed with status 400')).toBe('fatal');
+
+    // Self-heals after a Succeeded deployment: keep polling.
+    expect(classifyProbeError('ResourceNotFound: 404 the api was not found')).toBe('retryable');
+    expect(classifyProbeError('ServiceUpdating: the service is being updated')).toBe('retryable');
+    expect(classifyProbeError('Request failed with status 503')).toBe('retryable');
+    expect(classifyProbeError('')).toBe('retryable');
   });
 
   it('AZ-LIVE-002: evidence construction sanitizes case results down to the committed schema', () => {

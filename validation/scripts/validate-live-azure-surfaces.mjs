@@ -22,8 +22,29 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const repoRoot = process.cwd();
 const RUN_MARKER_TAG = 'postman-azure-spec-discovery-live-run';
-const APIM_READY_TIMEOUT_MS = 45 * 60 * 1000;
-const APIM_POLL_INTERVAL_MS = 30 * 1000;
+// Consumption-tier APIM activates in minutes and `az deployment group create`
+// already blocks until the service + API report Succeeded, so the export probe
+// only needs to absorb short control-plane consistency lag — not the 45-minute
+// provisioning window of classic APIM tiers.
+const APIM_READY_TIMEOUT_MS = 5 * 60 * 1000;
+const APIM_POLL_INTERVAL_MS = 10 * 1000;
+
+/**
+ * Classify an export-probe failure. Only states that self-heal after a
+ * Succeeded deployment are retryable (control-plane consistency lag, service
+ * still updating, transient 5xx/throttle). Auth and request-shape errors never
+ * self-heal, so polling on them would silently burn the whole ceiling.
+ */
+export function classifyProbeError(message) {
+  const text = String(message ?? '');
+  if (/\b(401|403)\b|AuthorizationFailed|InvalidAuthenticationToken|Unauthorized|Forbidden/i.test(text)) {
+    return 'fatal';
+  }
+  if (/\b400\b|BadRequest|InvalidParameters|ValidationError/i.test(text)) {
+    return 'fatal';
+  }
+  return 'retryable';
+}
 
 export function parseFlags(argv) {
   return {
@@ -170,17 +191,17 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
       const stubUrl = `https://${site.defaultHostName}/openapi.json`;
       log(`Setting siteConfig.apiDefinition.url`);
       az(runner, [
-        'resource', 'update',
-        '--resource-group', resourceGroup,
-        '--resource-type', 'Microsoft.Web/sites/config',
-        '--name', `${siteName}/web`,
-        '--set', `properties.apiDefinition.url=${stubUrl}`
+        'rest', '--method', 'patch',
+        '--url',
+        `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.Web/sites/${siteName}/config/web?api-version=2023-12-01`,
+        '--body', JSON.stringify({ properties: { apiDefinition: { url: stubUrl } } })
       ]);
 
       log('Waiting for APIM export availability');
       const deadline = now() + APIM_READY_TIMEOUT_MS;
       let ready = false;
-      while (now() < deadline) {
+      let lastProbeError = '';
+      for (;;) {
         try {
           const exportProbe = azJson(runner, [
             'rest', '--method', 'get',
@@ -191,13 +212,24 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
             ready = true;
             break;
           }
-        } catch {
-          // Not ready yet.
+          lastProbeError = 'export response contained no download link';
+        } catch (error) {
+          const raw = error instanceof Error ? error.message : String(error);
+          // Redact SAS signatures before logging or throwing.
+          lastProbeError = raw.replace(/sig=[^&\s"']+/gi, 'sig=REDACTED');
+          if (classifyProbeError(lastProbeError) === 'fatal') {
+            throw new Error(`APIM export probe failed with a non-retryable error: ${lastProbeError}`);
+          }
+          log(`APIM export probe not ready yet: ${lastProbeError}`);
         }
+        if (now() >= deadline) break;
         await sleep(APIM_POLL_INTERVAL_MS);
       }
       if (!ready) {
-        throw new Error('APIM export did not become available within the 45-minute readiness ceiling');
+        throw new Error(
+          `APIM export did not become available within the ${APIM_READY_TIMEOUT_MS / 60000}-minute readiness ceiling` +
+            (lastProbeError ? `; last probe error: ${lastProbeError}` : '')
+        );
       }
     }
 

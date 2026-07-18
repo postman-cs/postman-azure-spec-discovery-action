@@ -26,6 +26,7 @@ export interface Evidence {
 }
 
 export function parseFlags(argv: string[]): LiveFlags;
+export function classifyProbeError(message: string | null | undefined): 'fatal' | 'retryable';
 export function requiredEnv(env: Record<string, string | undefined>): LiveEnv;
 export function shouldDeleteGroup(input: {
   manifest: { resourceGroup?: string; runMarker?: string } | null | undefined;
