@@ -235,18 +235,33 @@ export function readActionInputs(inputReader: InputReaderLike): ResolvedInputs {
 }
 
 /**
- * Resolve the target subscription. An explicit ID must exist (subscriptions.get-like
- * behavior via listing when needed is not allowed: we trust the explicit value and use
- * it as-is after a preflight list check when preflight is enabled). An omitted ID
- * selects the only enabled subscription, or fails with an exact sanitized message.
+ * Resolve the target subscription. An explicit ID is verified with subscriptions.get;
+ * when the credential lacks direct get() rights (401/403), fall back to list() and
+ * accept the explicit ID only if it appears among the listed subscriptions. An omitted
+ * ID selects the only enabled subscription, or fails with an exact sanitized message.
  */
 export async function resolveSubscriptionId(
   explicitSubscriptionId: string | undefined,
   subscriptions: AzureSubscriptionsClient
 ): Promise<string> {
   if (explicitSubscriptionId) {
+    try {
     await subscriptions.get(explicitSubscriptionId);
     return explicitSubscriptionId;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/\b(401|403)\b/.test(message)) {
+        throw error;
+      }
+      const listed = await subscriptions.list();
+      const match = listed.find((subscription) => subscription.subscriptionId === explicitSubscriptionId);
+      if (!match) {
+        throw new Error(
+          'The explicit --subscription-id could not be verified: direct lookup was denied and the subscription is not visible via listing.'
+        );
+      }
+      return explicitSubscriptionId;
+    }
   }
   const enabled = (await subscriptions.list()).filter(
     (subscription) => (subscription.state ?? 'Enabled').toLowerCase() === 'enabled'

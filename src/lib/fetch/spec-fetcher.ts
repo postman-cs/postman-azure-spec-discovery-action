@@ -113,9 +113,26 @@ export async function fetchSpecFromUrl(url: string, options: FetchSpecOptions = 
         throw new Error(`Response too large (${contentLength} bytes); limit is ${maxBytes}`);
       }
 
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength > maxBytes) {
-        throw new Error(`Response body too large (${buffer.byteLength} bytes); limit is ${maxBytes}`);
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+      if (response.body) {
+        const reader = response.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.byteLength;
+          if (received > maxBytes) {
+            await reader.cancel();
+            throw new Error(`Response body too large (over ${maxBytes} bytes); limit is ${maxBytes}`);
+          }
+          chunks.push(value);
+        }
+      }
+      const buffer = new Uint8Array(received);
+      let offset = 0;
+      for (const chunk of chunks) {
+        buffer.set(chunk, offset);
+        offset += chunk.byteLength;
       }
 
       const content = new TextDecoder().decode(buffer);
