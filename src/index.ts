@@ -163,7 +163,9 @@ async function runActionInner(
   }
 
   actionCore.info(
-    result.mode === 'discover-many'
+    result.mode === 'discover-estate'
+      ? `Discovered ${result.estate?.length ?? 0} repo association(s)`
+      : result.mode === 'discover-many'
       ? `Discovered ${result.discovered.length} service(s)`
       : `Resolution status: ${result.resolution?.status ?? 'unresolved'} (${result.resolution?.sourceType ?? 'manual-review'})`
   );

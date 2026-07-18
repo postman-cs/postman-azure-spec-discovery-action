@@ -34,7 +34,9 @@ const LOCKED_OUTPUT_ORDER = [
   'derived-openapi-completeness',
   'derived-openapi-format',
   'derived-openapi-evidence-json',
-  'narrowing-strategy'
+  'narrowing-strategy',
+  'repos-json',
+  'repo-count'
 ];
 
 const LOCKED_INPUT_ORDER = [
@@ -60,12 +62,13 @@ describe('action contract', () => {
     const base = { GITHUB_WORKSPACE: '/tmp/example-repo' };
     expect(resolveInputs({ ...base }).mode).toBe('resolve-one');
     expect(resolveInputs({ ...base, INPUT_MODE: 'discover-many' }).mode).toBe('discover-many');
+    expect(resolveInputs({ ...base, INPUT_MODE: 'discover-estate' }).mode).toBe('discover-estate');
     expect(() => resolveInputs({ ...base, INPUT_MODE: 'anything-else' })).toThrow(
-      'mode must be resolve-one or discover-many, got: anything-else'
+      'mode must be resolve-one, discover-many, or discover-estate, got: anything-else'
     );
   });
 
-  it('AZ-CONTRACT-005: buildExecutionOutputs emits all 22 keys in both modes with locked empty behavior', () => {
+  it('AZ-CONTRACT-005: buildExecutionOutputs emits all 24 keys in every mode with locked empty behavior', () => {
     const resolveOne = buildExecutionOutputs({
       mode: 'resolve-one',
       discovered: [],
@@ -115,6 +118,17 @@ describe('action contract', () => {
     });
     expect(discoverManyFailed['resolution-status']).toBe('unresolved');
     expect(discoverManyFailed['mapping-confidence']).toBe('0');
+
+    const discoverEstate = buildExecutionOutputs({
+      mode: 'discover-estate',
+      discovered: [],
+      estate: [{ org: 'acme', repo: 'payments', tagSources: ['postman:repo'], resourceTypes: [], resourceIds: [] }]
+    });
+    expect(Object.keys(discoverEstate).sort()).toEqual([...LOCKED_OUTPUT_ORDER].sort());
+    expect(discoverEstate['source-type']).toBe('discover-estate');
+    expect(discoverEstate['repo-count']).toBe('1');
+    expect(discoverEstate['spec-path']).toBe('');
+    expect(discoverEstate['services-json']).toBe('[]');
   });
 
   it('AZ-CONTRACT-005b: unresolved with >=2 ranked candidates serializes candidates-json', () => {

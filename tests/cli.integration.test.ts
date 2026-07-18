@@ -29,7 +29,7 @@ describe('CLI argument parsing', () => {
 });
 
 describe('dotenv serialization', () => {
-  it('AZ-CLI-002: all 22 outputs serialize as unique POSTMAN_AZURE_SPEC_* lines with JSON-quoted values', () => {
+  it('AZ-CLI-002: all 24 outputs serialize as unique POSTMAN_AZURE_SPEC_* lines with JSON-quoted values', () => {
     const outputs: Record<string, string> = {};
     for (const name of contractOutputNames) {
       outputs[name] = `value-of-${name}`;
@@ -37,9 +37,9 @@ describe('dotenv serialization', () => {
     const dotenv = toDotenv(outputs);
     const lines = dotenv.split('\n');
 
-    expect(lines).toHaveLength(22);
+    expect(lines).toHaveLength(24);
     const keys = lines.map((line) => line.split('=')[0]);
-    expect(new Set(keys).size).toBe(22);
+    expect(new Set(keys).size).toBe(24);
     for (const key of keys) {
       expect(key).toMatch(/^POSTMAN_AZURE_SPEC_/);
     }
@@ -98,7 +98,7 @@ describe('runCli side effects', () => {
     }
 
     const dotenv = await readFile(path.join(workspace, 'out/outputs.env'), 'utf8');
-    expect(dotenv.split('\n')).toHaveLength(22);
+    expect(dotenv.split('\n')).toHaveLength(24);
     expect(dotenv).toContain('POSTMAN_AZURE_SPEC_RESOLUTION_STATUS="resolved"');
   });
 });

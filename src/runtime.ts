@@ -37,6 +37,7 @@ import {
 } from './lib/resolve/service-resolver.js';
 import { runNarrowingPipeline, type NarrowingCandidate, type NarrowingResult } from './lib/resolve/narrowing-pipeline.js';
 import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
+import { enumerateEstate, type EstateRepo } from './lib/estate/enumerate.js';
 import { deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
 import { ApimProvider } from './lib/providers/apim.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
@@ -101,6 +102,7 @@ export interface ExecutionResult {
   discovered: DiscoveredService[];
   resolution?: ResolutionResult;
   exportSummary?: ExportSummary;
+  estate?: EstateRepo[];
   outputs: Record<string, string>;
 }
 
@@ -146,8 +148,8 @@ function parseBoundedInteger(input: string | undefined, inputName: string, fallb
 function parseMode(input: string | undefined): ActionMode {
   const value = (input ?? '').trim().toLowerCase();
   if (!value) return 'resolve-one';
-  if (value === 'resolve-one' || value === 'discover-many') return value;
-  throw new Error(`mode must be resolve-one or discover-many, got: ${input}`);
+  if (value === 'resolve-one' || value === 'discover-many' || value === 'discover-estate') return value;
+  throw new Error(`mode must be resolve-one, discover-many, or discover-estate, got: ${input}`);
 }
 
 function parseServiceMapping(raw: string): Record<string, string> {
@@ -967,13 +969,72 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
   };
 }
 
+async function runDiscoverEstate(inputs: ResolvedInputs, dependencies: AzureDependencies): Promise<ExecutionResult> {
+  const core = dependencies.core;
+  if (!dependencies.createResourceGraphClient) {
+    throw new Error('discover-estate requires a Resource Graph client');
+  }
+  const subscriptionId = await resolveSubscriptionId(inputs.subscriptionId, dependencies.subscriptions);
+  const estate = await core.group('Enumerate estate repo associations', () =>
+    enumerateEstate(dependencies.createResourceGraphClient!(), subscriptionId, inputs.resourceGroup)
+  );
+  core.info(sanitizeLogMessage(`discover-estate found ${estate.length} repo association(s)`));
+
+  if (!inputs.dryRun) {
+    const reposPath = path.join(inputs.repoRoot, inputs.outputDir, 'repos.json');
+    const writeSpecFile = dependencies.writeSpecFile ?? defaultWriteSpecFile;
+    await writeSpecFile(reposPath, `${JSON.stringify(estate, null, 2)}\n`);
+  }
+
+  return {
+    mode: inputs.mode,
+    discovered: [],
+    estate,
+    outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], estate })
+  };
+}
+
 export function buildExecutionOutputs(result: {
   mode: ActionMode;
   discovered: DiscoveredService[];
   resolution?: ResolutionResult;
   exportSummary?: ExportSummary;
   providerProbes?: ProviderProbeResult[];
+  estate?: EstateRepo[];
 }): Record<string, string> {
+  if (result.mode === 'discover-estate') {
+    const estate = result.estate ?? [];
+    return {
+      'resolution-json': JSON.stringify({
+        status: 'resolved',
+        sourceType: 'discover-estate',
+        repoCount: estate.length
+      }),
+      'resolution-status': 'resolved',
+      'source-type': 'discover-estate',
+      'mapping-confidence': '0',
+      'spec-path': '',
+      'api-id': '',
+      'service-name': '',
+      'services-json': '[]',
+      'service-count': '0',
+      'export-summary-json': JSON.stringify({ attempted: 0, exported: 0, failed: 0, skipped: 0 }),
+      'candidates-json': '',
+      'provider-type': '',
+      'spec-format': '',
+      'contract-origin': '',
+      'contract-metadata-path': '',
+      'variant-count': '',
+      'derived-openapi-path': '',
+      'derived-openapi-version': '',
+      'derived-openapi-completeness': '',
+      'derived-openapi-format': '',
+      'derived-openapi-evidence-json': '',
+      'narrowing-strategy': 'none',
+      'repos-json': JSON.stringify(estate),
+      'repo-count': String(estate.length)
+    };
+  }
   if (result.mode === 'discover-many') {
     const discovered = result.discovered;
     const summary = result.exportSummary ?? { attempted: discovered.length, exported: discovered.length, failed: 0, skipped: 0 };
@@ -1006,7 +1067,9 @@ export function buildExecutionOutputs(result: {
       'derived-openapi-completeness': '',
       'derived-openapi-format': '',
       'derived-openapi-evidence-json': '',
-      'narrowing-strategy': 'none'
+      'narrowing-strategy': 'none',
+      'repos-json': '',
+      'repo-count': ''
     };
   }
 
@@ -1043,12 +1106,17 @@ export function buildExecutionOutputs(result: {
     'derived-openapi-completeness': resolution.derivedOpenApiCompleteness ?? '',
     'derived-openapi-format': resolution.derivedOpenApiFormat ?? '',
     'derived-openapi-evidence-json': JSON.stringify(resolution.derivedOpenApiEvidence ?? []),
-    'narrowing-strategy': resolution.narrowing?.tier ?? 'none'
+    'narrowing-strategy': resolution.narrowing?.tier ?? 'none',
+    'repos-json': '',
+    'repo-count': ''
   };
 }
 
 export async function execute(inputs: ResolvedInputs, dependencies: AzureDependencies): Promise<ExecutionResult> {
   resolvePathWithinRoot(inputs.repoRoot, inputs.outputDir, 'output-dir');
+  if (inputs.mode === 'discover-estate') {
+    return runDiscoverEstate(inputs, dependencies);
+  }
   if (inputs.mode === 'discover-many') {
     return runDiscoverMany(inputs, dependencies);
   }

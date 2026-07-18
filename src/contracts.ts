@@ -15,7 +15,7 @@ export interface AzureSpecDiscoveryActionContract {
   outputs: Record<string, ActionOutputContract>;
 }
 
-export type ActionMode = 'resolve-one' | 'discover-many';
+export type ActionMode = 'resolve-one' | 'discover-many' | 'discover-estate';
 
 export type ResolutionStatus = 'resolved' | 'unresolved';
 
@@ -33,7 +33,8 @@ export type SourceType =
   | 'service-bus-topic'
   | 'function-bindings-trigger'
   | 'manual-review'
-  | 'discover-many';
+  | 'discover-many'
+  | 'discover-estate';
 
 export type SpecFormat = 'openapi-yaml' | 'openapi-json' | 'wsdl' | 'graphql-sdl';
 
@@ -114,7 +115,7 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
     'Discover Azure-hosted API specs and expose a spec path for Postman onboarding. Part of the Postman API Onboarding suite.',
   inputs: {
     mode: {
-      description: 'Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate.',
+      description: 'Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate; discover-estate enumerates repo-associated Azure resources across the subscription without exporting specs.',
       required: false,
       default: 'resolve-one'
     },
@@ -215,6 +216,12 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
     },
     'narrowing-strategy': {
       description: 'Narrowing tier that produced the candidate ordering: iac-fingerprint, rg-correlation, tag-prefilter, naming-heuristic, or none.'
+    },
+    'repos-json': {
+      description: 'discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the subscription; empty otherwise.'
+    },
+    'repo-count': {
+      description: 'discover-estate output: number of deduped org/repo associations; empty otherwise.'
     }
   }
 };

@@ -64,6 +64,10 @@ Azure spec discovery ships nine providers: `apim`, `app-service`, `custom-apis`,
 - Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
 - A single embedded spec resolves directly; multiple hits become ranked candidates like any other provider.
 
+## `discover-estate` mode — estate repo association
+
+Not a provider. `mode: discover-estate` runs a separate association-only enumerator (`src/lib/estate/enumerate.ts`) instead of the SpecProvider pipeline: one Resource Graph KQL over `Resources` + `ResourceContainers` where any repo-association tag (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`) is nonempty, deduped to an org/repo roster. It writes `repos.json` under `output-dir` and emits the roster on the `repos-json`/`repo-count` outputs. Association only: no spec export, no PRs, no GitHub writes. Tag values that do not parse as org/repo coordinates (URLs, `git@` forms, and bare slugs are accepted; anything else, including connection-string-shaped values, is dropped) never reach the roster. `postman:repo` stays the only auto-select signal in resolve-one narrowing; estate mode never selects anything.
+
 ## Ordering and narrowing
 
 Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.

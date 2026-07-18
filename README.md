@@ -65,6 +65,16 @@ jobs:
     resource-group: payments-rg
 ```
 
+### discover-estate mode
+
+Enumerates repo-associated Azure resources across the whole subscription — one Resource Graph sweep over `Resources` and `ResourceContainers` for repo tags (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`), deduped to an org/repo roster written as `repos.json` and emitted on `repos-json`/`repo-count`. Association only: no spec export, no PRs, no GitHub writes.
+
+```yaml
+- uses: postman-cs/postman-azure-spec-discovery-action@v1
+  with:
+    mode: discover-estate
+```
+
 ### Chaining into Postman API onboarding
 
 ```yaml
@@ -92,7 +102,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 <!-- inputs-table:start -->
 | Name | Description | Required | Default |
 | --- | --- | --- | --- |
-| `mode` | Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate. | no | `resolve-one` |
+| `mode` | Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate; discover-estate enumerates repo-associated Azure resources across the subscription without exporting specs. | no | `resolve-one` |
 | `subscription-id` | Optional Azure subscription ID used as the discovery enumeration root. When omitted, the single enabled subscription visible to the credential is used; multiple enabled subscriptions require this input. | no | n/a |
 | `resource-group` | Optional resource group that scopes discovery to one group instead of the whole subscription. | no | n/a |
 | `api-id` | Optional full APIM API ARM resource ID for this service. Use this to bypass broader subscription discovery. | no | n/a |
@@ -128,6 +138,8 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `derived-openapi-format` | Serialization format of the derived OpenAPI document: openapi-json. |
 | `derived-openapi-evidence-json` | JSON array of evidence strings describing how the derived OpenAPI document was produced. |
 | `narrowing-strategy` | Narrowing tier that produced the candidate ordering: iac-fingerprint, rg-correlation, tag-prefilter, naming-heuristic, or none. |
+| `repos-json` | discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the subscription; empty otherwise. |
+| `repo-count` | discover-estate output: number of deduped org/repo associations; empty otherwise. |
 <!-- outputs-table:end -->
 
 ## Supported providers

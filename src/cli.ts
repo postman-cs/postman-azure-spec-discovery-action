@@ -95,7 +95,8 @@ Discover Azure-hosted API specs and emit JSON / dotenv artifacts for downstream
 Postman onboarding steps.
 
 Options mirror action inputs as --kebab-case flags (for example --subscription-id,
---dry-run, --output-dir). Additional CLI-only options:
+--dry-run, --output-dir). --mode accepts resolve-one, discover-many, or
+discover-estate. Additional CLI-only options:
 
   --result-json <path>   Write the full result JSON (default: postman-azure-spec-discovery-result.json)
   --dotenv-path <path>   Optional dotenv export for downstream jobs
@@ -225,7 +226,9 @@ export function toDotenv(outputs: Record<string, string>): string {
     POSTMAN_AZURE_SPEC_DERIVED_OPENAPI_COMPLETENESS: outputs['derived-openapi-completeness'] ?? '',
     POSTMAN_AZURE_SPEC_DERIVED_OPENAPI_FORMAT: outputs['derived-openapi-format'] ?? '',
     POSTMAN_AZURE_SPEC_DERIVED_OPENAPI_EVIDENCE_JSON: outputs['derived-openapi-evidence-json'] ?? '',
-    POSTMAN_AZURE_SPEC_NARROWING_STRATEGY: outputs['narrowing-strategy'] ?? 'none'
+    POSTMAN_AZURE_SPEC_NARROWING_STRATEGY: outputs['narrowing-strategy'] ?? 'none',
+    POSTMAN_AZURE_SPEC_REPOS_JSON: outputs['repos-json'] ?? '',
+    POSTMAN_AZURE_SPEC_REPO_COUNT: outputs['repo-count'] ?? ''
   };
 
   return Object.entries(envPairs)
