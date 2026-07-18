@@ -1,5 +1,4 @@
 import { realpathSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { createTelemetryContext } from '@postman-cse/automation-telemetry-core';
@@ -20,6 +19,7 @@ import {
 } from './lib/azure/clients.js';
 import { formatUserSafeError, sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { prepareTelemetryCredentials, resolveTelemetryTeamId } from './lib/postman/telemetry-credentials.js';
+import { writeFileWithinRoot } from './lib/utils/resolve-path-within-root.js';
 import { defaultWriteSpecFile, execute, resolveInputs, type AzureDependencies, type ReporterLike } from './runtime.js';
 
 interface CliConfig {
@@ -90,14 +90,17 @@ function normalizeCliFlag(name: string): string {
 }
 
 function printHelp(writeStdout: (chunk: string) => void): void {
+  const inputOptions = CLI_INPUT_NAMES.map((name) => `  --${name} <value>`).join('\n');
   writeStdout(`Usage: postman-azure-spec-discovery [options]
 
 Discover Azure-hosted API specs and emit JSON / dotenv artifacts for downstream
 Postman onboarding steps.
 
-Options mirror action inputs as --kebab-case flags (for example --subscription-id,
---dry-run, --output-dir). --mode accepts resolve-one, discover-many, or
-discover-estate. Additional CLI-only options:
+Options mirror action inputs as --kebab-case flags. Every discovery option expects a value:
+
+${inputOptions}
+
+Meta options:
 
   --result-json <path>   Write the full result JSON (default: postman-azure-spec-discovery-result.json)
   --dotenv-path <path>   Optional dotenv export for downstream jobs
@@ -241,14 +244,7 @@ async function writeOptionalFile(filePath: string | undefined, content: string):
   if (!filePath) {
     return;
   }
-  const workspaceRoot = path.resolve(process.cwd());
-  const resolved = path.resolve(workspaceRoot, filePath);
-  const relative = path.relative(workspaceRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Output path must stay within workspace: ${filePath}`);
-  }
-  await mkdir(path.dirname(resolved), { recursive: true });
-  await writeFile(resolved, content, 'utf8');
+  await writeFileWithinRoot(process.cwd(), filePath, content, 'Output path');
 }
 
 export async function runCli(

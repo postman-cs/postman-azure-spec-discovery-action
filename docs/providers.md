@@ -2,6 +2,10 @@
 
 Azure spec discovery ships nine providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
+## Security and IAM
+
+Use Azure `Reader` at the chosen subscription or resource-group scope for providers that use generic read operations. APIM exports additionally require `API Management Service Reader` at the relevant APIM service, resource group, or subscription scope. Inaccessible providers fail-soft as `skipped:iam`, so discovery continues through providers the credential can read. Grant permissions only for the providers relevant to the workflow; the action does not require every provider permission.
+
 ## `apim` — Azure API Management
 
 - Enumerates every visible APIM service (subscription-wide or scoped by `resource-group`) plus each service workspace and lists both service- and workspace-scoped APIs.
@@ -28,7 +32,7 @@ Azure spec discovery ships nine providers: `apim`, `app-service`, `custom-apis`,
 - Enumerates `Microsoft.Logic/workflows` via generic ARM REST (`api-version 2019-05-01`). Reader-only GETs; disabled workflows are skipped at enumeration.
 - A workflow is a candidate when its definition declares at least one HTTP `Request` trigger; workflows without one stay visible as unsupported candidates.
 - Export **synthesizes a deliberately partial OpenAPI 3.0 document** from the Request triggers: paths from `relativePath` (fallback `/triggers/<name>/invoke`), methods, and declared request schemas. Responses are not declared in workflow definitions, so operations carry a `default` response and the export is marked `completeness: partial` — the derived-OpenAPI outputs report `partial` even though the document parses as complete OpenAPI 3.x.
-- Credential hygiene: `listCallbackUrl` (SAS token in the URL) and `listSwagger` (POST outside plain Reader) are never called. The SAS-free `accessEndpoint` is the only URL surfaced, as the OpenAPI `servers` entry.
+- Credential hygiene: `listCallbackUrl` (SAS token in the URL) and `listSwagger` (POST outside plain Reader) are never called. The `accessEndpoint` is defensively reduced to its public HTTP(S) origin + path before it is surfaced as the OpenAPI `servers` entry; malformed and non-HTTP(S) values are omitted.
 
 ## `template-specs` — Template Spec embedded APIM documents
 
@@ -66,7 +70,7 @@ Azure spec discovery ships nine providers: `apim`, `app-service`, `custom-apis`,
 
 ## `discover-estate` mode — estate repo association
 
-Not a provider. `mode: discover-estate` runs a separate association-only enumerator (`src/lib/estate/enumerate.ts`) instead of the SpecProvider pipeline: one Resource Graph KQL over `Resources` + `ResourceContainers` where any repo-association tag (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`) is nonempty, deduped to an org/repo roster. It writes `repos.json` under `output-dir` and emits the roster on the `repos-json`/`repo-count` outputs. Association only: no spec export, no PRs, no GitHub writes. Tag values that do not parse as org/repo coordinates (URLs, `git@` forms, and bare slugs are accepted; anything else, including connection-string-shaped values, is dropped) never reach the roster. `postman:repo` stays the only auto-select signal in resolve-one narrowing; estate mode never selects anything.
+Not a provider. `mode: discover-estate` runs a separate association-only enumerator (`src/lib/estate/enumerate.ts`) instead of the SpecProvider pipeline: one Resource Graph KQL over `Resources` + `ResourceContainers` where any repo-association tag (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`) is nonempty, deduped to an org/repo roster. It writes `repos.json` under `output-dir` and emits the roster on the `repos-json`/`repo-count` outputs. Association only: no spec export, no PRs, no GitHub writes. Tag values that do not parse as org/repo coordinates (URLs, `git@` forms, and bare slugs are accepted; anything else, including connection-string-shaped values, is dropped) never reach the roster. Estate mode never selects anything; resolve-one select-grade tag shapes are defined in the following narrowing section.
 
 ## Ordering and narrowing
 

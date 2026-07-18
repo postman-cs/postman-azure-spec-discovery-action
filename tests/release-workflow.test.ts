@@ -6,6 +6,11 @@ import { describe, expect, it } from 'vitest';
 const releaseWorkflow = readFileSync(join(process.cwd(), '.github/workflows/release.yml'), 'utf8');
 
 describe('release workflow publishing contract', () => {
+  it('AZ-RELEASE-000: release runs only for v* tag pushes', () => {
+    expect(releaseWorkflow).not.toContain('workflow_dispatch');
+    expect(releaseWorkflow).toMatch(/push:\s*\n\s*tags:\s*\n\s*- ['"]v\*['"]/);
+  });
+
   it('AZ-RELEASE-001: immutable releases require origin/main, publish npm once, and move only rolling aliases', () => {
     // npm publishes ONLY from the exact package-version tag.
     expect(releaseWorkflow).toContain('if [ "$TAG_VERSION" = "$PKG_VERSION" ]; then');
@@ -32,9 +37,20 @@ describe('release workflow publishing contract', () => {
     expect(releaseWorkflow).toContain('for ALIAS in "$MAJOR" "$MINOR"; do');
     expect(releaseWorkflow).toContain("if: ${{ needs.release.outputs.npm_publish == 'true' }}");
     // Release gates run before any publish.
-    for (const gate of ['npm test', 'npm run typecheck', 'npm run verify:dist']) {
+    for (const gate of ['npm test', 'npm run typecheck', 'npm run lint', 'npm run verify:dist']) {
       expect(releaseWorkflow).toContain(gate);
     }
     expect(releaseWorkflow).toContain('actionlint');
+  });
+
+  it('AZ-RELEASE-002: workflows pin third-party actions to immutable commits', () => {
+    for (const file of ['ci.yml', 'release.yml']) {
+      const workflow = readFileSync(join(process.cwd(), '.github/workflows', file), 'utf8');
+      const uses = [...workflow.matchAll(/uses:\s+([^\s#]+)(?:\s+#\s+([^\n]+))?/g)];
+      for (const match of uses) {
+        expect(match[1]).toMatch(/@[0-9a-f]{40}$/);
+        expect(match[2]).toMatch(/^v\d/);
+      }
+    }
   });
 });

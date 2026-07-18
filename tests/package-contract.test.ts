@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { accessSync, constants, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ interface PackageJson {
   dependencies: Record<string, string>;
   bin?: Record<string, string>;
   repository?: { type?: string; url?: string };
+  scripts?: Record<string, string>;
 }
 
 const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as PackageJson;
@@ -45,5 +46,11 @@ describe('package contract', () => {
     for (const entry of ['action.yml', 'dist', 'README.md', 'docs', 'SECURITY.md', 'SUPPORT.md', 'RELEASE_POLICY.md']) {
       expect(pkg.files, `files must include ${entry}`).toContain(entry);
     }
+  });
+
+  it('AZ-CONTRACT-007: setup:hooks installs the executable committed pre-push hook', () => {
+    const hook = resolve(repoRoot, '.githooks/pre-push');
+    expect(() => accessSync(hook, constants.F_OK | constants.X_OK)).not.toThrow();
+    expect(pkg.scripts?.['setup:hooks']).toContain('.githooks');
   });
 });

@@ -346,6 +346,40 @@ describe('probe resilience', () => {
     await execute(probeInputs(), probeDependencies([a, b, c]));
     expect(peak).toBeGreaterThanOrEqual(2);
   });
+
+  it('AZ-PROBE-003: runtime deadline aborts a hung probe and continues with a healthy provider', async () => {
+    vi.useFakeTimers();
+    try {
+      let hungSignal: AbortSignal | undefined;
+      const hung: SpecProvider = {
+        type: 'custom-apis',
+        probe: vi.fn((signal?: AbortSignal) => {
+          hungSignal = signal;
+          return new Promise<'available'>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        }),
+        listCandidates: vi.fn(async () => []),
+        exportSpec: vi.fn()
+      };
+      const healthy = stubProvider([apimCandidate('payments')]);
+
+      const pending = execute(probeInputs(), probeDependencies([hung, healthy]));
+      await vi.waitFor(() => expect(hung.probe).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(30000);
+      const result = await pending;
+
+      expect(hungSignal?.aborted).toBe(true);
+      expect(result.resolution?.providerProbes).toEqual([
+        { provider: 'custom-apis', status: 'skipped:error' },
+        { provider: 'apim', status: 'available' }
+      ]);
+      expect(healthy.listCandidates).toHaveBeenCalled();
+      expect(hung.listCandidates).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('provider-declared completeness', () => {

@@ -28,7 +28,7 @@ export interface SpecExportResult {
 
 export interface SpecProvider {
   readonly type: ProviderType;
-  probe(): Promise<ProviderProbeStatus>;
+  probe(signal?: AbortSignal): Promise<ProviderProbeStatus>;
   listCandidates(): Promise<SpecCandidate[]>;
   exportSpec(candidate: SpecCandidate): Promise<SpecExportResult>;
 }

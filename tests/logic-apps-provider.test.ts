@@ -111,13 +111,26 @@ describe('LogicAppsProvider', () => {
   });
 
   it('AZ-LOGIC-006: no SAS material ever appears in candidates or exports', async () => {
-    const provider = new LogicAppsProvider(client());
+    const accessEndpoint = new URL('https://prod-27.westus.logic.azure.com:8443/workflows/abc123');
+    accessEndpoint.username = 'user';
+    accessEndpoint.password = 'pass';
+    accessEndpoint.search = 'sig=secret&sp=%2Ftriggers';
+    accessEndpoint.hash = 'fragment';
+    const provider = new LogicAppsProvider(client({
+      getWorkflow: vi.fn(async () => detail({
+        accessEndpoint: accessEndpoint.toString()
+      }))
+    }));
     const candidates = await provider.listCandidates();
     const exported = await provider.exportSpec(candidates[0]!);
     const everything = JSON.stringify(candidates) + exported.content + JSON.stringify(exported.evidence);
     expect(everything).not.toContain('sig=');
     expect(everything).not.toContain('listCallbackUrl');
     expect(everything).not.toContain('sp=');
+    expect(everything).not.toContain('user');
+    expect(everything).not.toContain('pass');
+    expect(everything).not.toContain('fragment');
+    expect(everything).toContain('https://prod-27.westus.logic.azure.com:8443/workflows/abc123');
   });
 
   it('AZ-LOGIC-007: trigger without relativePath falls back to the invoke path and default method post', async () => {

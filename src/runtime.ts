@@ -1,4 +1,3 @@
-import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -48,7 +47,7 @@ import { EventGridProvider } from './lib/providers/event-grid.js';
 import { ServiceBusProvider } from './lib/providers/service-bus.js';
 import { FunctionBindingsProvider } from './lib/providers/function-bindings.js';
 import { IacLocalProvider } from './lib/providers/iac-local.js';
-import { resolvePathWithinRoot } from './lib/utils/resolve-path-within-root.js';
+import { resolvePathWithinRoot, writeFileWithinRoot } from './lib/utils/resolve-path-within-root.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './lib/providers/types.js';
 
 export interface InputReaderLike {
@@ -95,7 +94,7 @@ export interface AzureDependencies {
   createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
   createFunctionsClient?: (subscriptionId: string) => AzureFunctionsClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
-  writeSpecFile: (outputPath: string, content: string) => Promise<void>;
+  writeSpecFile: (outputPath: string, content: string, rootPath: string) => Promise<void>;
   providers?: SpecProvider[];
 }
 
@@ -300,9 +299,8 @@ export async function resolveSubscriptionId(
   throw new Error('Multiple enabled Azure subscriptions were found; pass --subscription-id explicitly.');
 }
 
-export async function defaultWriteSpecFile(outputPath: string, content: string): Promise<void> {
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, content, 'utf8');
+export async function defaultWriteSpecFile(outputPath: string, content: string, rootPath: string): Promise<void> {
+  await writeFileWithinRoot(rootPath, outputPath, content, 'output-dir');
 }
 
 function projectFolderName(projectName: string): string {
@@ -342,13 +340,13 @@ async function writeSpecExport(
   inputs: ResolvedInputs,
   serviceName: string,
   exportResult: SpecExportResult,
-  writeSpecFile: (outputPath: string, content: string) => Promise<void>
+  writeSpecFile: (outputPath: string, content: string, rootPath: string) => Promise<void>
 ): Promise<WrittenExport> {
   const folder = projectFolderName(serviceName);
   const relativeSpecPath = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, exportResult.filename);
   const absoluteSpecPath = resolvePathWithinRoot(inputs.repoRoot, relativeSpecPath, 'output-dir');
   if (!inputs.dryRun) {
-    await writeSpecFile(absoluteSpecPath, exportResult.content);
+    await writeSpecFile(absoluteSpecPath, exportResult.content, inputs.repoRoot);
   }
 
   const written: WrittenExport = { specPath: relativeSpecPath, specFormat: exportResult.format };
@@ -375,7 +373,7 @@ async function writeSpecExport(
       const derivedRelative = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, 'openapi.derived.json');
       const derivedAbsolute = resolvePathWithinRoot(inputs.repoRoot, derivedRelative, 'output-dir');
       if (!inputs.dryRun) {
-        await writeSpecFile(derivedAbsolute, derivation.content);
+        await writeSpecFile(derivedAbsolute, derivation.content, inputs.repoRoot);
       }
       written.derived = {
         path: derivedRelative,
@@ -419,11 +417,15 @@ async function probeProviders(providers: SpecProvider[], core: ReporterLike): Pr
   const settled = await Promise.all(
     providers.map(async (provider): Promise<ProviderProbeResult> => {
       let timer: NodeJS.Timeout | undefined;
+      const controller = new AbortController();
       try {
         const status = await Promise.race([
-          provider.probe(),
+          provider.probe(controller.signal),
           new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`probe exceeded ${PROBE_DEADLINE_MS}ms`)), PROBE_DEADLINE_MS);
+            timer = setTimeout(() => {
+              controller.abort();
+              reject(new Error(`probe exceeded ${PROBE_DEADLINE_MS}ms`));
+            }, PROBE_DEADLINE_MS);
           })
         ]);
         return { provider: provider.type, status };
@@ -994,7 +996,7 @@ async function runDiscoverEstate(inputs: ResolvedInputs, dependencies: AzureDepe
   if (!inputs.dryRun) {
     const reposPath = path.join(inputs.repoRoot, inputs.outputDir, 'repos.json');
     const writeSpecFile = dependencies.writeSpecFile ?? defaultWriteSpecFile;
-    await writeSpecFile(reposPath, `${JSON.stringify(estate, null, 2)}\n`);
+    await writeSpecFile(reposPath, `${JSON.stringify(estate, null, 2)}\n`, inputs.repoRoot);
   }
 
   return {
