@@ -7,8 +7,9 @@ Git tags and GitHub releases are the public release identifiers for this action.
 ## Tag policy
 
 - Immutable releases use `vMAJOR.MINOR.PATCH` tags.
-- The rolling major alias (`vMAJOR`, i.e. `v1`) is force-moved by the release workflow's `advance-major-alias` job after a successful immutable publish.
+- The rolling major and minor aliases (`vMAJOR` and `vMAJOR.MINOR`, i.e. `v1` and `v1.0`) are force-moved by the release workflow's `advance-rolling-aliases` job after a successful immutable publish.
 - Existing immutable release tags are never force-pushed or rewritten.
+- Every release tag commit must equal protected `origin/main`; the release workflow verifies this before publication.
 - `v0` tags stay frozen at the last `v0` release.
 - Every immutable release tag has a GitHub release with generated notes.
 
@@ -27,7 +28,7 @@ Run the package validators from this directory before pushing an immutable tag:
 
 ## npm package
 
-The CLI publishes as `@postman-cse/onboarding-azure-spec-discovery` with versions that match the GitHub release tag. The rolling major alias updates the action channel and skips npm publishing.
+The CLI publishes as `@postman-cse/onboarding-azure-spec-discovery` with versions that match the GitHub release tag. Rolling major/minor aliases update action channels and skip npm publishing.
 
 ## Compatibility
 
@@ -35,7 +36,7 @@ This action emits `spec-path`, `service-name`, and resolution metadata for downs
 
 ## Security fixes
 
-Security fixes ship on the latest immutable `vMAJOR.MINOR.PATCH` tag and move onto the rolling major alias. Older immutable tags stay published for reproducibility. See [Security Policy](SECURITY.md).
+Security fixes ship on the latest immutable `vMAJOR.MINOR.PATCH` tag and move onto the rolling major/minor aliases. Older immutable tags stay published for reproducibility. See [Security Policy](SECURITY.md).
 
 ## Suite release order
 

@@ -25,6 +25,9 @@ export function buildCandidateQuery(resourceGroup?: string): string {
   if (trimmedGroup) {
     lines.push(`| where resourceGroup =~ '${escapeKqlString(trimmedGroup)}'`);
   }
-  lines.push('| project id, name, type, resourceGroup, tags');
+  lines.push(
+    '| extend apiType=tostring(properties.apiType), isCurrent=tobool(properties.isCurrent), apiRevision=tostring(properties.apiRevision), apiVersionSetId=tostring(properties.apiVersionSetId), apiDefinitionUrl=tostring(properties.siteConfig.apiDefinition.url)',
+    '| project id, name, type, resourceGroup, tags, apiType, isCurrent, apiRevision, apiVersionSetId, apiDefinitionUrl'
+  );
   return lines.join('\n');
 }

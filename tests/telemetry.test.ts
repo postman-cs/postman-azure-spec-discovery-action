@@ -48,7 +48,10 @@ function deps(overrides: Partial<Omit<AzureDependencies, 'core'>> = {}): Omit<Az
     exportSpec: vi.fn()
   };
   return {
-    subscriptions: { listEnabledSubscriptions: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }]) },
+    subscriptions: {
+      get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+      list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+    },
     createApimClient: () => {
       throw new Error('unused');
     },
@@ -87,7 +90,8 @@ describe('telemetry contract', () => {
     await expect(
       runAction(failureCore, deps({
         subscriptions: {
-          listEnabledSubscriptions: vi.fn(async () => {
+          get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+          list: vi.fn(async () => {
             throw new Error('Subscription listing failed with HTTP 401');
           })
         }

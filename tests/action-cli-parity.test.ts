@@ -1,4 +1,4 @@
-import { readFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -6,8 +6,8 @@ import { parse } from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runAction, type CoreLike } from '../src/index.js';
-import { parseCliArgs } from '../src/cli.js';
-import { execute, resolveInputs, type AzureDependencies, type ReporterLike } from '../src/runtime.js';
+import { runCli } from '../src/cli.js';
+import type { AzureDependencies } from '../src/runtime.js';
 import { contractOutputNames } from '../src/contracts.js';
 import type { SpecCandidate, SpecProvider } from '../src/lib/providers/types.js';
 
@@ -100,10 +100,15 @@ describe('adapter parity', () => {
     // specs/IaC from the action checkout or CI workspace, and both adapters
     // see identical ambient env (CI sets GITHUB_WORKSPACE; locally unset).
     const emptyRepoRoot = mkdtempSync(join(tmpdir(), 'az-parity-'));
+    const previousCwd = process.cwd();
+    process.chdir(emptyRepoRoot);
     vi.stubEnv('GITHUB_WORKSPACE', emptyRepoRoot);
     vi.stubEnv('POSTMAN_ACTIONS_TELEMETRY', 'off');
     const runtimeDeps = (provider: SpecProvider): Omit<AzureDependencies, 'core'> => ({
-      subscriptions: { listEnabledSubscriptions: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }]) },
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
       createApimClient: () => {
         throw new Error('unused');
       },
@@ -114,32 +119,44 @@ describe('adapter parity', () => {
       providers: [provider]
     });
 
-    // Action adapter
-    const actionOutputs: Record<string, string> = {};
-    const inputVals: Record<string, string> = { 'api-id': 'payments', 'subscription-id': 'sub-1' };
-    const core: CoreLike = {
-      getInput: (name: string) => inputVals[name] ?? '',
-      group: async (_n, fn) => fn(),
-      info: () => undefined,
-      warning: () => undefined,
-      setOutput: (name, value) => {
-        actionOutputs[name] = value;
-      },
-      setFailed: () => undefined
-    };
-    await runAction(core, runtimeDeps(stubProvider()));
+    try {
+      const actionOutputs: Record<string, string> = {};
+      const inputVals: Record<string, string> = { 'api-id': 'payments', 'subscription-id': 'sub-1' };
+      const core: CoreLike = {
+        getInput: (name: string) => inputVals[name] ?? '',
+        group: async (_n, fn) => fn(),
+        info: () => undefined,
+        warning: () => undefined,
+        setOutput: (name, value) => {
+          actionOutputs[name] = value;
+        },
+        setFailed: () => undefined
+      };
+      await runAction(core, runtimeDeps(stubProvider()));
 
-    // CLI path: parseCliArgs -> resolveInputs -> execute (same runtime seam runCli uses)
-    const parsed = parseCliArgs(
-      ['--api-id', 'payments', '--subscription-id', 'sub-1'],
-      { ...process.env, POSTMAN_ACTIONS_TELEMETRY: 'off' }
-    );
-    if (parsed.kind !== 'run') throw new Error('expected run');
-    const cliResult = await execute(resolveInputs(parsed.inputEnv), { core: { group: async (_n, fn) => fn(), info: () => undefined, warning: () => undefined } as ReporterLike, ...runtimeDeps(stubProvider()) });
+      let stdout = '';
+      await runCli(
+        [
+          '--api-id', 'payments',
+          '--subscription-id', 'sub-1',
+          '--repo-root', emptyRepoRoot,
+          '--result-json', 'cli-result.json'
+        ],
+        {
+          env: { ...process.env, GITHUB_WORKSPACE: emptyRepoRoot, POSTMAN_ACTIONS_TELEMETRY: 'off' },
+          writeStdout: (chunk) => { stdout += chunk; },
+          dependencies: runtimeDeps(stubProvider())
+        }
+      );
+      const cliResult = JSON.parse(stdout) as { outputs: Record<string, string> };
 
-    expect(Object.keys(actionOutputs).sort()).toEqual([...contractOutputNames].sort());
-    for (const name of contractOutputNames) {
-      expect(cliResult.outputs[name] ?? '', `output ${name}`).toBe(actionOutputs[name] ?? '');
+      expect(Object.keys(actionOutputs).sort()).toEqual([...contractOutputNames].sort());
+      for (const name of contractOutputNames) {
+        expect(cliResult.outputs[name] ?? '', `output ${name}`).toBe(actionOutputs[name] ?? '');
+      }
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(emptyRepoRoot, { recursive: true, force: true });
     }
   });
 });

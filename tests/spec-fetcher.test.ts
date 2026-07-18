@@ -1,4 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { lookupMock } = vi.hoisted(() => ({
+  lookupMock: vi.fn(async () => [{ address: '8.8.8.8', family: 4 }])
+}));
+
+vi.mock('node:dns/promises', () => ({ lookup: lookupMock }));
 
 import { fetchSpecFromUrl } from '../src/lib/fetch/spec-fetcher.js';
 
@@ -11,6 +17,11 @@ function jsonResponse(body: string, headers: Record<string, string> = {}): Respo
 function redirectResponse(location: string): Response {
   return new Response(null, { status: 302, headers: { location } });
 }
+
+beforeEach(() => {
+  lookupMock.mockReset();
+  lookupMock.mockResolvedValue([{ address: '8.8.8.8', family: 4 }]);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -59,5 +70,25 @@ describe('spec fetcher', () => {
   it('rejects non-OK statuses', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response('nope', { status: 404 }));
     await expect(fetchSpecFromUrl('https://x.example/spec.json')).rejects.toThrow('HTTP 404');
+  });
+
+  it('rejects loopback, private IP literals, and hostnames resolving to private addresses before fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await expect(fetchSpecFromUrl('https://127.0.0.1/spec.json')).rejects.toThrow('Private or local');
+    await expect(fetchSpecFromUrl('https://10.1.2.3/spec.json')).rejects.toThrow('Private or local');
+    lookupMock.mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }]);
+    await expect(fetchSpecFromUrl('https://metadata.example/spec.json')).rejects.toThrow('Private or local');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('rechecks DNS after every redirect hop', async () => {
+    lookupMock
+      .mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }])
+      .mockResolvedValueOnce([{ address: '192.168.1.5', family: 4 }]);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      redirectResponse('https://internal.example/spec.json')
+    );
+    await expect(fetchSpecFromUrl('https://public.example/spec.json')).rejects.toThrow('Private or local');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });

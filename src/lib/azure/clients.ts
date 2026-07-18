@@ -24,11 +24,13 @@ export interface ApimApiSummary {
   displayName: string;
   path?: string;
   apiType: string;
-  isCurrent: boolean;
+  isCurrent?: boolean;
   apiRevision?: string;
   apiVersion?: string;
+  apiVersionSetId?: string;
   serviceName: string;
   resourceGroup: string;
+  workspaceId?: string;
 }
 
 export interface AppServiceSiteSummary {
@@ -65,7 +67,7 @@ export function createAzureCredential(): TokenCredential {
 export interface AzureApimClient {
   listServices(resourceGroup?: string): Promise<ApimServiceSummary[]>;
   listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]>;
-  exportApi(resourceGroup: string, serviceName: string, apiId: string): Promise<string>;
+  exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string>;
   probeApimReadAccess(resourceGroup?: string): Promise<void>;
 }
 
@@ -79,7 +81,8 @@ export interface AzureResourceGraphClient {
 }
 
 export interface AzureSubscriptionsClient {
-  listEnabledSubscriptions(): Promise<SubscriptionSummary[]>;
+  get(subscriptionId: string): Promise<SubscriptionSummary>;
+  list(): Promise<SubscriptionSummary[]>;
 }
 
 const EXPORT_FORMAT_OPENAPI_JSON = 'openapi+json-link';
@@ -150,16 +153,49 @@ function isAuthorizationError(error: unknown): boolean {
   return /authorizationfailed|forbidden|unauthorized|\b401\b|\b403\b/i.test(message);
 }
 
+function sdkMaxRetries(options?: AzureSdkOptions): number {
+  return Math.max(0, (options?.maxAttempts ?? 3) - 1);
+}
+
+function isHttp403(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bHTTP 403\b|\b403\b.*forbidden|forbidden.*\b403\b/i.test(message);
+}
+
+function isTransientAzureError(error: unknown): boolean {
+  const record = (error ?? {}) as { statusCode?: unknown; status?: unknown };
+  const status = Number(record.statusCode ?? record.status);
+  if (status === 408 || status === 429 || status >= 500) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b408\b|\b429\b|\b5\d\d\b|timeout|temporar(?:y|ily)|throttl/i.test(message);
+}
+
+function revisionGroup(api: ApimApiSummary): string {
+  return (api.apiVersionSetId ?? api.apiVersion ?? api.apiId.replace(/;rev=.*$/i, '')).toLowerCase();
+}
+
+function retainCurrentApis(apis: ApimApiSummary[]): ApimApiSummary[] {
+  const groupsWithCurrent = new Set(
+    apis.filter((api) => api.isCurrent === true).map(revisionGroup)
+  );
+  return apis.filter((api) => {
+    if (api.isCurrent === false) return false;
+    return api.isCurrent === true || !groupsWithCurrent.has(revisionGroup(api));
+  });
+}
+
 
 export class ApimSdkClient implements AzureApimClient {
   private readonly client: ApiManagementClient;
   private readonly requestTimeoutMs?: number;
+  private readonly maxAttempts: number;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.client = new ApiManagementClient(credential, subscriptionId, {
-      retryOptions: { maxRetries: options?.maxAttempts ?? 3 }
+      retryOptions: { maxRetries: sdkMaxRetries(options) }
     });
     this.requestTimeoutMs = options?.requestTimeoutMs;
+    this.maxAttempts = options?.maxAttempts ?? 3;
   }
 
   public async listServices(resourceGroup?: string): Promise<ApimServiceSummary[]> {
@@ -171,25 +207,55 @@ export class ApimSdkClient implements AzureApimClient {
   }
 
   public async listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]> {
-    const apis = await collectBounded(this.client.api.listByService(resourceGroup, serviceName), 'APIM API list');
-    return apis.map((api) => toApiSummary(api, serviceName, resourceGroup));
+    const serviceApis = await collectBounded(this.client.api.listByService(resourceGroup, serviceName), 'APIM API list');
+    const summaries = serviceApis.map((api) => toApiSummary(api, serviceName, resourceGroup));
+    const workspaces = await collectBounded(
+      this.client.workspace.listByService(resourceGroup, serviceName),
+      'APIM workspace list'
+    );
+    for (const workspace of workspaces) {
+      const workspaceId = workspace.name ?? '';
+      if (!workspaceId) continue;
+      const workspaceApis = await collectBounded(
+        this.client.workspaceApi.listByService(resourceGroup, serviceName, workspaceId),
+        `APIM workspace ${workspaceId} API list`
+      );
+      summaries.push(...workspaceApis.map((api) => toApiSummary(api, serviceName, resourceGroup, workspaceId)));
+    }
+    return retainCurrentApis(summaries);
   }
 
   /**
    * APIM export is a two-step protocol: the ARM call returns a Storage Blob SAS link
    * (TTL 5 minutes), and the bytes must be fetched from that link immediately.
    */
-  public async exportApi(resourceGroup: string, serviceName: string, apiId: string): Promise<string> {
-    const result = await this.client.apiExport.get(resourceGroup, serviceName, apiId, EXPORT_FORMAT_OPENAPI_JSON, 'true');
-    const link = extractExportLink(result);
-    if (!link) {
-      throw new Error(`APIM export for ${apiId} returned no download link`);
+  public async exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string> {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      const result = workspaceId
+        ? await this.client.workspaceApiExport.get(
+            resourceGroup,
+            serviceName,
+            workspaceId,
+            apiId,
+            EXPORT_FORMAT_OPENAPI_JSON,
+            'true'
+          )
+        : await this.client.apiExport.get(resourceGroup, serviceName, apiId, EXPORT_FORMAT_OPENAPI_JSON, 'true');
+      const link = extractExportLink(result);
+      if (!link) {
+        throw new Error(`APIM export for ${apiId} returned no download link`);
+      }
+      try {
+        const fetched = await fetchSpecFromUrl(link, { timeoutMs: this.requestTimeoutMs });
+        return fetched.content;
+      } catch (error) {
+        if (!isHttp403(error)) throw error;
+        if (attempt === this.maxAttempts) {
+          throw new Error(`APIM export fetch failed with HTTP 403 after ${attempt} attempt(s)`);
+        }
+      }
     }
-    // The SAS blob link is HTTPS with a 5-minute TTL; route it through the same
-    // hardened transport as App Service (HTTPS-only, redirect/size/timeout caps)
-    // instead of an unbounded fetch that can hang or exhaust runner memory.
-    const fetched = await fetchSpecFromUrl(link, { timeoutMs: this.requestTimeoutMs });
-    return fetched.content;
+    throw new Error('APIM export exhausted its attempt limit');
   }
 
   public async probeApimReadAccess(resourceGroup?: string): Promise<void> {
@@ -209,18 +275,20 @@ function toServiceSummary(service: ApiManagementServiceResource): ApimServiceSum
   };
 }
 
-function toApiSummary(api: ApiContract, serviceName: string, resourceGroup: string): ApimApiSummary {
+function toApiSummary(api: ApiContract, serviceName: string, resourceGroup: string, workspaceId?: string): ApimApiSummary {
   const rawName = api.name ?? '';
   return {
     apiId: rawName,
     displayName: api.displayName ?? rawName,
     path: api.path,
     apiType: api.apiType ?? 'http',
-    isCurrent: api.isCurrent ?? true,
+    isCurrent: api.isCurrent,
     apiRevision: api.apiRevision,
     apiVersion: api.apiVersion,
+    apiVersionSetId: api.apiVersionSetId,
     serviceName,
-    resourceGroup
+    resourceGroup,
+    workspaceId
   };
 }
 
@@ -229,7 +297,7 @@ export class AppServiceSdkClient implements AzureAppServiceClient {
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.client = new WebSiteManagementClient(credential, subscriptionId, {
-      retryOptions: { maxRetries: options?.maxAttempts ?? 3 }
+      retryOptions: { maxRetries: sdkMaxRetries(options) }
     });
   }
 
@@ -273,9 +341,13 @@ export class AppServiceSdkClient implements AzureAppServiceClient {
 
 export class ResourceGraphSdkClient implements AzureResourceGraphClient {
   private readonly client: ResourceGraphClient;
+  private readonly maxAttempts: number;
+  private readonly requestTimeoutMs: number;
 
-  public constructor(credential: TokenCredential) {
+  public constructor(credential: TokenCredential, options?: AzureSdkOptions) {
     this.client = new ResourceGraphClient(credential);
+    this.maxAttempts = options?.maxAttempts ?? 3;
+    this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
   }
 
   public async queryResources(subscriptionId: string, kql: string): Promise<ResourceGraphRow[]> {
@@ -287,11 +359,20 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
       if (pages > MAX_LIST_PAGES) {
         throw new Error(`Resource Graph pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
       }
-      const response = await this.client.resources({
-        subscriptions: [subscriptionId],
-        query: kql,
-        options: skipToken ? { skipToken } : undefined
-      });
+      let response: { data?: unknown; skipToken?: string } | undefined;
+      for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+        try {
+          response = await this.client.resources({
+            subscriptions: [subscriptionId],
+            query: kql,
+            options: skipToken ? { skipToken } : undefined
+          }, { timeout: this.requestTimeoutMs }) as { data?: unknown; skipToken?: string };
+          break;
+        } catch (error) {
+          if (!isTransientAzureError(error) || attempt === this.maxAttempts) throw error;
+        }
+      }
+      if (!response) throw new Error('Resource Graph query exhausted its attempt limit');
       const data = Array.isArray(response.data) ? response.data : [];
       for (const row of data) {
         const record = row as Record<string, unknown>;
@@ -304,7 +385,9 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
         });
       }
       const next = response.skipToken;
-      if (next !== undefined && next === skipToken) break; // defensive: repeated pagination token
+      if (next !== undefined && next === skipToken) {
+        throw new Error('Resource Graph pagination returned a repeated skip token; aborting');
+      }
       skipToken = next;
     } while (skipToken);
     return rows;
@@ -313,17 +396,33 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
 
 export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
   private readonly credential: TokenCredential;
+  private readonly maxAttempts: number;
+  private readonly requestTimeoutMs: number;
 
-  public constructor(credential: TokenCredential) {
+  public constructor(credential: TokenCredential, options?: AzureSdkOptions) {
     this.credential = credential;
+    this.maxAttempts = options?.maxAttempts ?? 3;
+    this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+  }
+
+  public async get(subscriptionId: string): Promise<SubscriptionSummary> {
+    const token = await this.getArmToken();
+    const response = await this.fetchArm(
+      `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}?api-version=2022-12-01`,
+      token,
+      'Subscription lookup'
+    );
+    if (!response.ok) {
+      throw new Error(`Subscription lookup failed with HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as { subscriptionId?: string; displayName?: string; state?: string };
+    if (!body.subscriptionId) throw new Error('Subscription lookup returned no subscription ID');
+    return { subscriptionId: body.subscriptionId, displayName: body.displayName, state: body.state };
   }
 
   /** ARM REST list (the @azure/arm-subscriptions v6 SDK no longer exposes subscriptions.list). */
-  public async listEnabledSubscriptions(): Promise<SubscriptionSummary[]> {
-    const token = await this.credential.getToken('https://management.azure.com/.default');
-    if (!token) {
-      throw new Error('Azure credential produced no ARM token');
-    }
+  public async list(): Promise<SubscriptionSummary[]> {
+    const token = await this.getArmToken();
     const subscriptions: SubscriptionSummary[] = [];
     let url: string | undefined = 'https://management.azure.com/subscriptions?api-version=2022-12-01';
     let pages = 0;
@@ -332,7 +431,7 @@ export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
       if (pages > MAX_LIST_PAGES) {
         throw new Error(`Subscription listing pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
       }
-      const response = await fetch(url, { headers: { authorization: `Bearer ${token.token}` } });
+      const response = await this.fetchArm(url, token, 'Subscription listing');
       if (!response.ok) {
         throw new Error(`Subscription listing failed with HTTP ${response.status}`);
       }
@@ -341,9 +440,6 @@ export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
         nextLink?: string;
       };
       for (const subscription of body.value ?? []) {
-        if ((subscription.state ?? 'Enabled') !== 'Enabled') {
-          continue;
-        }
         if (subscription.subscriptionId) {
           subscriptions.push({
             subscriptionId: subscription.subscriptionId,
@@ -353,9 +449,39 @@ export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
         }
       }
       const next: string | undefined = body.nextLink;
-      if (next !== undefined && next === url) break; // defensive: repeated pagination link
+      if (next !== undefined && next === url) {
+        throw new Error('Subscription listing pagination returned a repeated nextLink; aborting');
+      }
       url = next;
     }
     return subscriptions;
+  }
+
+  private async getArmToken(): Promise<string> {
+    const token = await this.credential.getToken('https://management.azure.com/.default');
+    if (!token) {
+      throw new Error('Azure credential produced no ARM token');
+    }
+    return token.token;
+  }
+
+  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: controller.signal
+        });
+        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
+        if (attempt === this.maxAttempts) return response;
+      } catch (error) {
+        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error(`${operation} exhausted its attempt limit`);
   }
 }

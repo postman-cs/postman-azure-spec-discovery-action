@@ -9,11 +9,12 @@ import {
   ApimSdkClient,
   AppServiceSdkClient,
   createAzureCredential,
+  ResourceGraphSdkClient,
   SubscriptionsSdkClient
 } from './lib/azure/clients.js';
 import { formatUserSafeError, sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { prepareTelemetryCredentials, resolveTelemetryTeamId } from './lib/postman/telemetry-credentials.js';
-import { defaultWriteSpecFile, execute, resolveInputs, type ReporterLike } from './runtime.js';
+import { defaultWriteSpecFile, execute, resolveInputs, type AzureDependencies, type ReporterLike } from './runtime.js';
 
 interface CliConfig {
   inputEnv: NodeJS.ProcessEnv;
@@ -26,9 +27,10 @@ export type ParsedCliArgs =
   | { kind: 'version' }
   | ({ kind: 'run' } & CliConfig);
 
-interface CliRuntime {
+export interface CliRuntime {
   env?: NodeJS.ProcessEnv;
   writeStdout?: (chunk: string) => void;
+  dependencies?: Omit<AzureDependencies, 'core'>;
 }
 
 class ConsoleReporter implements ReporterLike {
@@ -272,15 +274,22 @@ export async function runCli(
     postmanAccessToken: config.inputEnv.INPUT_POSTMAN_ACCESS_TOKEN ?? env.POSTMAN_ACCESS_TOKEN
   });
   try {
-    const credential = createAzureCredential();
     const sdkOptions = { requestTimeoutMs: inputs.requestTimeoutMs, maxAttempts: inputs.maxAttempts };
-    const result = await execute(inputs, {
-      core: reporter,
-      subscriptions: new SubscriptionsSdkClient(credential),
-      createApimClient: (subscriptionId) => new ApimSdkClient(credential, subscriptionId, sdkOptions),
-      createAppServiceClient: (subscriptionId) => new AppServiceSdkClient(credential, subscriptionId, sdkOptions),
-      writeSpecFile: defaultWriteSpecFile
-    });
+    const injected = runtime.dependencies;
+    const credential = injected ? undefined : createAzureCredential();
+    const result = await execute(
+      inputs,
+      injected
+        ? { core: reporter, ...injected }
+        : {
+            core: reporter,
+            subscriptions: new SubscriptionsSdkClient(credential!, sdkOptions),
+            createApimClient: (subscriptionId) => new ApimSdkClient(credential!, subscriptionId, sdkOptions),
+            createAppServiceClient: (subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions),
+            createResourceGraphClient: () => new ResourceGraphSdkClient(credential!, sdkOptions),
+            writeSpecFile: defaultWriteSpecFile
+          }
+    );
 
     await writeOptionalFile(config.resultJsonPath, JSON.stringify(result, null, 2));
     await writeOptionalFile(config.dotenvPath, toDotenv(result.outputs));

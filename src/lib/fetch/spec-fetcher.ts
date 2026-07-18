@@ -13,6 +13,55 @@ export interface FetchedSpec {
   contentType: string;
 }
 
+function isPrivateIpv4(address: string): boolean {
+  const octets = address.split('.').map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a = 0, b = 0] = octets;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
+}
+
+function isPrivateAddress(address: string): boolean {
+  const normalized = address.toLowerCase().split('%')[0] ?? '';
+  if (isIP(normalized) === 4) return isPrivateIpv4(normalized);
+  if (isIP(normalized) !== 6) return true;
+  if (normalized.startsWith('::ffff:')) return isPrivateIpv4(normalized.slice('::ffff:'.length));
+  return (
+    normalized === '::' ||
+    normalized === '::1' ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    /^fe[89ab]/.test(normalized) ||
+    normalized.startsWith('ff')
+  );
+}
+
+function safeUrl(parsed: URL): string {
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+async function assertPublicAddress(parsed: URL): Promise<void> {
+  const hostname = parsed.hostname.toLowerCase();
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+    throw new Error(`Private or local addresses are not allowed for remote spec fetch: ${safeUrl(parsed)}`);
+  }
+  const addresses = isIP(hostname)
+    ? [{ address: hostname }]
+    : await lookup(hostname, { all: true, verbatim: true });
+  if (addresses.length === 0 || addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new Error(`Private or local addresses are not allowed for remote spec fetch: ${safeUrl(parsed)}`);
+  }
+}
+
 /**
  * Fetch a spec from a remote URL with strict guards:
  *  - HTTPS only, for the initial URL and every redirect hop;
@@ -35,6 +84,7 @@ export async function fetchSpecFromUrl(url: string, options: FetchSpecOptions = 
       if (parsed.protocol !== 'https:') {
         throw new Error(`Only HTTPS URLs are supported for remote spec fetch; got ${parsed.protocol}`);
       }
+      await assertPublicAddress(parsed);
 
       const response = await fetch(currentUrl, {
         signal: controller.signal,
@@ -45,17 +95,17 @@ export async function fetchSpecFromUrl(url: string, options: FetchSpecOptions = 
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get('location');
         if (!location) {
-          throw new Error(`Redirect response ${response.status} without a Location header for ${currentUrl}`);
+          throw new Error(`Redirect response ${response.status} without a Location header for ${safeUrl(parsed)}`);
         }
         if (hop >= maxRedirects) {
-          throw new Error(`Too many redirects (limit ${maxRedirects}) fetching ${url}`);
+          throw new Error(`Too many redirects (limit ${maxRedirects}) fetching ${safeUrl(new URL(url))}`);
         }
         currentUrl = new URL(location, currentUrl).toString();
         continue;
       }
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status} fetching ${currentUrl}`);
+        throw new Error(`HTTP ${response.status} fetching ${safeUrl(parsed)}`);
       }
 
       const contentLength = response.headers.get('content-length');
@@ -76,3 +126,5 @@ export async function fetchSpecFromUrl(url: string, options: FetchSpecOptions = 
     clearTimeout(timer);
   }
 }
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';

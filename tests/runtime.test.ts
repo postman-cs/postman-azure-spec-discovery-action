@@ -79,7 +79,10 @@ describe('runtime execute', () => {
   function dependencies(provider: SpecProvider): AzureDependencies {
     return {
       core: reporter,
-      subscriptions: { listEnabledSubscriptions: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }]) },
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
       createApimClient: () => {
         throw new Error('not used with injected providers');
       },
@@ -135,6 +138,32 @@ describe('runtime execute', () => {
     expect(result.resolution?.confidence).toBe(100);
     expect(result.resolution?.narrowing?.mode).toBe('select');
     expect(result.outputs['narrowing-strategy']).toBe('tag-prefilter');
+  });
+
+  it('AZ-GRAPH-001: production runtime issues one paged candidate query and enriches enumerated candidates', async () => {
+    const candidate = apimCandidate('payments');
+    const provider = stubProvider([candidate, apimCandidate('orders')]);
+    const queryResources = vi.fn(async (subscriptionId: string, kql: string) => {
+      expect(subscriptionId).toBe('sub-1');
+      expect(kql).toContain('Resources');
+      return [
+        {
+          id: candidate.id,
+          name: candidate.name,
+          type: 'microsoft.apimanagement/service/apis',
+          resourceGroup: candidate.resourceGroup ?? 'rg',
+          tags: { 'postman:repo': 'org/payments' }
+        }
+      ];
+    });
+    const deps = dependencies(provider);
+    deps.createResourceGraphClient = () => ({ queryResources });
+    const withSlug = inputs();
+    withSlug.repoContext = { provider: 'github', repoSlug: 'org/payments' };
+
+    const result = await execute(withSlug, deps);
+    expect(queryResources).toHaveBeenCalledTimes(1);
+    expect(result.resolution).toMatchObject({ status: 'resolved', confidence: 100 });
   });
 
   it('ambiguous equal-confidence candidates produce manual-review with ranked candidates', async () => {

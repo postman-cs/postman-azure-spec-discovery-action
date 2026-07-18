@@ -51,6 +51,15 @@ describe('APIM provider', () => {
           isCurrent: false,
           serviceName: 'svc',
           resourceGroup: 'rg'
+        },
+        {
+          apiId: 'workspace-payments',
+          displayName: 'Workspace Payments',
+          apiType: 'http',
+          isCurrent: true,
+          serviceName: 'svc',
+          resourceGroup: 'rg',
+          workspaceId: 'team-a'
         }
       ]),
       exportApi: vi.fn(async () => VALID_OPENAPI),
@@ -62,12 +71,15 @@ describe('APIM provider', () => {
   it('AZ-APIM-001: lists current APIs; http supported, soap visible-unsupported, non-current dropped', async () => {
     const provider = new ApimProvider(apimClient(), { subscriptionId: 'sub-1' });
     const candidates = await provider.listCandidates();
-    expect(candidates).toHaveLength(2);
+    expect(candidates).toHaveLength(3);
     const http = candidates.find((c) => c.meta.apiId === 'payments');
     const soap = candidates.find((c) => c.meta.apiId === 'payments-soap');
     expect(http?.supported).toBe(true);
     expect(soap?.supported).toBe(false);
     expect(http?.apiId).toBe(buildApimApiArmId('sub-1', 'rg', 'svc', 'payments'));
+    expect(candidates.find((c) => c.meta.workspaceId === 'team-a')?.apiId).toBe(
+      buildApimApiArmId('sub-1', 'rg', 'svc', 'workspace-payments', 'team-a')
+    );
   });
 
   it('AZ-APIM-002: export validates OpenAPI and rejects unsupported candidates', async () => {
@@ -84,7 +96,7 @@ describe('APIM provider', () => {
     await expect(provider.exportSpec(soap!)).rejects.toThrow('not exportable in v1');
   });
 
-  it('AZ-APIM-003: malformed export content rejects', async () => {
+  it('AZ-APIM-005: malformed export content rejects', async () => {
     const provider = new ApimProvider(apimClient({ exportApi: vi.fn(async () => 'not json at all {{{') }), {
       subscriptionId: 'sub-1'
     });

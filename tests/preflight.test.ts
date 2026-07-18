@@ -35,7 +35,8 @@ describe('subscription preflight', () => {
     const dependencies: AzureDependencies = {
       core: reporter,
       subscriptions: {
-        listEnabledSubscriptions: vi.fn(async () => {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => {
           throw new Error('Subscription listing failed with HTTP 401');
         })
       },
@@ -51,6 +52,36 @@ describe('subscription preflight', () => {
 
     const inputs = resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_EXPECTED_SERVICE_NAME: 'payments' });
     await expect(execute(inputs, dependencies)).rejects.toThrow('Subscription listing failed with HTTP 401');
+    expect(listCandidates).not.toHaveBeenCalled();
+  });
+
+  it('AZ-CLIENT-002: explicit subscription get failure rejects before provider enumeration', async () => {
+    const listCandidates = vi.fn(async () => []);
+    const provider: SpecProvider = {
+      type: 'apim',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates,
+      exportSpec: vi.fn()
+    };
+    const list = vi.fn(async () => [{ subscriptionId: 'other', state: 'Enabled' }]);
+    const dependencies: AzureDependencies = {
+      core: reporter,
+      subscriptions: {
+        get: vi.fn(async () => { throw new Error('Subscription lookup failed with HTTP 403'); }),
+        list
+      },
+      createApimClient: () => { throw new Error('unused'); },
+      createAppServiceClient: () => { throw new Error('unused'); },
+      writeSpecFile: vi.fn(),
+      providers: [provider]
+    };
+    const inputs = resolveInputs({
+      INPUT_REPO_ROOT: repoRoot,
+      INPUT_SUBSCRIPTION_ID: 'sub-explicit',
+      INPUT_EXPECTED_SERVICE_NAME: 'payments'
+    });
+    await expect(execute(inputs, dependencies)).rejects.toThrow('Subscription lookup failed with HTTP 403');
+    expect(list).not.toHaveBeenCalled();
     expect(listCandidates).not.toHaveBeenCalled();
   });
 
@@ -78,7 +109,10 @@ describe('subscription preflight', () => {
     ];
     const dependencies: AzureDependencies = {
       core: reporter,
-      subscriptions: { listEnabledSubscriptions: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }]) },
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
       createApimClient: () => {
         throw new Error('unused');
       },

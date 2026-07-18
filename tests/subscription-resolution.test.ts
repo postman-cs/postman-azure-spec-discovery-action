@@ -5,11 +5,15 @@ import type { AzureSubscriptionsClient } from '../src/lib/azure/clients.js';
 
 function clientWith(subscriptions: Array<{ subscriptionId: string; state?: string }>): AzureSubscriptionsClient & {
   listCalls: () => number;
+  getCalls: () => number;
 } {
   const list = vi.fn(async () => subscriptions);
+  const get = vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' }));
   return {
-    listEnabledSubscriptions: list,
-    listCalls: () => list.mock.calls.length
+    get,
+    list,
+    listCalls: () => list.mock.calls.length,
+    getCalls: () => get.mock.calls.length
   };
 }
 
@@ -32,12 +36,13 @@ describe('subscription resolution', () => {
     );
   });
 
-  it('AZ-CONTRACT-003b: explicit subscription id is used without listing', async () => {
+  it('AZ-CONTRACT-003b: explicit subscription id is validated with get without listing', async () => {
     const client = clientWith([{ subscriptionId: 'ignored', state: 'Enabled' }]);
     await expect(resolveSubscriptionId('bbbbbbbb-0000-0000-0000-000000000009', client)).resolves.toBe(
       'bbbbbbbb-0000-0000-0000-000000000009'
     );
     expect(client.listCalls()).toBe(0);
+    expect(client.getCalls()).toBe(1);
   });
 
   it('AZ-CONTRACT-003c: error messages never contain subscription ids or display names', async () => {

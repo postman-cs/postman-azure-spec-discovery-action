@@ -21,9 +21,9 @@ Do not include Azure secrets, Postman API keys, Postman access tokens, private O
 | --- | --- |
 | `Azure credentials are missing or invalid` | Confirm `azure/login` ran first and the federated credential covers this repository and environment. |
 | Provider was skipped | Add the provider's read-only IAM permissions from [docs/providers.md](docs/providers.md#security-and-iam). |
-| `manual-review` result | Provide a repo-local spec, SSM spec registration, Backstage API entity, known `gateway-id`, or stronger service-name hint. |
+| `manual-review` result | Provide a repo-local spec, an exact APIM `api-id`, a canonical `postman:repo` tag, or a stronger service-name hint. |
 | Downstream Postman onboarding failed | Check the service-token step outputs and downstream `credential-preflight` setting. Valid values are `warn` and `enforce`. |
-| SNS contract was not selected | Review [docs/sns-contract-resolution.md](docs/sns-contract-resolution.md) for the precedence chain and required SNS permissions. |
+| APIM or App Service API was not selected | Confirm the resource group, API type, current APIM revision, and `siteConfig.apiDefinition.url`; then review [docs/providers.md](docs/providers.md). |
 
 ## Security reports
 

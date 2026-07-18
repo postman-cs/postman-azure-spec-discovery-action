@@ -4,10 +4,10 @@ Azure spec discovery ships three providers in v1. Each implements the same `Spec
 
 ## `apim` — Azure API Management
 
-- Enumerates every visible APIM service (subscription-wide or scoped by `resource-group`) and lists its APIs.
+- Enumerates every visible APIM service (subscription-wide or scoped by `resource-group`) plus each service workspace and lists both service- and workspace-scoped APIs.
 - Only **current revisions** are candidates; non-current revisions are dropped at enumeration.
-- Only **HTTP** APIs are exportable. SOAP, GraphQL, and WebSocket APIs stay visible as unsupported candidates so ambiguity output can name them, but selecting one resolves to manual review and never writes a file.
-- Export uses the ARM export protocol: the management call returns a short-lived Storage SAS link, and the document is fetched from that link immediately. The exported document is validated (`Swagger 2.0`/`OpenAPI 3.x`, non-empty `paths`) before it is written.
+- Only **HTTP** APIs are exportable. SOAP, GraphQL, WebSocket, gRPC, and OData APIs stay visible as unsupported candidates so ambiguity output can name them, but selecting one resolves to manual review and never writes a file.
+- Export uses the ARM export protocol: the management call returns a short-lived Storage SAS link, and the document is fetched from that link immediately. A 403 discards the expired link and repeats the whole export/fetch cycle within `max-attempts`; links are never logged. The exported document is validated (`Swagger 2.0`/`OpenAPI 3.x`, non-empty `paths`) before it is written.
 - The full APIM API ARM resource ID appears only in the `api-id` output and `resolution-json.apiId`. Logs, evidence, and Step Summaries redact it.
 
 ## `app-service` — App Service API definition

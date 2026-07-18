@@ -9,9 +9,11 @@ import {
   ApimSdkClient,
   AppServiceSdkClient,
   createAzureCredential,
+  ResourceGraphSdkClient,
   SubscriptionsSdkClient,
   type AzureApimClient,
   type AzureAppServiceClient,
+  type AzureResourceGraphClient,
   type AzureSubscriptionsClient
 } from './lib/azure/clients.js';
 import { formatUserSafeError } from './lib/logging/sanitize.js';
@@ -37,6 +39,7 @@ export interface GitHubActionDependencies {
   subscriptions?: AzureSubscriptionsClient;
   createApimClient?: (subscriptionId: string) => AzureApimClient;
   createAppServiceClient?: (subscriptionId: string) => AzureAppServiceClient;
+  createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile?: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
 }
@@ -81,17 +84,21 @@ async function runActionInner(
   dependencies: GitHubActionDependencies = {}
 ): Promise<DiscoveredService[]> {
   const inputs = readActionInputs(actionCore);
-  const credential = dependencies.subscriptions ? undefined : createAzureCredential();
+  const useProductionProviders = !dependencies.providers;
+  const credential = !dependencies.subscriptions || useProductionProviders ? createAzureCredential() : undefined;
   const sdkOptions = { requestTimeoutMs: inputs.requestTimeoutMs, maxAttempts: inputs.maxAttempts };
 
   const result = await execute(inputs, {
     core: actionCore,
-    subscriptions: dependencies.subscriptions ?? new SubscriptionsSdkClient(credential!),
+    subscriptions: dependencies.subscriptions ?? new SubscriptionsSdkClient(credential!, sdkOptions),
     createApimClient:
       dependencies.createApimClient ?? ((subscriptionId) => new ApimSdkClient(credential!, subscriptionId, sdkOptions)),
     createAppServiceClient:
       dependencies.createAppServiceClient ??
       ((subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions)),
+    createResourceGraphClient:
+      dependencies.createResourceGraphClient ??
+      (useProductionProviders ? () => new ResourceGraphSdkClient(credential!, sdkOptions) : undefined),
     writeSpecFile: dependencies.writeSpecFile ?? defaultWriteSpecFile,
     providers: dependencies.providers
   });

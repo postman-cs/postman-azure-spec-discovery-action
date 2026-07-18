@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 const releaseWorkflow = readFileSync(join(process.cwd(), '.github/workflows/release.yml'), 'utf8');
 
 describe('release workflow publishing contract', () => {
-  it('AZ-RELEASE-001: only the exact immutable version tag publishes npm; rolling aliases skip npm and only the alias job force-moves', () => {
+  it('AZ-RELEASE-001: immutable releases require origin/main, publish npm once, and move only rolling aliases', () => {
     // npm publishes ONLY from the exact package-version tag.
     expect(releaseWorkflow).toContain('if [ "$TAG_VERSION" = "$PKG_VERSION" ]; then');
     expect(releaseWorkflow).not.toContain('PUBLISH_TAGS');
@@ -21,10 +21,15 @@ describe('release workflow publishing contract', () => {
     // GitHub release + tarball for the pushed tag.
     expect(releaseWorkflow).toContain('uses: softprops/action-gh-release@');
     expect(releaseWorkflow).toContain('files: release.tgz');
-    // Only the alias job force-moves anything, and only the major alias tag.
+    // Every release tag must point at protected origin/main.
+    expect(releaseWorkflow).toContain("git fetch origin main --no-tags");
+    expect(releaseWorkflow).toContain("git rev-parse 'origin/main^{commit}'");
+    expect(releaseWorkflow).toContain('if [ "$TAG_COMMIT" != "$MAIN_COMMIT" ]; then');
+    // Only the alias job force-moves anything, and only the major/minor aliases.
     const forceMoves = releaseWorkflow.match(/git push origin .* --force/g) ?? [];
-    expect(forceMoves).toEqual(['git push origin "$MAJOR" --force']);
-    expect(releaseWorkflow).toContain('advance-major-alias:');
+    expect(forceMoves).toEqual(['git push origin "$ALIAS" --force']);
+    expect(releaseWorkflow).toContain('advance-rolling-aliases:');
+    expect(releaseWorkflow).toContain('for ALIAS in "$MAJOR" "$MINOR"; do');
     expect(releaseWorkflow).toContain("if: ${{ needs.release.outputs.npm_publish == 'true' }}");
     // Release gates run before any publish.
     for (const gate of ['npm test', 'npm run typecheck', 'npm run verify:dist']) {

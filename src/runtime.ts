@@ -30,6 +30,7 @@ import {
   type RankedServiceCandidate
 } from './lib/resolve/service-resolver.js';
 import { runNarrowingPipeline, type NarrowingCandidate, type NarrowingResult } from './lib/resolve/narrowing-pipeline.js';
+import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
 import { deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
 import { ApimProvider } from './lib/providers/apim.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
@@ -244,9 +245,10 @@ export async function resolveSubscriptionId(
   subscriptions: AzureSubscriptionsClient
 ): Promise<string> {
   if (explicitSubscriptionId) {
+    await subscriptions.get(explicitSubscriptionId);
     return explicitSubscriptionId;
   }
-  const enabled = (await subscriptions.listEnabledSubscriptions()).filter(
+  const enabled = (await subscriptions.list()).filter(
     (subscription) => (subscription.state ?? 'Enabled').toLowerCase() === 'enabled'
   );
   if (enabled.length === 1 && enabled[0]) {
@@ -376,7 +378,6 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
     return dependencies.providers;
   }
   return [
-    new IacLocalProvider(iacScan),
     new ApimProvider(dependencies.createApimClient(subscriptionId), {
       subscriptionId,
       resourceGroup: inputs.resourceGroup
@@ -385,8 +386,45 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
       subscriptionId,
       resourceGroup: inputs.resourceGroup,
       requestTimeoutMs: inputs.requestTimeoutMs
-    })
+    }),
+    new IacLocalProvider(iacScan)
   ];
+}
+
+async function queryResourceGraph(
+  inputs: ResolvedInputs,
+  subscriptionId: string,
+  dependencies: AzureDependencies
+): Promise<Map<string, { resourceGroup: string; tags: Record<string, string> }>> {
+  if (!dependencies.createResourceGraphClient) return new Map();
+  try {
+    const rows = await dependencies.createResourceGraphClient().queryResources(
+      subscriptionId,
+      buildCandidateQuery(inputs.resourceGroup)
+    );
+    return new Map(
+      rows.map((row) => [row.id.toLowerCase(), { resourceGroup: row.resourceGroup, tags: row.tags }])
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    dependencies.core.warning(sanitizeLogMessage(`Resource Graph candidate query failed: ${detail}`));
+    return new Map();
+  }
+}
+
+function enrichCandidatesFromGraph(
+  candidates: SpecCandidate[],
+  graphRows: Map<string, { resourceGroup: string; tags: Record<string, string> }>
+): SpecCandidate[] {
+  return candidates.map((candidate) => {
+    const graph = graphRows.get(candidate.id.toLowerCase());
+    if (!graph) return candidate;
+    return {
+      ...candidate,
+      resourceGroup: candidate.resourceGroup ?? graph.resourceGroup,
+      tags: { ...graph.tags, ...candidate.tags }
+    };
+  });
 }
 
 function applyApiFilter(candidates: SpecCandidate[], apiFilter: RegExp | undefined): SpecCandidate[] {
@@ -511,6 +549,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
 
   // 3. Cloud discovery.
   const subscriptionId = await resolveSubscriptionId(inputs.subscriptionId, dependencies.subscriptions);
+  const graphRows = await queryResourceGraph(inputs, subscriptionId, dependencies);
   const providers = buildProviders(inputs, subscriptionId, dependencies, iacScan);
   const { providers: availableProviders, probes } = await core.group('Probe available providers', () =>
     probeProviders(providers, core)
@@ -523,7 +562,10 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     repoSlug: inputs.repoContext.repoSlug
   });
 
-  const enumerated = applyApiFilter(await collectCandidates(availableProviders, core), inputs.apiFilter);
+  const enumerated = applyApiFilter(
+    enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows),
+    inputs.apiFilter
+  );
 
   // 3a. Explicit api-id is a caller selection with confidence 100.
   if (inputs.apiId) {
@@ -565,7 +607,24 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         };
       }
     }
-    if (target && target.supported) {
+    if (target && !target.supported) {
+      const resolution: ResolutionResult = {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName: resolveServiceName(target, inputs.serviceMapping),
+        confidence: 100,
+        providerProbes: probes,
+        rankedCandidates: toAmbiguousViews(rankServiceCandidates([toCandidateInput(target)], signals)),
+        evidence: target.evidence
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+    if (target) {
       const provider = availableProviders.find((p) => p.type === target.providerType);
       if (provider) {
         const exportResult = await provider.exportSpec(target);
@@ -733,12 +792,16 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
   const core = dependencies.core;
   const iacScan = await scanAzureIac(inputs.repoRoot, inputs.outputDir);
   const subscriptionId = await resolveSubscriptionId(inputs.subscriptionId, dependencies.subscriptions);
+  const graphRows = await queryResourceGraph(inputs, subscriptionId, dependencies);
   const providers = buildProviders(inputs, subscriptionId, dependencies, iacScan);
   const { providers: availableProviders, probes } = await core.group('Probe available providers', () =>
     probeProviders(providers, core)
   );
 
-  const enumerated = applyApiFilter(await collectCandidates(availableProviders, core), inputs.apiFilter);
+  const enumerated = applyApiFilter(
+    enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows),
+    inputs.apiFilter
+  );
   // R5.AC6: partition by repo narrowing BEFORE the cap so canonical-tag matches
   // survive max-candidates in discover-many exactly as they do in resolve-one.
   const signals = await collectRepoSignals({

@@ -17,6 +17,8 @@ jobs:
       npm_publish: ${{ steps.release_tag.outputs.npm_publish }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -46,6 +48,13 @@ jobs:
           fi
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION=$(node -p "require('./package.json').version")
+          git fetch origin main --no-tags
+          TAG_COMMIT=$(git rev-parse 'HEAD^{commit}')
+          MAIN_COMMIT=$(git rev-parse 'origin/main^{commit}')
+          if [ "$TAG_COMMIT" != "$MAIN_COMMIT" ]; then
+            echo "::error::Release tag commit $TAG_COMMIT differs from protected origin/main $MAIN_COMMIT"
+            exit 1
+          fi
           IFS='.' read -r MAJOR MINOR _ <<< "$PKG_VERSION"
           # npm publishes ONLY from the exact immutable package-version tag.
           if [ "$TAG_VERSION" = "$PKG_VERSION" ]; then
@@ -95,9 +104,9 @@ jobs:
         with:
           files: release.tgz
 
-  advance-major-alias:
-    # Keep the rolling major alias (e.g. v2) pointing at the newest published
-    # release so consumers pinned to the alias pick it up automatically.
+  advance-rolling-aliases:
+    # Keep rolling major/minor aliases (e.g. v1 and v1.0) pointing at the newest
+    # published release so pinned action consumers pick it up automatically.
     # GITHUB_TOKEN pushes do not re-trigger workflows, so moving the alias
     # here cannot recurse into another Release run.
     needs: release
@@ -105,16 +114,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Force-move rolling major alias tag
+        with:
+          fetch-depth: 0
+      - name: Force-move rolling major and minor alias tags
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           MAJOR="v${VERSION%%.*}"
-          if [ "$MAJOR" = "v$VERSION" ]; then
-            echo "::notice::Tag $GITHUB_REF_NAME is already a major alias; nothing to move."
-            exit 0
-          fi
+          IFS='.' read -r MAJOR_NUMBER MINOR_NUMBER _ <<< "$VERSION"
+          MINOR="v${MAJOR_NUMBER}.${MINOR_NUMBER}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           COMMIT="$(git rev-parse "HEAD^{commit}")"
-          git tag -fa "$MAJOR" -m "Rolling $MAJOR alias -> $GITHUB_REF_NAME" "$COMMIT"
-          git push origin "$MAJOR" --force
+          for ALIAS in "$MAJOR" "$MINOR"; do
+            git tag -fa "$ALIAS" -m "Rolling $ALIAS alias -> $GITHUB_REF_NAME" "$COMMIT"
+            git push origin "$ALIAS" --force
+          done

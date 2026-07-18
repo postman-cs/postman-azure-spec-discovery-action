@@ -52,7 +52,9 @@ describe('CLI packaging contract', () => {
 
   it('AZ-PACK-001: bundled dist files have no runtime third-party require outside the allowlist', async () => {
     // Node builtins are fine; anything else must be inlined by esbuild.
-    const allow = new Set<string>([]);
+    // node-fetch's optional encoding peer is attempted inside a swallowed
+    // require; the canonical dist verifier carries the same narrow allowlist.
+    const allow = new Set<string>(['encoding']);
     for (const bundle of ['dist/index.cjs', 'dist/cli.cjs']) {
       const source = await readFile(path.join(repoRoot, bundle), 'utf8');
       const requires = [...source.matchAll(/require\((['"])([^'")]+)\1\)/g)]

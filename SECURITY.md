@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Only the latest `v1.x.y` release (tracked by the rolling `v1` alias) receives security fixes. Older tags remain published for reproducibility and are never retroactively modified.
+Only the latest `v1.x.y` release (tracked by rolling major and minor aliases such as `v1` and `v1.0`) receives security fixes. Older tags remain published for reproducibility and are never retroactively modified.
 
 ## Reporting a Vulnerability
 

@@ -138,7 +138,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `app-service` | App Service `siteConfig.apiDefinition.url` document | OpenAPI JSON or YAML |
 | `iac-local` | OpenAPI embedded in repo ARM/Bicep templates or referenced by `azure.yaml` | OpenAPI JSON or YAML |
 
-Non-HTTP APIM API types (SOAP, GraphQL, WebSocket) are surfaced as visible-unsupported candidates and routed to manual review; they are never exported in v1. Azure API Center, Functions, Container Apps, and management-group enumeration are out of scope for v1.
+Non-HTTP APIM API types (SOAP, GraphQL, WebSocket, gRPC, OData) are surfaced as visible-unsupported candidates and routed to manual review; they are never exported in v1. Service- and workspace-scoped APIM APIs are both enumerated. Azure API Center, Functions, Container Apps, and management-group enumeration are out of scope for v1.
 
 ## How it works
 

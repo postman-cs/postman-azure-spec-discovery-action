@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
@@ -13,10 +13,17 @@ vi.mock('@azure/arm-apimanagement', () => ({
     public apiManagementService = { list: vi.fn(), listByResourceGroup: vi.fn() };
     public api = { listByService: vi.fn() };
     public apiExport = { get: vi.fn() };
+    public workspace = { listByService: vi.fn() };
+    public workspaceApi = { listByService: vi.fn() };
+    public workspaceApiExport = { get: vi.fn() };
     public constructor(...args: unknown[]) {
       apimCtorSpy(...args);
     }
   }
+}));
+
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => [{ address: '8.8.8.8', family: 4 }])
 }));
 
 vi.mock('@azure/arm-appservice', () => ({
@@ -56,6 +63,10 @@ describe('azure sdk client wrappers', () => {
     graphCtorSpy.mockReset();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('AZ-CLIENT-001: every wrapper receives the same shared TokenCredential', () => {
     const credential = fakeCredential();
     new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
@@ -88,8 +99,8 @@ describe('azure sdk client wrappers', () => {
     new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 5 });
     new AppServiceSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 5 });
 
-    expect(apimCtorSpy.mock.calls[0]?.[2]).toMatchObject({ retryOptions: { maxRetries: 5 } });
-    expect(appServiceCtorSpy.mock.calls[0]?.[2]).toMatchObject({ retryOptions: { maxRetries: 5 } });
+    expect(apimCtorSpy.mock.calls[0]?.[2]).toMatchObject({ retryOptions: { maxRetries: 4 } });
+    expect(appServiceCtorSpy.mock.calls[0]?.[2]).toMatchObject({ retryOptions: { maxRetries: 4 } });
   });
 
   it('AZ-CLIENT-004: a 401 from the SDK surfaces after a single wrapper attempt', async () => {
@@ -169,6 +180,59 @@ describe('azure sdk client wrappers', () => {
     await expect(client.exportApi('rg', 'svc', 'payments-live')).rejects.toThrow('no download link');
   });
 
+  it('AZ-APIM-001: service and workspace APIs retain current revisions and full scope metadata', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as {
+      client: {
+        api: { listByService: ReturnType<typeof vi.fn> };
+        workspace: { listByService: ReturnType<typeof vi.fn> };
+        workspaceApi: { listByService: ReturnType<typeof vi.fn> };
+      };
+    }).client;
+    sdk.api.listByService.mockReturnValue((async function* () {
+      yield { name: 'service-current', displayName: 'Service current', apiType: 'http', isCurrent: true, apiVersionSetId: '/sets/a' };
+      yield { name: 'service-old;rev=1', displayName: 'Service old', apiType: 'http', isCurrent: false, apiVersionSetId: '/sets/a' };
+      yield { name: 'service-unknown', displayName: 'Service unknown', apiType: 'http', apiVersionSetId: '/sets/a' };
+    })());
+    sdk.workspace.listByService.mockReturnValue((async function* () { yield { name: 'team-a' }; })());
+    sdk.workspaceApi.listByService.mockReturnValue((async function* () {
+      yield { name: 'workspace-api', displayName: 'Workspace API', apiType: 'http', isCurrent: true };
+    })());
+
+    const apis = await client.listApis('rg', 'svc');
+    expect(apis.map((api) => api.apiId)).toEqual(['service-current', 'workspace-api']);
+    expect(apis[1]?.workspaceId).toBe('team-a');
+    expect(sdk.workspaceApi.listByService).toHaveBeenCalledWith('rg', 'svc', 'team-a');
+  });
+
+  it('AZ-APIM-003: a SAS 403 triggers a fresh export and total cycles stay within maxAttempts', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
+    sdk.apiExport.get
+      .mockResolvedValueOnce({ value: { link: 'https://1.1.1.1/first.json?sig=first-secret' } })
+      .mockResolvedValueOnce({ value: { link: 'https://1.1.1.1/second.json?sig=second-secret' } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('expired', { status: 403 }))
+      .mockResolvedValueOnce(new Response('{"openapi":"3.0.3","paths":{"/x":{}}}', { status: 200 }));
+
+    await expect(client.exportApi('rg', 'svc', 'payments')).resolves.toContain('openapi');
+    expect(sdk.apiExport.get).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
+      'https://1.1.1.1/first.json?sig=first-secret',
+      'https://1.1.1.1/second.json?sig=second-secret'
+    ]);
+
+    sdk.apiExport.get.mockReset();
+    fetchSpy.mockReset();
+    sdk.apiExport.get.mockResolvedValue({ value: { link: 'https://1.1.1.1/expired.json?sig=never-log' } });
+    fetchSpy.mockResolvedValue(new Response('expired', { status: 403 }));
+    await expect(client.exportApi('rg', 'svc', 'payments')).rejects.toThrow(
+      'APIM export fetch failed with HTTP 403 after 3 attempt(s)'
+    );
+    expect(sdk.apiExport.get).toHaveBeenCalledTimes(3);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
   it('AZ-CLIENT-006: pagination ceiling allows exactly 100 pages and rejects the 101st', async () => {
     const credential = fakeCredential();
     const makePagedIterable = (pageCount: number) => {
@@ -216,10 +280,37 @@ describe('azure sdk client wrappers', () => {
       );
     });
     try {
-      await expect(client.listEnabledSubscriptions()).rejects.toThrow('pagination exceeded 100 pages');
+      await expect(client.list()).rejects.toThrow('pagination exceeded 100 pages');
       expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(101);
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it('AZ-CLIENT-002: explicit subscription lookup uses the exact ARM subscription endpoint', async () => {
+    const client = new SubscriptionsSdkClient(fakeCredential());
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ subscriptionId: 'sub-1', state: 'Enabled' }), { status: 200 })
+    );
+    await expect(client.get('sub-1')).resolves.toMatchObject({ subscriptionId: 'sub-1' });
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe(
+      'https://management.azure.com/subscriptions/sub-1?api-version=2022-12-01'
+    );
+  });
+
+  it('AZ-CLIENT-004: subscription REST retries transient responses but not 401', async () => {
+    const client = new SubscriptionsSdkClient(fakeCredential(), { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('unavailable', { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ subscriptionId: 'sub-1', state: 'Enabled' }), { status: 200 })
+      );
+    await expect(client.get('sub-1')).resolves.toMatchObject({ subscriptionId: 'sub-1' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    fetchSpy.mockReset();
+    fetchSpy.mockResolvedValue(new Response('unauthorized', { status: 401 }));
+    await expect(client.get('sub-1')).rejects.toThrow('HTTP 401');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
