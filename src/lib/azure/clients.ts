@@ -267,14 +267,6 @@ function isHttp403(error: unknown): boolean {
   return /\bHTTP 403\b|\b403\b.*forbidden|forbidden.*\b403\b/i.test(message);
 }
 
-function isTransientAzureError(error: unknown): boolean {
-  const record = (error ?? {}) as { statusCode?: unknown; status?: unknown };
-  const status = Number(record.statusCode ?? record.status);
-  if (status === 408 || status === 429 || status >= 500) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /\b408\b|\b429\b|\b5\d\d\b|timeout|temporar(?:y|ily)|throttl/i.test(message);
-}
-
 function revisionGroup(api: ApimApiSummary): string {
   return (api.apiVersionSetId ?? api.apiVersion ?? api.apiId.replace(/;rev=.*$/i, '')).toLowerCase();
 }
