@@ -1,6 +1,6 @@
 {
   "name": "@postman-cse/onboarding-azure-spec-discovery",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Discover Azure-hosted API specs and hand the result to Postman API onboarding.",
   "type": "module",
   "main": "dist/index.cjs",
