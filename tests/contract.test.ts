@@ -9,7 +9,7 @@ import { buildExecutionOutputs, resolveInputs } from '../src/runtime.js';
 const repoRoot = resolve(import.meta.dirname, '..');
 const actionManifest = parse(readFileSync(resolve(repoRoot, 'action.yml'), 'utf8')) as {
   inputs: Record<string, { required?: boolean; default?: string }>;
-  outputs: Record<string, unknown>;
+  outputs: Record<string, { description?: string }>;
 };
 
 const LOCKED_OUTPUT_ORDER = [
@@ -66,6 +66,13 @@ describe('action contract', () => {
     expect(() => resolveInputs({ ...base, INPUT_MODE: 'anything-else' })).toThrow(
       'mode must be resolve-one, discover-many, or discover-estate, got: anything-else'
     );
+  });
+
+  it('AZ-CONTRACT-003: source-type manifest description includes discover-estate', () => {
+    const sourceDescription = actionContract.outputs['source-type']?.description;
+    const manifestDescription = actionManifest.outputs['source-type']?.description;
+    expect(sourceDescription).toBe(manifestDescription);
+    expect(sourceDescription).toContain('discover-estate');
   });
 
   it('AZ-CONTRACT-005: buildExecutionOutputs emits all 24 keys in every mode with locked empty behavior', () => {

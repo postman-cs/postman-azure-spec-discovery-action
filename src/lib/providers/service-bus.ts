@@ -60,9 +60,9 @@ export class ServiceBusProvider implements SpecProvider {
     this.options = options;
   }
 
-  public async probe(): Promise<ProviderProbeStatus> {
+  public async probe(signal?: AbortSignal): Promise<ProviderProbeStatus> {
     try {
-      await this.client.probeServiceBusReadAccess(this.options.resourceGroup);
+      await this.client.probeServiceBusReadAccess(this.options.resourceGroup, signal);
       return 'available';
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';

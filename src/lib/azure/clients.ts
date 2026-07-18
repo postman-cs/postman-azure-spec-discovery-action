@@ -71,12 +71,12 @@ export interface AzureApimClient {
   listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]>;
   exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string, format?: ApimExportFormat): Promise<string>;
   getGraphqlSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string>;
-  probeApimReadAccess(resourceGroup?: string): Promise<void>;
+  probeApimReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface AzureAppServiceClient {
   listSites(resourceGroup?: string): Promise<AppServiceSiteSummary[]>;
-  probeAppServiceReadAccess(resourceGroup?: string): Promise<void>;
+  probeAppServiceReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface AzureResourceGraphClient {
@@ -102,7 +102,7 @@ export interface CustomApiSummary {
 export interface AzureCustomApisClient {
   listCustomApis(resourceGroup?: string): Promise<CustomApiSummary[]>;
   getSwagger(resourceGroup: string, name: string): Promise<string>;
-  probeCustomApisReadAccess(resourceGroup?: string): Promise<void>;
+  probeCustomApisReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 /** Consumption Logic App workflow summary (list projection; no definition yet). */
@@ -116,9 +116,9 @@ export interface LogicWorkflowSummary {
 }
 
 /**
- * Request-triggered workflow detail. accessEndpoint is the workflow's base
- * invoke endpoint WITHOUT any SAS material; callback URLs (listCallbackUrl)
- * carry sig= tokens and are never requested by this client.
+ * Request-triggered workflow detail. Callback URLs (listCallbackUrl) carry
+ * sig= tokens and are never requested; consumers must still sanitize the ARM
+ * accessEndpoint before exposing it.
  */
 export interface LogicWorkflowDetail {
   id: string;
@@ -139,7 +139,7 @@ export interface LogicWorkflowDetail {
 export interface AzureLogicWorkflowsClient {
   listWorkflows(resourceGroup?: string): Promise<LogicWorkflowSummary[]>;
   getWorkflow(resourceGroup: string, name: string): Promise<LogicWorkflowDetail>;
-  probeLogicWorkflowsReadAccess(resourceGroup?: string): Promise<void>;
+  probeLogicWorkflowsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 export interface AzureSubscriptionsClient {
@@ -391,10 +391,10 @@ export class ApimSdkClient implements AzureApimClient {
     return detail.value;
   }
 
-  public async probeApimReadAccess(resourceGroup?: string): Promise<void> {
+  public async probeApimReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
     const iterator = resourceGroup
-      ? this.client.apiManagementService.listByResourceGroup(resourceGroup)
-      : this.client.apiManagementService.list();
+      ? this.client.apiManagementService.listByResourceGroup(resourceGroup, { abortSignal: signal })
+      : this.client.apiManagementService.list({ abortSignal: signal });
     await iterator[Symbol.asyncIterator]().next();
   }
 }
@@ -466,8 +466,10 @@ export class AppServiceSdkClient implements AzureAppServiceClient {
     return sites;
   }
 
-  public async probeAppServiceReadAccess(resourceGroup?: string): Promise<void> {
-    const iterator = resourceGroup ? this.client.webApps.listByResourceGroup(resourceGroup) : this.client.webApps.list();
+  public async probeAppServiceReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
+    const iterator = resourceGroup
+      ? this.client.webApps.listByResourceGroup(resourceGroup, { abortSignal: signal })
+      : this.client.webApps.list({ abortSignal: signal });
     await iterator[Symbol.asyncIterator]().next();
   }
 }
@@ -757,14 +759,14 @@ export class CustomApisSdkClient implements AzureCustomApisClient {
     return `${JSON.stringify(swagger, null, 2)}\n`;
   }
 
-  public async probeCustomApisReadAccess(resourceGroup?: string): Promise<void> {
+  public async probeCustomApisReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
     const token = await this.getArmToken();
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis`
       : 'providers/Microsoft.Web/customApis';
     const url =
       `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${CUSTOM_APIS_API_VERSION}&$top=1`;
-    const response = await this.fetchArm(url, token, 'Custom API probe');
+    const response = await this.fetchArm(url, token, 'Custom API probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: custom API probe returned HTTP ${response.status}`);
     }
@@ -781,21 +783,20 @@ export class CustomApisSdkClient implements AzureCustomApisClient {
     return token.token;
   }
 
-  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+  private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      signal?.throwIfAborted();
+      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
       try {
         const response = await fetch(url, {
           headers: { authorization: `Bearer ${token}` },
-          signal: controller.signal
+          signal: requestSignal
         });
         if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
         if (attempt === this.maxAttempts) return response;
       } catch (error) {
+        if (signal?.aborted) throw error;
         if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      } finally {
-        clearTimeout(timer);
       }
     }
     throw new Error(`${operation} exhausted its attempt limit`);
@@ -917,14 +918,14 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
     };
   }
 
-  public async probeLogicWorkflowsReadAccess(resourceGroup?: string): Promise<void> {
+  public async probeLogicWorkflowsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
     const token = await this.getArmToken();
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Logic/workflows`
       : 'providers/Microsoft.Logic/workflows';
     const url =
       `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${LOGIC_API_VERSION}&$top=1`;
-    const response = await this.fetchArm(url, token, 'Logic workflow probe');
+    const response = await this.fetchArm(url, token, 'Logic workflow probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: logic workflow probe returned HTTP ${response.status}`);
     }
@@ -941,21 +942,20 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
     return token.token;
   }
 
-  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+  private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      signal?.throwIfAborted();
+      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
       try {
         const response = await fetch(url, {
           headers: { authorization: `Bearer ${token}` },
-          signal: controller.signal
+          signal: requestSignal
         });
         if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
         if (attempt === this.maxAttempts) return response;
       } catch (error) {
+        if (signal?.aborted) throw error;
         if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      } finally {
-        clearTimeout(timer);
       }
     }
     throw new Error(`${operation} exhausted its attempt limit`);
@@ -984,7 +984,7 @@ export interface AzureTemplateSpecsClient {
   listVersions(resourceGroup: string, templateSpecName: string): Promise<TemplateSpecVersionSummary[]>;
   getVersionMainTemplate(resourceGroup: string, templateSpecName: string, version: string): Promise<unknown>;
   listDeployments(resourceGroup: string): Promise<DeploymentSummary[]>;
-  probeTemplateSpecsReadAccess(resourceGroup?: string): Promise<void>;
+  probeTemplateSpecsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 const TEMPLATE_SPECS_API_VERSION = '2022-02-01';
@@ -1092,14 +1092,14 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
     return summaries;
   }
 
-  public async probeTemplateSpecsReadAccess(resourceGroup?: string): Promise<void> {
+  public async probeTemplateSpecsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
     const token = await this.getArmToken();
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs`
       : 'providers/Microsoft.Resources/templateSpecs';
     const url =
       `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${TEMPLATE_SPECS_API_VERSION}&$top=1`;
-    const response = await this.fetchArm(url, token, 'Template spec probe');
+    const response = await this.fetchArm(url, token, 'Template spec probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: template spec probe returned HTTP ${response.status}`);
     }
@@ -1141,21 +1141,20 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
     return token.token;
   }
 
-  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+  private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      signal?.throwIfAborted();
+      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
       try {
         const response = await fetch(url, {
           headers: { authorization: `Bearer ${token}` },
-          signal: controller.signal
+          signal: requestSignal
         });
         if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
         if (attempt === this.maxAttempts) return response;
       } catch (error) {
+        if (signal?.aborted) throw error;
         if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      } finally {
-        clearTimeout(timer);
       }
     }
     throw new Error(`${operation} exhausted its attempt limit`);
@@ -1184,7 +1183,7 @@ export interface EventGridSubscriptionSummary {
 export interface AzureEventGridClient {
   listSources(resourceGroup?: string): Promise<EventGridSourceSummary[]>;
   listSubscriptions(source: { kind: EventGridSourceSummary['kind']; resourceGroup: string; name: string }): Promise<EventGridSubscriptionSummary[]>;
-  probeEventGridReadAccess(resourceGroup?: string): Promise<void>;
+  probeEventGridReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 interface EventGridDestinationLike {
@@ -1295,10 +1294,10 @@ export class EventGridSdkClient implements AzureEventGridClient {
     return summaries;
   }
 
-  public async probeEventGridReadAccess(resourceGroup?: string): Promise<void> {
+  public async probeEventGridReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
     const iterator = resourceGroup
-      ? this.client.topics.listByResourceGroup(resourceGroup)
-      : this.client.topics.listBySubscription();
+      ? this.client.topics.listByResourceGroup(resourceGroup, { abortSignal: signal })
+      : this.client.topics.listBySubscription({ abortSignal: signal });
     await iterator[Symbol.asyncIterator]().next();
   }
 }
@@ -1331,7 +1330,7 @@ export interface ServiceBusTopicSummary {
 export interface AzureServiceBusClient {
   listNamespaces(resourceGroup?: string): Promise<ServiceBusNamespaceSummary[]>;
   listTopics(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicSummary[]>;
-  probeServiceBusReadAccess(resourceGroup?: string): Promise<void>;
+  probeServiceBusReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 interface CorrelationFilterLike {
@@ -1434,10 +1433,10 @@ export class ServiceBusSdkClient implements AzureServiceBusClient {
     return summaries;
   }
 
-  public async probeServiceBusReadAccess(resourceGroup?: string): Promise<void> {
+  public async probeServiceBusReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
     const iterator = resourceGroup
-      ? this.client.namespaces.listByResourceGroup(resourceGroup)
-      : this.client.namespaces.list();
+      ? this.client.namespaces.listByResourceGroup(resourceGroup, { abortSignal: signal })
+      : this.client.namespaces.list({ abortSignal: signal });
     await iterator[Symbol.asyncIterator]().next();
   }
 }
@@ -1475,7 +1474,7 @@ export interface FunctionSummary {
 export interface AzureFunctionsClient {
   listFunctionApps(resourceGroup?: string): Promise<FunctionAppSummary[]>;
   listFunctions(resourceGroup: string, appName: string): Promise<FunctionSummary[]>;
-  probeFunctionsReadAccess(resourceGroup?: string): Promise<void>;
+  probeFunctionsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
 const FUNCTIONS_API_VERSION = '2023-12-01';
@@ -1613,14 +1612,14 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
     return summaries;
   }
 
-  public async probeFunctionsReadAccess(resourceGroup?: string): Promise<void> {
+  public async probeFunctionsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
     const token = await this.getArmToken();
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/sites`
       : 'providers/Microsoft.Web/sites';
     const url =
       `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${FUNCTIONS_API_VERSION}&$top=1`;
-    const response = await this.fetchArm(url, token, 'Function app probe');
+    const response = await this.fetchArm(url, token, 'Function app probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: function app probe returned HTTP ${response.status}`);
     }
@@ -1662,21 +1661,20 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
     return token.token;
   }
 
-  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+  private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      signal?.throwIfAborted();
+      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
       try {
         const response = await fetch(url, {
           headers: { authorization: `Bearer ${token}` },
-          signal: controller.signal
+          signal: requestSignal
         });
         if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
         if (attempt === this.maxAttempts) return response;
       } catch (error) {
+        if (signal?.aborted) throw error;
         if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      } finally {
-        clearTimeout(timer);
       }
     }
     throw new Error(`${operation} exhausted its attempt limit`);

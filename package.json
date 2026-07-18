@@ -17,7 +17,7 @@
     "RELEASE_POLICY.md"
   ],
   "scripts": {
-    "prepare": "git config core.hooksPath .githooks",
+    "setup:hooks": "git config core.hooksPath .githooks",
     "bundle": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --banner:js='#!/usr/bin/env node' --outfile=dist/cli.cjs && chmod 755 dist/cli.cjs",
     "build": "npm run typecheck && npm run bundle",
     "verify:dist:assert": "git diff --ignore-space-at-eol --text --exit-code -- dist && node scripts/verify-dist-artifact.mjs",
@@ -56,6 +56,7 @@
     "@azure/arm-subscriptions": "6.0.0",
     "@azure/identity": "4.13.1",
     "@postman-cse/automation-telemetry-core": "^0.2.0",
+    "undici": "6.27.0",
     "yaml": "^2.6.1"
   },
   "overrides": {

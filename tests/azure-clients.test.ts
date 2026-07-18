@@ -49,6 +49,11 @@ vi.mock('@azure/arm-resourcegraph', () => ({
 import {
   ApimSdkClient,
   AppServiceSdkClient,
+  EventGridSdkClient,
+  FunctionsSdkClient,
+  LogicWorkflowsSdkClient,
+  ServiceBusSdkClient,
+  TemplateSpecsSdkClient,
   createAzureCredential,
   ResourceGraphSdkClient,
   CustomApisSdkClient,
@@ -127,6 +132,56 @@ describe('azure sdk client wrappers', () => {
     expect(calls).toBe(1);
   });
 
+  it('AZ-CLIENT-ABORT-002: passes abortSignal to an SDK probe operation', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as { client: { apiManagementService: { list: ReturnType<typeof vi.fn> } } }).client;
+    sdk.apiManagementService.list.mockReturnValue((async function* () { yield undefined; })());
+    const controller = new AbortController();
+    await client.probeApimReadAccess(undefined, controller.signal);
+    expect(sdk.apiManagementService.list).toHaveBeenCalledWith({ abortSignal: controller.signal });
+  });
+
+  it('AZ-CLIENT-ABORT-002b: all SDK probes pass the caller abortSignal', async () => {
+    const signal = new AbortController().signal;
+    const appService = new AppServiceSdkClient(fakeCredential(), 'sub-1');
+    const appSdk = (appService as unknown as { client: { webApps: { list: ReturnType<typeof vi.fn> } } }).client;
+    appSdk.webApps.list.mockReturnValue((async function* () { yield undefined; })());
+    await appService.probeAppServiceReadAccess(undefined, signal);
+    expect(appSdk.webApps.list).toHaveBeenCalledWith({ abortSignal: signal });
+
+    for (const [client, property, method, probe] of [
+      [new EventGridSdkClient(fakeCredential(), 'sub-1'), 'topics', 'listBySubscription', 'probeEventGridReadAccess'],
+      [new ServiceBusSdkClient(fakeCredential(), 'sub-1'), 'namespaces', 'list', 'probeServiceBusReadAccess']
+    ] as const) {
+      const sdk = (client as unknown as { client: Record<string, Record<string, unknown>> }).client;
+      const operation = vi.fn().mockReturnValue((async function* () { yield undefined; })());
+      sdk[property]![method] = operation;
+      await (client as unknown as Record<string, (resourceGroup?: string, signal?: AbortSignal) => Promise<void>>)[probe]!(undefined, signal);
+      expect(operation).toHaveBeenCalledWith({ abortSignal: signal });
+    }
+  });
+
+  it.each([
+    ['logic workflows', LogicWorkflowsSdkClient, 'probeLogicWorkflowsReadAccess'],
+    ['template specs', TemplateSpecsSdkClient, 'probeTemplateSpecsReadAccess'],
+    ['functions', FunctionsSdkClient, 'probeFunctionsReadAccess']
+  ] as const)('AZ-CLIENT-ABORT-001b: %s REST probe composes the caller signal', async (_name, Client, probe) => {
+    const client = new Client(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const controller = new AbortController();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(init?.signal).not.toBe(controller.signal);
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    const pending = (client as unknown as Record<string, (resourceGroup?: string, signal?: AbortSignal) => Promise<void>>)[probe]!(undefined, controller.signal);
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await expect(pending).rejects.toBeDefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('AZ-CLIENT-005: exportApi reads the link from the runtime properties.value shape', async () => {
     const credential = fakeCredential();
     const client = new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
@@ -149,7 +204,7 @@ describe('azure sdk client wrappers', () => {
       // redirect:'manual', abort signal, size caps), not a bare fetch.
       expect(fetchSpy).toHaveBeenCalledWith(
         'https://blob.example/export.json?sig=REDACTED',
-        expect.objectContaining({ redirect: 'manual' })
+        expect.objectContaining({ redirect: 'manual', dispatcher: expect.anything() })
       );
     } finally {
       fetchSpy.mockRestore();
@@ -169,7 +224,7 @@ describe('azure sdk client wrappers', () => {
       expect(content).toContain('"openapi":"3.0.3"');
       expect(fetchSpy).toHaveBeenCalledWith(
         'https://blob.example/flat.json',
-        expect.objectContaining({ redirect: 'manual' })
+        expect.objectContaining({ redirect: 'manual', dispatcher: expect.anything() })
       );
     } finally {
       fetchSpy.mockRestore();
@@ -431,6 +486,21 @@ describe('azure sdk client wrappers', () => {
 });
 
 describe('CustomApisSdkClient', () => {
+  it('AZ-CLIENT-ABORT-001: an aborted direct REST probe receives the signal and does not retry', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const controller = new AbortController();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    const pending = client.probeCustomApisReadAccess(undefined, controller.signal);
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await expect(pending).rejects.toBeDefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
   it('AZ-CAPI-010: listCustomApis projects only secret-free fields from the ARM payload', async () => {
     const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
     const armEntry = {

@@ -43,9 +43,9 @@ export class ApimProvider implements SpecProvider {
     this.options = options;
   }
 
-  public async probe(): Promise<ProviderProbeStatus> {
+  public async probe(signal?: AbortSignal): Promise<ProviderProbeStatus> {
     try {
-      await this.client.probeApimReadAccess(this.options.resourceGroup);
+      await this.client.probeApimReadAccess(this.options.resourceGroup, signal);
       return 'available';
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';

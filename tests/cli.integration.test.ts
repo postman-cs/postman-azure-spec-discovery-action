@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
@@ -25,6 +25,24 @@ describe('CLI argument parsing', () => {
       expect(run.inputEnv.INPUT_SUBSCRIPTION_ID).toBe('sub-1');
       expect(run.resultJsonPath).toBe('out/result.json');
     }
+  });
+
+  it('AZ-CLI-004: help enumerates every accepted value flag and meta option', async () => {
+    let help = '';
+    await runCli(['--help'], { env: {}, writeStdout: (chunk) => { help += chunk; } });
+    expect(help).toContain('Every discovery option expects a value');
+    const action = (await import('yaml')).parse(await readFile(path.resolve(import.meta.dirname, '../action.yml'), 'utf8')) as {
+      inputs: Record<string, unknown>;
+    };
+    const acceptedValueFlags = [
+      'mode', 'subscription-id', 'resource-group', 'api-id', 'repo-url', 'repo-slug', 'git-provider', 'ref', 'sha',
+      'repo-root', 'expected-service-name', 'expected-api-ids-json', 'api-filter', 'service-mapping-json',
+      'repo-tag-keys-json', 'output-dir', 'max-candidates', 'dry-run', 'preflight-checks',
+      'preflight-permission-probe', 'request-timeout-ms', 'max-attempts', 'postman-api-key', 'postman-access-token'
+    ];
+    for (const name of acceptedValueFlags) expect(help).toContain(`--${name} <value>`);
+    for (const name of Object.keys(action.inputs)) expect(help).toContain(`--${name} <value>`);
+    for (const option of ['--result-json <path>', '--dotenv-path <path>', '--help', '--version']) expect(help).toContain(option);
   });
 });
 
@@ -100,5 +118,30 @@ describe('runCli side effects', () => {
     const dotenv = await readFile(path.join(workspace, 'out/outputs.env'), 'utf8');
     expect(dotenv.split('\n')).toHaveLength(24);
     expect(dotenv).toContain('POSTMAN_AZURE_SPEC_RESOLUTION_STATUS="resolved"');
+  });
+
+  it('rejects result-json through a symlink without writing outside the workspace', async () => {
+    vi.stubEnv('POSTMAN_ACTIONS_TELEMETRY', 'off');
+    vi.stubEnv('GITHUB_WORKSPACE', workspace);
+    const external = await mkdtemp(path.join(tmpdir(), 'az-cli-external-'));
+    await mkdir(path.join(workspace, 'out'));
+    await symlink(external, path.join(workspace, 'out', 'linked'), 'dir');
+    await expect(
+      runCli(['--repo-root', workspace, '--result-json', 'out/linked/result.json'], {
+        writeStdout: () => undefined,
+        dependencies: {
+          subscriptions: {
+            get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+            list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+          },
+          createApimClient: () => { throw new Error('not used'); },
+          createAppServiceClient: () => { throw new Error('not used'); },
+          writeSpecFile: async () => undefined,
+          providers: []
+        }
+      })
+    ).rejects.toThrow('symbolic links');
+    await expect(readFile(path.join(external, 'result.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await rm(external, { recursive: true, force: true });
   });
 });

@@ -1,5 +1,6 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureLogicWorkflowsClient, LogicWorkflowDetail } from '../azure/clients.js';
+import { toSafePublicUrl } from './public-url.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
 
 export interface LogicAppsProviderOptions {
@@ -53,7 +54,7 @@ function toOpenApiPath(relativePath: string | undefined, triggerName: string): s
  *
  * Credential hygiene: the provider never calls listCallbackUrl (SAS token in
  * the URL) or listSwagger (POST outside Reader). accessEndpoint (SAS-free
- * base endpoint) is the only URL surfaced, as an OpenAPI server entry.
+ * base endpoint) is sanitized before it is surfaced as an OpenAPI server entry.
  */
 export class LogicAppsProvider implements SpecProvider {
   public readonly type = 'logic-apps' as const;
@@ -67,9 +68,9 @@ export class LogicAppsProvider implements SpecProvider {
     this.options = options;
   }
 
-  public async probe(): Promise<ProviderProbeStatus> {
+  public async probe(signal?: AbortSignal): Promise<ProviderProbeStatus> {
     try {
-      await this.client.probeLogicWorkflowsReadAccess(this.options.resourceGroup);
+      await this.client.probeLogicWorkflowsReadAccess(this.options.resourceGroup, signal);
       return 'available';
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';
@@ -85,6 +86,7 @@ export class LogicAppsProvider implements SpecProvider {
       this.detailCache.set(detail.id || workflow.id, detail);
       const triggers = requestTriggers(detail);
       const supported = triggers.length > 0;
+      const accessEndpoint = toSafePublicUrl(detail.accessEndpoint);
       candidates.push({
         id: workflow.id,
         name: workflow.name,
@@ -96,7 +98,7 @@ export class LogicAppsProvider implements SpecProvider {
           supported
             ? `Logic App workflow ${workflow.name} exposes ${triggers.length} HTTP Request trigger(s)`
             : `Logic App workflow ${workflow.name} has no HTTP Request trigger`,
-          ...(detail.accessEndpoint ? [`Access endpoint: ${detail.accessEndpoint}`] : [])
+          ...(accessEndpoint ? [`Access endpoint: ${accessEndpoint}`] : [])
         ],
         meta: {
           resourceGroup: workflow.resourceGroup,
@@ -120,6 +122,7 @@ export class LogicAppsProvider implements SpecProvider {
     const detail =
       this.detailCache.get(candidate.id) ?? (await this.client.getWorkflow(resourceGroup, workflowName));
     const triggers = requestTriggers(detail);
+    const accessEndpoint = toSafePublicUrl(detail.accessEndpoint);
     if (triggers.length === 0) {
       throw new Error(`Logic App workflow ${workflowName} has no HTTP Request trigger to export`);
     }
@@ -150,7 +153,7 @@ export class LogicAppsProvider implements SpecProvider {
         version: '1.0.0',
         description: 'Partial OpenAPI synthesized from Logic App Request triggers; responses are not declared in the workflow definition.'
       },
-      ...(detail.accessEndpoint ? { servers: [{ url: detail.accessEndpoint }] } : {}),
+      ...(accessEndpoint ? { servers: [{ url: accessEndpoint }] } : {}),
       paths
     };
 
@@ -161,7 +164,7 @@ export class LogicAppsProvider implements SpecProvider {
       completeness: 'partial',
       evidence: [
         `Synthesized partial OpenAPI from ${triggers.length} Request trigger(s) of Logic App workflow ${workflowName}`,
-        'Callback URLs (SAS) were never requested; servers reflect the SAS-free access endpoint only'
+        'Callback URLs (SAS) were never requested; any access endpoint was reduced to its public origin and path'
       ]
     };
   }

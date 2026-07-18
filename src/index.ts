@@ -58,7 +58,7 @@ export interface GitHubActionDependencies {
   createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
   createFunctionsClient?: (subscriptionId: string) => AzureFunctionsClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
-  writeSpecFile?: (outputPath: string, content: string) => Promise<void>;
+  writeSpecFile?: (outputPath: string, content: string, rootPath: string) => Promise<void>;
   providers?: SpecProvider[];
 }
 

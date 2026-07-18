@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = resolve(import.meta.dirname, '..');
 
 describe('README action tables', () => {
-  it('AZ-DOCS-001: README tables match action.yml and docs name the three v1 providers and non-goals', () => {
+  it('AZ-DOCS-001: README tables match action.yml and docs name providers, discovery flow, and non-goals', () => {
     expect(() =>
       execFileSync(process.execPath, [resolve(repoRoot, 'scripts/render-action-tables.mjs'), '--check'], {
         cwd: repoRoot,
@@ -18,14 +18,33 @@ describe('README action tables', () => {
     const readme = readFileSync(resolve(repoRoot, 'README.md'), 'utf8');
     const providersDoc = readFileSync(resolve(repoRoot, 'docs/providers.md'), 'utf8');
 
-    for (const provider of ['`apim`', '`app-service`', '`function-bindings`', '`iac-local`']) {
+    const providerIdentifiers = [
+      '`apim`',
+      '`app-service`',
+      '`custom-apis`',
+      '`iac-local`',
+      '`logic-apps`',
+      '`template-specs`',
+      '`event-grid`',
+      '`service-bus`',
+      '`function-bindings`'
+    ];
+    for (const provider of providerIdentifiers) {
       expect(readme).toContain(provider);
       expect(providersDoc).toContain(provider);
     }
+    expect(readme).toMatch(/repo-local OpenAPI\/Swagger specification short-circuits discovery/i);
+    expect(readme).toMatch(/all available supported Azure candidates enter the same narrowing and ranking flow/i);
     // Non-goals must be documented so users do not expect them.
     for (const nonGoal of ['API Center', 'Container Apps']) {
       expect(readme).toContain(nonGoal);
     }
     expect(readme).toContain('manual review');
+    expect(readme).toContain('Emit all 24 outputs');
+    expect(providersDoc).toContain('## Security and IAM');
+    expect(providersDoc).toContain('API Management Service Reader');
+    expect(providersDoc).toContain('Inaccessible providers fail-soft');
+    const support = readFileSync(resolve(repoRoot, 'SUPPORT.md'), 'utf8');
+    expect(support).toContain('docs/providers.md#security-and-iam');
   });
 });

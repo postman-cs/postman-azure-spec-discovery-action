@@ -8,7 +8,10 @@ export interface PrepareTelemetryCredentialsOptions {
   apiBaseUrl?: string;
   onToken?: (token: string) => void;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }
+
+export const TELEMETRY_ENRICHMENT_TIMEOUT_MS = 5000;
 
 export interface PreparedTelemetryCredentials {
   provider?: AccessTokenProvider;
@@ -23,7 +26,7 @@ export function resolveTelemetryTeamId(env: NodeJS.ProcessEnv): string | undefin
  * Wire AccessTokenProvider for telemetry enrichment. When only a service-account
  * PMAK is present, mint a fresh access token so iapub session identity (and thus
  * telemetry account_type) can still resolve. Mint failures are best-effort: they
- * must not block AWS spec discovery.
+ * must not block Azure spec discovery.
  */
 export async function prepareTelemetryCredentials(
   options: PrepareTelemetryCredentialsOptions
@@ -34,25 +37,51 @@ export async function prepareTelemetryCredentials(
     return {};
   }
 
+  const abortController = new AbortController();
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const boundedFetch: typeof fetch = (input, init = {}) =>
+    fetchImpl(input, {
+      ...init,
+      signal: init.signal
+        ? AbortSignal.any([init.signal, abortController.signal])
+        : abortController.signal
+    });
   const provider = new AccessTokenProvider({
     accessToken,
     apiKey,
     apiBaseUrl: options.apiBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl,
     onToken: options.onToken,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {})
+    fetchImpl: boundedFetch
   });
 
-  if (!accessToken && apiKey && provider.canRefresh()) {
-    try {
-      await provider.refresh();
-    } catch {
-      // Telemetry-only path: discovery continues without account_type enrichment.
+  const enrichment = (async (): Promise<PreparedTelemetryCredentials> => {
+    if (!accessToken && apiKey && provider.canRefresh()) {
+      try {
+        await provider.refresh();
+      } catch {
+        // Telemetry-only path: discovery continues without account_type enrichment.
+      }
     }
-  }
 
-  const accountType = await resolveTelemetryAccountType(provider.current(), options.fetchImpl);
-  return {
-    provider,
-    ...(accountType ? { accountType } : {})
-  };
+    const accountType = await resolveTelemetryAccountType(provider.current(), boundedFetch);
+    return {
+      provider,
+      ...(accountType ? { accountType } : {})
+    };
+  })();
+  enrichment.catch(() => undefined);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<PreparedTelemetryCredentials>((resolve) => {
+    timer = setTimeout(() => {
+      abortController.abort();
+      resolve({ provider });
+    }, options.timeoutMs ?? TELEMETRY_ENRICHMENT_TIMEOUT_MS);
+  });
+
+  const result = await Promise.race([enrichment, timeout]);
+  if (timer) {
+    clearTimeout(timer);
+  }
+  return result;
 }

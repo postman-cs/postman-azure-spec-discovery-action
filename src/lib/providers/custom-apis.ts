@@ -1,6 +1,7 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureCustomApisClient } from '../azure/clients.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
+import { toSafePublicUrl } from './public-url.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
 
 export interface CustomApisProviderOptions {
@@ -38,9 +39,9 @@ export class CustomApisProvider implements SpecProvider {
     this.options = options;
   }
 
-  public async probe(): Promise<ProviderProbeStatus> {
+  public async probe(signal?: AbortSignal): Promise<ProviderProbeStatus> {
     try {
-      await this.client.probeCustomApisReadAccess(this.options.resourceGroup);
+      await this.client.probeCustomApisReadAccess(this.options.resourceGroup, signal);
       return 'available';
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';
@@ -51,6 +52,8 @@ export class CustomApisProvider implements SpecProvider {
     const connectors = await this.client.listCustomApis(this.options.resourceGroup);
     return connectors.map((connector): SpecCandidate => {
       const supported = connector.hasSwagger;
+      const backendServiceUrl = toSafePublicUrl(connector.backendServiceUrl);
+      const originalSwaggerUrl = toSafePublicUrl(connector.originalSwaggerUrl);
       return {
         id: connector.id,
         name: connector.name,
@@ -60,13 +63,13 @@ export class CustomApisProvider implements SpecProvider {
         supported,
         evidence: [
           `Custom connector ${connector.name} ${supported ? 'carries an inline swagger document' : 'has no inline swagger document'}`,
-          ...(connector.backendServiceUrl ? [`Backend service URL: ${connector.backendServiceUrl}`] : []),
-          ...(!supported && connector.originalSwaggerUrl ? [`Original swagger URL (not auto-fetched): ${connector.originalSwaggerUrl}`] : [])
+          ...(backendServiceUrl ? [`Backend service URL: ${backendServiceUrl}`] : []),
+          ...(!supported && originalSwaggerUrl ? [`Original swagger URL (not auto-fetched): ${originalSwaggerUrl}`] : [])
         ],
         meta: {
           resourceGroup: connector.resourceGroup,
           connectorName: connector.name,
-          ...(connector.backendServiceUrl ? { backendServiceUrl: connector.backendServiceUrl } : {})
+          ...(backendServiceUrl ? { backendServiceUrl } : {})
         }
       };
     });

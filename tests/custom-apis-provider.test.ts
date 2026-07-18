@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AzureCustomApisClient, CustomApiSummary } from '../src/lib/azure/clients.js';
 import { CustomApisProvider } from '../src/lib/providers/custom-apis.js';
+import { toSafePublicUrl } from '../src/lib/providers/public-url.js';
 
 const SWAGGER = JSON.stringify({
   swagger: '2.0',
@@ -30,6 +31,15 @@ function client(overrides: Partial<AzureCustomApisClient> = {}): AzureCustomApis
     probeCustomApisReadAccess: vi.fn(async () => undefined),
     ...overrides
   };
+}
+
+function credentialedUrl(base: string, query: string, fragment: string): string {
+  const url = new URL(base);
+  url.username = 'user';
+  url.password = 'pass';
+  url.search = query;
+  url.hash = fragment;
+  return url.toString();
 }
 
 describe('CustomApisProvider', () => {
@@ -97,11 +107,43 @@ describe('CustomApisProvider', () => {
   });
 
   it('AZ-CAPI-006: candidate metadata never carries connectionParameters or secret-adjacent fields', async () => {
-    const provider = new CustomApisProvider(client());
+    const provider = new CustomApisProvider(client({
+      listCustomApis: vi.fn(async () => [connector({
+        backendServiceUrl: credentialedUrl('https://api.contoso.com:8443/payments', 'code=secret', 'fragment'),
+        originalSwaggerUrl: credentialedUrl('https://example.com/swagger.json', 'sig=secret', 'fragment')
+      })])
+    }));
     const [candidate] = await provider.listCandidates();
     const serialized = JSON.stringify(candidate);
     expect(serialized).not.toContain('connectionParameters');
     expect(serialized).not.toContain('clientSecret');
     expect(serialized).not.toContain('oAuthSettings');
+    expect(serialized).not.toContain('user');
+    expect(serialized).not.toContain('pass');
+    expect(serialized).not.toContain('code=');
+    expect(serialized).not.toContain('fragment');
+    expect(serialized).toContain('https://api.contoso.com:8443/payments');
+  });
+
+  it('omits malformed public URL fields without failing discovery', async () => {
+    const provider = new CustomApisProvider(client({
+      listCustomApis: vi.fn(async () => [connector({ backendServiceUrl: 'not a URL', originalSwaggerUrl: 'ftp://example.com/spec' })])
+    }));
+    const [candidate] = await provider.listCandidates();
+    expect(candidate?.meta.backendServiceUrl).toBeUndefined();
+    expect(JSON.stringify(candidate)).not.toContain('not a URL');
+  });
+});
+
+describe('toSafePublicUrl', () => {
+  it('retains protocol, host, port, and path while stripping userinfo, query, and fragment', () => {
+    expect(toSafePublicUrl(credentialedUrl('https://example.com:8443/api/v1', 'token=secret', 'section'))).toBe(
+      'https://example.com:8443/api/v1'
+    );
+  });
+
+  it('rejects malformed and non-http(s) URLs', () => {
+    expect(toSafePublicUrl('not a URL')).toBeUndefined();
+    expect(toSafePublicUrl('ftp://example.com/spec')).toBeUndefined();
   });
 });

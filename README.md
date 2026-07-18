@@ -4,18 +4,13 @@
 
 Zero-config discovery and export of API specs from Azure services using only your existing Azure credentials. Use it when a service already runs on Azure and you need a source-of-truth [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/) specification that Postman onboarding can turn into deterministic collections, OpenAPI-backed contract checks, smoke tests, mocks, monitors, repo artifacts, and CI runs.
 
-The action resolves the best specification source for the current repository in this order:
-
-1. **Repo spec** — an OpenAPI/Swagger file already committed to the repository wins outright; Azure is never called.
-2. **Azure API Management (APIM)** — current HTTP APIs as OpenAPI, SOAP APIs as native WSDL, and GraphQL APIs as native SDL plus a partial derived OpenAPI `/graphql` POST shell.
-3. **App Service API definition** — a site whose `apiDefinition.url` points at a reachable OpenAPI document.
-4. **Local Azure IaC** — OpenAPI content embedded in ARM/Bicep templates or referenced by `azure.yaml` in the repository.
+A valid repo-local OpenAPI/Swagger specification short-circuits discovery, so Azure is never called. Otherwise, all available supported Azure candidates enter the same narrowing and ranking flow: authored or exported sources from API Management (APIM), App Service, custom connectors, and local IaC; and synthesized or embedded sources from Logic Apps, Template Specs, Event Grid, Service Bus, and Function bindings. No fixed cascade applies among Azure providers. See [Supported providers](#supported-providers) and [provider contracts](docs/providers.md) for exact behavior.
 
 When several Azure candidates match, a four-tier narrowing pipeline (IaC fingerprint, resource-group correlation, repo-tag prefilter, naming heuristic) orders them, and genuinely ambiguous results surface as a ranked GitHub Step Summary table instead of a guess. The tag prefilter selects outright when exactly one candidate carries a select-grade repo tag for the calling repository: canonical `postman:repo=<org>/<repo>`, the Fox-style `GithubOrg`/`GithubRepo` pair, or any extra keys supplied via the CLI-only `--repo-tag-keys-json` flag. Tag names and values compare case-insensitively (a trailing `.git` is tolerated), and when enumerated candidates carry no matching tags a single targeted Resource Graph tag lookup runs as a fallback — so a gateway tagged with its owning repo resolves automatically, per service repo, with zero further configuration.
 
 ## Auth and Postman handoff
 
-The action authenticates with `DefaultAzureCredential` — GitHub OIDC via `azure/login`, environment credentials, or Azure CLI login all work with no extra configuration. It needs only read access (`Reader` plus `API Management Service Reader` covers everything). It never creates, modifies, or deletes Azure resources.
+The action authenticates with `DefaultAzureCredential` — GitHub OIDC via `azure/login`, environment credentials, or Azure CLI login all work with no extra configuration. Grant only the provider-specific read access described in [Security and IAM](docs/providers.md#security-and-iam). It never creates, modifies, or deletes Azure resources.
 
 The optional `postman-api-key` / `postman-access-token` inputs exist only to enrich anonymous telemetry with the session account type. They are never used for Azure calls or Postman asset operations.
 
@@ -29,8 +24,8 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - uses: actions/checkout@v7
+      - uses: azure/login@v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -39,6 +34,8 @@ jobs:
         uses: postman-cs/postman-azure-spec-discovery-action@v1
       - run: echo "Resolved ${{ steps.spec.outputs.source-type }} -> ${{ steps.spec.outputs.spec-path }}"
 ```
+
+The rolling `@v1` action reference is convenient and receives compatible v1 updates. For immutable workflows, replace it with a reviewed full commit SHA from this repository; no SHA is implied by this example.
 
 ## Examples
 
@@ -118,7 +115,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | --- | --- |
 | `resolution-json` | JSON resolution result describing status, source type, confidence, and evidence. |
 | `resolution-status` | Resolution status: resolved or unresolved. |
-| `source-type` | Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, or discover-many. |
+| `source-type` | Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, discover-many, or discover-estate. |
 | `mapping-confidence` | Numeric confidence score for the selected service candidate. |
 | `spec-path` | Path to the resolved or generated specification when available. |
 | `api-id` | Full APIM API ARM resource ID for APIM resolutions; empty for App Service or IaC-local resolutions. |
@@ -165,7 +162,7 @@ APIM SOAP and GraphQL APIs are exportable; WebSocket, gRPC, and OData remain vis
 3. Probe providers fail-soft: an unauthorized provider is skipped (`skipped:iam`), an erroring one is skipped (`skipped:error`), and discovery continues with the rest.
 4. Enumerate candidates, narrow with the four-tier pipeline, and score against repository signals.
 5. Export the winner (APIM ARM export, guarded HTTPS fetch, or IaC extraction), validate it is real OpenAPI/Swagger with at least one path, and write it under `output-dir` confined to the repository root.
-6. Emit all 22 outputs; ambiguous resolutions additionally render a ranked Step Summary table.
+6. Emit all 24 outputs; ambiguous resolutions additionally render a ranked Step Summary table.
 
 ## Resources
 

@@ -85,9 +85,9 @@ export class FunctionBindingsProvider implements SpecProvider {
     this.options = options;
   }
 
-  public async probe(): Promise<ProviderProbeStatus> {
+  public async probe(signal?: AbortSignal): Promise<ProviderProbeStatus> {
     try {
-      await this.client.probeFunctionsReadAccess(this.options.resourceGroup);
+      await this.client.probeFunctionsReadAccess(this.options.resourceGroup, signal);
       return 'available';
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';
