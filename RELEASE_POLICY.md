@@ -27,7 +27,7 @@ Run the package validators from this directory before pushing an immutable tag:
 
 ## npm package
 
-The CLI publishes as `@postman-cse/onboarding-aws-spec-discovery` with versions that match the GitHub release tag. The rolling major alias updates the action channel and skips npm publishing.
+The CLI publishes as `@postman-cse/onboarding-azure-spec-discovery` with versions that match the GitHub release tag. The rolling major alias updates the action channel and skips npm publishing.
 
 ## Compatibility
 
@@ -39,4 +39,4 @@ Security fixes ship on the latest immutable `vMAJOR.MINOR.PATCH` tag and move on
 
 ## Suite release order
 
-AWS discovery can be released on its own unless a downstream onboarding example depends on a new composite or bootstrap feature. When multiple onboarding actions change together, release the lower-level actions first, then update the composite action after its pinned dependencies are available.
+Azure discovery can be released on its own unless a downstream onboarding example depends on a new composite or bootstrap feature. When multiple onboarding actions change together, release the lower-level actions first, then update the composite action after its pinned dependencies are available.

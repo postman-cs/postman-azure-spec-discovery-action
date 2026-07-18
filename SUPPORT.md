@@ -19,7 +19,7 @@ Do not include Azure secrets, Postman API keys, Postman access tokens, private O
 
 | Symptom | First check |
 | --- | --- |
-| `Azure credentials are missing or invalid` | Confirm `aws-actions/configure-aws-credentials` ran first and `aws-region` matches the role session. |
+| `Azure credentials are missing or invalid` | Confirm `azure/login` ran first and the federated credential covers this repository and environment. |
 | Provider was skipped | Add the provider's read-only IAM permissions from [docs/providers.md](docs/providers.md#security-and-iam). |
 | `manual-review` result | Provide a repo-local spec, SSM spec registration, Backstage API entity, known `gateway-id`, or stronger service-name hint. |
 | Downstream Postman onboarding failed | Check the service-token step outputs and downstream `credential-preflight` setting. Valid values are `warn` and `enforce`. |

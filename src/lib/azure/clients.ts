@@ -83,6 +83,40 @@ export interface AzureSubscriptionsClient {
 const EXPORT_FORMAT_OPENAPI_JSON = 'openapi+json-link';
 
 /**
+ * Absolute ceiling on pages consumed from any Azure list/pagination surface.
+ * Defensive bound so a misbehaving continuation token can never spin the
+ * action forever; 100 pages of standard ARM page sizes far exceeds any
+ * realistic subscription for this action's scope.
+ */
+const MAX_LIST_PAGES = 100;
+
+async function collectBounded<T>(iterable: AsyncIterable<T>, surface: string): Promise<T[]> {
+  const items: T[] = [];
+  const paged = (iterable as { byPage?: () => AsyncIterable<T[]> }).byPage?.();
+  if (paged) {
+    let pages = 0;
+    for await (const page of paged) {
+      items.push(...page);
+      pages += 1;
+      if (pages >= MAX_LIST_PAGES) {
+        throw new Error(`${surface} pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
+      }
+    }
+    return items;
+  }
+  let count = 0;
+  const maxItems = MAX_LIST_PAGES * 1000;
+  for await (const item of iterable) {
+    items.push(item);
+    count += 1;
+    if (count >= maxItems) {
+      throw new Error(`${surface} enumeration exceeded ${maxItems} items; aborting`);
+    }
+  }
+  return items;
+}
+
+/**
  * The ARM `apiExport.get` response nests the download link at either
  * `value.link` (the shape the SDK model claims) or `properties.value.link`
  * (the shape the live 2024-05-01 API actually returns). The generated SDK
@@ -114,22 +148,16 @@ export class ApimSdkClient implements AzureApimClient {
   }
 
   public async listServices(resourceGroup?: string): Promise<ApimServiceSummary[]> {
-    const services: ApimServiceSummary[] = [];
     const iterator = resourceGroup
       ? this.client.apiManagementService.listByResourceGroup(resourceGroup)
       : this.client.apiManagementService.list();
-    for await (const service of iterator) {
-      services.push(toServiceSummary(service));
-    }
-    return services;
+    const services = await collectBounded(iterator, 'APIM service list');
+    return services.map((service) => toServiceSummary(service));
   }
 
   public async listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]> {
-    const apis: ApimApiSummary[] = [];
-    for await (const api of this.client.api.listByService(resourceGroup, serviceName)) {
-      apis.push(toApiSummary(api, serviceName, resourceGroup));
-    }
-    return apis;
+    const apis = await collectBounded(this.client.api.listByService(resourceGroup, serviceName), 'APIM API list');
+    return apis.map((api) => toApiSummary(api, serviceName, resourceGroup));
   }
 
   /**
@@ -191,9 +219,10 @@ export class AppServiceSdkClient implements AzureAppServiceClient {
   }
 
   public async listSites(resourceGroup?: string): Promise<AppServiceSiteSummary[]> {
-    const sites: AppServiceSiteSummary[] = [];
     const iterator = resourceGroup ? this.client.webApps.listByResourceGroup(resourceGroup) : this.client.webApps.list();
-    for await (const site of iterator) {
+    const rawSites = await collectBounded(iterator, 'App Service site list');
+    const sites: AppServiceSiteSummary[] = [];
+    for (const site of rawSites) {
       const siteResourceGroup = site.resourceGroup ?? extractResourceGroup(site.id);
       if (!site.name || !siteResourceGroup) {
         continue;
@@ -231,7 +260,12 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
   public async queryResources(subscriptionId: string, kql: string): Promise<ResourceGraphRow[]> {
     const rows: ResourceGraphRow[] = [];
     let skipToken: string | undefined;
+    let pages = 0;
     do {
+      pages += 1;
+      if (pages > MAX_LIST_PAGES) {
+        throw new Error(`Resource Graph pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
+      }
       const response = await this.client.resources({
         subscriptions: [subscriptionId],
         query: kql,

@@ -6,12 +6,12 @@ import { describe, expect, it } from 'vitest';
 const releaseWorkflow = readFileSync(join(process.cwd(), '.github/workflows/release.yml'), 'utf8');
 
 describe('release workflow publishing contract', () => {
-  it('AZ-RELEASE-001: immutable version tags publish npm; the rolling major alias skips npm and only the alias job force-moves it', () => {
-    // Exact-version and zero-patch minor tags publish npm.
-    expect(releaseWorkflow).toContain('PUBLISH_TAGS=("$PKG_VERSION")');
-    expect(releaseWorkflow).toContain('PUBLISH_TAGS+=("$MAJOR.$MINOR")');
-    // Rolling major alias (v1) skips npm publish.
-    expect(releaseWorkflow).toContain('if [ "$TAG_VERSION" = "$MAJOR" ]; then');
+  it('AZ-RELEASE-001: only the exact immutable version tag publishes npm; rolling aliases skip npm and only the alias job force-moves', () => {
+    // npm publishes ONLY from the exact package-version tag.
+    expect(releaseWorkflow).toContain('if [ "$TAG_VERSION" = "$PKG_VERSION" ]; then');
+    expect(releaseWorkflow).not.toContain('PUBLISH_TAGS');
+    // Rolling aliases (v1, v1.0) skip npm publish.
+    expect(releaseWorkflow).toContain('if [ "$TAG_VERSION" = "$MAJOR" ] || [ "$TAG_VERSION" = "$MAJOR.$MINOR" ]; then');
     expect(releaseWorkflow).toContain('npm_publish=false');
     // npm publish is gated on npm_publish plus not-already-published, with provenance.
     expect(releaseWorkflow).toContain(

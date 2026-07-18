@@ -4,10 +4,6 @@ const BEARER_TOKEN_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 const URL_QUERY_RE = /(https:\/\/[^\s'"?]+)\?[^\s'"]*/gi;
 const ABS_PATH_RE = /(?:^|(?<=[\s'"=([{,]))(?:[A-Za-z]:\\|\/)[^\s'"]+/g;
 
-export function isDebugLoggingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return String(env.ACTIONS_STEP_DEBUG || '').toLowerCase() === 'true';
-}
-
 /**
  * Redact Azure-sensitive material from a log line:
  *  - SAS/query strings are stripped from HTTPS URLs (origin + path survive);
@@ -47,10 +43,11 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function formatUserSafeError(error: unknown, env: NodeJS.ProcessEnv = process.env): string {
-  const message = errorMessage(error);
-  if (isDebugLoggingEnabled(env)) {
-    return message;
-  }
-  return sanitizeLogMessage(message);
+/**
+ * External errors are ALWAYS sanitized, including under ACTIONS_STEP_DEBUG:
+ * debug mode may add more log lines elsewhere, but it must never widen what an
+ * error can leak (subscription IDs, ARM IDs, hosts, SAS queries, tokens).
+ */
+export function formatUserSafeError(error: unknown): string {
+  return sanitizeLogMessage(errorMessage(error));
 }

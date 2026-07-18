@@ -38,9 +38,15 @@ describe('azure log sanitization', () => {
     expect(JSON.stringify(value)).not.toContain('SECRETSIGVALUE123');
   });
 
-  it('AZ-CLIENT-005: formatUserSafeError sanitizes unless step debug is enabled', () => {
+  it('AZ-CLIENT-005: formatUserSafeError always sanitizes, including under step debug', () => {
     const error = new Error(`export failed for ${ARM_ID}`);
-    expect(formatUserSafeError(error, {})).not.toContain(SUBSCRIPTION_UUID);
-    expect(formatUserSafeError(error, { ACTIONS_STEP_DEBUG: 'true' })).toContain(SUBSCRIPTION_UUID);
+    expect(formatUserSafeError(error)).not.toContain(SUBSCRIPTION_UUID);
+    // ACTIONS_STEP_DEBUG must not widen error output: same sanitized result.
+    process.env.ACTIONS_STEP_DEBUG = 'true';
+    try {
+      expect(formatUserSafeError(error)).not.toContain(SUBSCRIPTION_UUID);
+    } finally {
+      delete process.env.ACTIONS_STEP_DEBUG;
+    }
   });
 });

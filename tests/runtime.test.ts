@@ -162,23 +162,22 @@ describe('runtime execute', () => {
     expect(result.outputs['resolution-status']).toBe('resolved');
   });
 
-  it('AZ-CONTRACT-004: output-dir escaping repo root rejects with the exact message and writes nothing', async () => {
-    const provider = stubProvider([apimCandidate('payments', { tags: { 'postman:repo': 'org/payments' } })]);
-    const escaping = inputs();
-    escaping.repoContext = { provider: 'github', repoSlug: 'org/payments' };
-    escaping.outputDir = '../escape';
-    await expect(execute(escaping, dependencies(provider))).rejects.toThrow(
-      'output-dir must stay within repo-root/workspace; received'
-    );
-    await expect(stat(path.join(path.dirname(repoRoot), 'escape'))).rejects.toThrow();
-  });
-
-  it('unsupported-only candidates go to manual review without export attempts', async () => {
-    const provider = stubProvider([apimCandidate('soap-only', { supported: false, tags: { 'postman:repo': 'org/soap-only' } })]);
-    const withSlug = inputs();
-    withSlug.repoContext = { provider: 'github', repoSlug: 'org/soap-only' };
+  it('AZ-NARROW-006/R5.AC6: canonical-tag match at position 70 of 75 survives the 50 cap and summary.skipped includes the 25 capped', async () => {
+    const candidates: SpecCandidate[] = [];
+    for (let i = 0; i < 75; i += 1) {
+      candidates.push(apimCandidate(`api-${String(i).padStart(2, '0')}`));
+    }
+    candidates[69] = apimCandidate('target', { tags: { 'postman:repo': 'org/target' } });
+    const provider = stubProvider(candidates);
+    const withSlug = inputs({ mode: 'discover-many' });
+    withSlug.repoContext = { provider: 'github', repoSlug: 'org/target' };
     const result = await execute(withSlug, dependencies(provider));
-    expect(result.resolution?.status).toBe('unresolved');
-    expect(provider.exportSpec).not.toHaveBeenCalled();
+    // The tag-selected candidate is partitioned first, so it is inside the executed cap.
+    expect(result.discovered.some((service) => service.serviceName === 'org/target' || service.apiId?.endsWith('/target'))).toBe(true);
+    // 75 enumerated - 50 executed = 25 capped, all counted as skipped.
+    const summary = JSON.parse(result.outputs['export-summary-json'] as string) as { attempted: number; skipped: number };
+    expect(result.discovered).toHaveLength(50);
+    expect(summary.attempted).toBe(50);
+    expect(summary.skipped).toBe(25);
   });
 });

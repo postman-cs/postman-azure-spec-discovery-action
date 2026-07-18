@@ -46,28 +46,19 @@ jobs:
           fi
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION=$(node -p "require('./package.json').version")
-          IFS='.' read -r MAJOR MINOR PATCH _ <<< "$PKG_VERSION"
-          PUBLISH_TAGS=("$PKG_VERSION")
-          if [ "${PATCH:-}" = "0" ] && [ -n "${MINOR:-}" ]; then
-            PUBLISH_TAGS+=("$MAJOR.$MINOR")
-          fi
-          for PUBLISH_TAG in "${PUBLISH_TAGS[@]}"; do
-            if [ "$TAG_VERSION" = "$PUBLISH_TAG" ]; then
-              echo "npm_publish=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          if [ "$TAG_VERSION" = "$MAJOR" ]; then
-            echo "npm_publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Tag v$TAG_VERSION is the rolling v1 alias for package version $PKG_VERSION; skipping npm publish."
+          IFS='.' read -r MAJOR MINOR _ <<< "$PKG_VERSION"
+          # npm publishes ONLY from the exact immutable package-version tag.
+          if [ "$TAG_VERSION" = "$PKG_VERSION" ]; then
+            echo "npm_publish=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ "${#PUBLISH_TAGS[@]}" -eq 2 ]; then
-            EXPECTED="v${PUBLISH_TAGS[0]}, v${PUBLISH_TAGS[1]}, or v$MAJOR"
-          else
-            EXPECTED="v${PUBLISH_TAGS[0]} or v$MAJOR"
+          # Rolling aliases (v1, v1.0) update the action channel and never publish npm.
+          if [ "$TAG_VERSION" = "$MAJOR" ] || [ "$TAG_VERSION" = "$MAJOR.$MINOR" ]; then
+            echo "npm_publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tag v$TAG_VERSION is a rolling alias for package version $PKG_VERSION; skipping npm publish."
+            exit 0
           fi
-          echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION; expected $EXPECTED"
+          echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION; expected v$PKG_VERSION, v$MAJOR.$MINOR, or v$MAJOR"
           exit 1
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2

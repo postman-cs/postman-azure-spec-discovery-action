@@ -20,13 +20,13 @@ You should receive an acknowledgement within five business days. Please include 
 - Use `postman-resolve-service-token-action` as the primary way to mint a Postman access token and resolve the team ID from a service-account PMAK.
 - When service-account minting is unavailable, use the Postman CLI credential store created by `postman login` as the fallback source. Do not paste copied cookies, DevTools values, or manually harvested session credentials into workflow secrets.
 - Downstream `credential-preflight` supports `warn` and `enforce` only. Do not document or depend on a public opt-out.
-- Reports about secrets you exposed in your own workflow configuration are out of scope; rotate the credential in AWS or Postman immediately.
+- Reports about secrets you exposed in your own workflow configuration are out of scope; rotate the credential in Azure or Postman immediately.
 
 ## Credential Matrix
 
 | Credential | Used by | Recommended source | Notes |
 | --- | --- | --- | --- |
-| AWS role credentials | `aws-actions/configure-aws-credentials` and this action | GitHub OIDC role assumption | Grant read-only discovery permissions. |
+| Azure credentials | `azure/login` and this action | GitHub OIDC federated credentials | Grant least-privilege Reader roles for discovery. |
 | `POSTMAN_SERVICE_ACCOUNT_API_KEY` | `postman-resolve-service-token-action` and downstream onboarding actions | GitHub secret | Must be a Postman service-account PMAK when minting an access token. |
 | Postman access token | Downstream onboarding actions | `postman-resolve-service-token-action` output | Pass through `steps.postman_token.outputs.token`; do not store unless your workflow requires it. |
 | Postman team ID | Composite onboarding action | `postman-resolve-service-token-action` output | Pass through `steps.postman_token.outputs.team-id` to the composite action for org-mode handoff. Direct bootstrap workflows should use `workspace-team-id` for workspace creation. |

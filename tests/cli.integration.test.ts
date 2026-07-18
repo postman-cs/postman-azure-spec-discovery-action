@@ -1,7 +1,11 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { writeFile } from 'node:fs/promises';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { parseCliArgs, toDotenv } from '../src/cli.js';
+import { parseCliArgs, runCli, toDotenv } from '../src/cli.js';
 import { contractOutputNames } from '../src/contracts.js';
 
 describe('CLI argument parsing', () => {
@@ -46,5 +50,55 @@ describe('dotenv serialization', () => {
       const value = line.slice(line.indexOf('=') + 1);
       expect(() => JSON.parse(value)).not.toThrow();
     }
+  });
+});
+
+describe('runCli side effects', () => {
+  let workspace: string;
+  let previousCwd: string;
+
+  beforeEach(async () => {
+    workspace = await mkdtemp(path.join(tmpdir(), 'az-cli-run-'));
+    previousCwd = process.cwd();
+    process.chdir(workspace);
+  });
+
+  afterEach(async () => {
+    process.chdir(previousCwd);
+    await rm(workspace, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
+
+  it('AZ-CLI-003: runCli resolves a repo spec, writes result-json + dotenv, and prints the result JSON to stdout', async () => {
+    vi.stubEnv('POSTMAN_ACTIONS_TELEMETRY', 'off');
+    vi.stubEnv('GITHUB_WORKSPACE', workspace);
+    const spec = JSON.stringify({
+      openapi: '3.0.3',
+      info: { title: 'Payments', version: '1.0.0' },
+      paths: { '/payments': { get: { responses: { '200': { description: 'ok' } } } } }
+    });
+    await writeFile(path.join(workspace, 'openapi.json'), spec, 'utf8');
+
+    let stdout = '';
+    await runCli(
+      ['--repo-root', workspace, '--result-json', 'out/result.json', '--dotenv-path', 'out/outputs.env'],
+      { writeStdout: (chunk) => { stdout += chunk; } }
+    );
+
+    const printed = JSON.parse(stdout) as { outputs: Record<string, string> };
+    expect(printed.outputs['resolution-status']).toBe('resolved');
+    expect(printed.outputs['source-type']).toBe('repo-spec');
+
+    const resultJson = JSON.parse(await readFile(path.join(workspace, 'out/result.json'), 'utf8')) as {
+      outputs: Record<string, string>;
+    };
+    expect(resultJson.outputs).toEqual(printed.outputs);
+    for (const name of contractOutputNames) {
+      expect(resultJson.outputs[name]).toBeDefined();
+    }
+
+    const dotenv = await readFile(path.join(workspace, 'out/outputs.env'), 'utf8');
+    expect(dotenv.split('\n')).toHaveLength(22);
+    expect(dotenv).toContain('POSTMAN_AZURE_SPEC_RESOLUTION_STATUS="resolved"');
   });
 });

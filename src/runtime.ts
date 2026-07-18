@@ -703,7 +703,30 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
   );
 
   const enumerated = applyApiFilter(await collectCandidates(availableProviders, core), inputs.apiFilter);
-  const capped = enumerated.slice(0, inputs.maxCandidates);
+  // R5.AC6: partition by repo narrowing BEFORE the cap so canonical-tag matches
+  // survive max-candidates in discover-many exactly as they do in resolve-one.
+  const signals = await collectRepoSignals({
+    repoRoot: inputs.repoRoot,
+    expectedServiceName: inputs.expectedServiceName,
+    expectedApiIds: inputs.expectedApiIds,
+    repoSlug: inputs.repoContext.repoSlug
+  });
+  const narrowing = await runNarrowingPipeline(
+    {
+      repoSlug: inputs.repoContext.repoSlug,
+      subscriptionId,
+      serviceHints: signals.serviceHints,
+      signals
+    },
+    enumerated.map((candidate): NarrowingCandidate => ({
+      id: candidate.id,
+      name: candidate.name,
+      resourceGroup: candidate.resourceGroup,
+      tags: candidate.tags
+    }))
+  );
+  const partitioned = partitionCandidates(enumerated, narrowing);
+  const capped = partitioned.slice(0, inputs.maxCandidates);
   const summary: ExportSummary = { attempted: 0, exported: 0, failed: 0, skipped: enumerated.length - capped.length };
   const discovered: DiscoveredService[] = [];
 

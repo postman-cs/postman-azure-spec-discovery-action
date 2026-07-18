@@ -116,4 +116,33 @@ describe('telemetry contract', () => {
       expect(calls[0]?.body).not.toContain('aaaaaaaa-1111');
     }
   });
+
+  it('AZ-TELEMETRY-001: a rejecting or throwing transport never surfaces to the caller', async () => {
+    // Rejecting transport (network failure shape).
+    const rejecting = vi.fn(async () => {
+      throw new Error('ECONNREFUSED events.pm-cse.dev');
+    });
+    const rejectingContext = createTelemetryContext({
+      action: 'azure-spec-discovery',
+      env: {},
+      transport: rejecting as unknown as typeof fetch
+    });
+    rejectingContext.setTeamId('10490519');
+    expect(() => rejectingContext.emitCompletion('success')).not.toThrow();
+    // Fire-and-forget: give the rejected promise a tick to settle unhandled.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(rejecting).toHaveBeenCalledTimes(1);
+
+    // Synchronously throwing transport.
+    const throwing = vi.fn(() => {
+      throw new Error('synchronous transport crash');
+    });
+    const throwingContext = createTelemetryContext({
+      action: 'azure-spec-discovery',
+      env: {},
+      transport: throwing as unknown as typeof fetch
+    });
+    throwingContext.setTeamId('10490519');
+    expect(() => throwingContext.emitCompletion('failure')).not.toThrow();
+  });
 });
