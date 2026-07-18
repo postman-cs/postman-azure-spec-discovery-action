@@ -92,6 +92,7 @@ describe('APIM provider', () => {
     expect(exported.format).toBe('openapi-json');
     expect(exported.filename).toBe('index.json');
     expect(exported.content.endsWith('\n')).toBe(true);
+    expect(exported.content).toBe(`${JSON.stringify(JSON.parse(VALID_OPENAPI), null, 2)}\n`);
 
     await expect(provider.exportSpec(soap!)).rejects.toThrow('not exportable in v1');
   });

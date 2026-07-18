@@ -107,8 +107,8 @@ export class ApimProvider implements SpecProvider {
       throw new Error('APIM candidate is missing service coordinates');
     }
     const content = await this.client.exportApi(resourceGroup, serviceName, apiId, candidate.meta.workspaceId);
-    parseAndValidateOpenApi(content);
-    const normalized = content.endsWith('\n') ? content : `${content}\n`;
+    const parsed = parseAndValidateOpenApi(content);
+    const normalized = `${JSON.stringify(parsed.document, null, 2)}\n`;
     return {
       content: normalized,
       format: 'openapi-json',
