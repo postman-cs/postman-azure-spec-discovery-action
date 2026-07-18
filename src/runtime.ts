@@ -528,12 +528,43 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   // 3a. Explicit api-id is a caller selection with confidence 100.
   if (inputs.apiId) {
     const requestedApiId = inputs.apiId;
-    const target = enumerated.find(
-      (candidate) =>
-        candidate.apiId === requestedApiId ||
-        candidate.id === requestedApiId ||
-        (candidate.apiId ?? '').split('/').pop() === requestedApiId.split('/').pop()
-    );
+    // A full ARM ID identifies exactly one API; matching it on the terminal
+    // segment alone would let a same-named API in another service/RG win. Only
+    // a bare name may match on short segment, and only when it is unique.
+    const isFullArmId = requestedApiId.startsWith('/subscriptions/');
+    let target: SpecCandidate | undefined;
+    if (isFullArmId) {
+      target = enumerated.find(
+        (candidate) => candidate.apiId === requestedApiId || candidate.id === requestedApiId
+      );
+    } else {
+      const requestedShort = requestedApiId.split('/').pop();
+      const shortMatches = enumerated.filter(
+        (candidate) =>
+          (candidate.apiId ?? '').split('/').pop() === requestedShort ||
+          candidate.id.split('/').pop() === requestedShort
+      );
+      if (shortMatches.length === 1) {
+        target = shortMatches[0];
+      } else if (shortMatches.length > 1) {
+        const ambiguousRanked = rankServiceCandidates(shortMatches.map(toCandidateInput), signals);
+        const ambiguousResolution: ResolutionResult = {
+          status: 'unresolved',
+          sourceType: 'manual-review',
+          serviceName: inputs.expectedServiceName ?? 'unknown-service',
+          confidence: ambiguousRanked[0]?.confidence ?? 0,
+          providerProbes: probes,
+          rankedCandidates: toAmbiguousViews(ambiguousRanked),
+          evidence: [`Requested api-id "${requestedApiId}" matched ${shortMatches.length} APIs by short name; refusing to guess between them`]
+        };
+        return {
+          mode: inputs.mode,
+          discovered: [],
+          resolution: ambiguousResolution,
+          outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution: ambiguousResolution })
+        };
+      }
+    }
     if (target && target.supported) {
       const provider = availableProviders.find((p) => p.type === target.providerType);
       if (provider) {
@@ -602,10 +633,12 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   );
 
   const partitioned = partitionCandidates(enumerated, narrowing);
-  const capped = partitioned.slice(0, inputs.maxCandidates);
-  const cappedCount = partitioned.length - capped.length;
+  // Correctness decision (ranking + ambiguity) runs across every partitioned
+  // candidate; the cap only bounds the serialized rankedCandidates view. Capping
+  // before ranking could drop a tied candidate and fabricate a unique winner.
+  const cappedCount = Math.max(0, partitioned.length - inputs.maxCandidates);
 
-  const ranked = rankServiceCandidates(capped.map(toCandidateInput), signals);
+  const ranked = rankServiceCandidates(partitioned.map(toCandidateInput), signals);
 
   // A single exact canonical-tag selection has confidence 100.
   let best: RankedServiceCandidate | undefined;
@@ -618,7 +651,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     }
   }
   if (!best) {
-    best = resolveServiceCandidate(capped.map(toCandidateInput), signals);
+    best = resolveServiceCandidate(partitioned.map(toCandidateInput), signals);
     if (best && narrowing) {
       best.evidence = [...best.evidence, ...narrowing.evidence];
     }
@@ -629,7 +662,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     : undefined;
 
   if (best && !best.ambiguous && best.supported && best.confidence >= MINIMUM_RESOLVED_CONFIDENCE) {
-    const target = capped.find((candidate) => candidate.id === best?.resourceId);
+    const target = partitioned.find((candidate) => candidate.id === best?.resourceId);
     const provider = target ? availableProviders.find((p) => p.type === target.providerType) : undefined;
     if (target && provider) {
       try {
@@ -665,13 +698,16 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
         };
       } catch (error) {
+        // The candidate resolved unambiguously; a failed export is a real
+        // failure, not "nothing to onboard". Fail the step instead of silently
+        // degrading to unresolved (which the composite pipeline treats as skip).
         const detail = error instanceof Error ? error.message : String(error);
-        core.warning(sanitizeLogMessage(`Export failed for selected candidate: ${detail}`));
+        throw new Error(sanitizeLogMessage(`Export failed for resolved candidate ${best.serviceName}: ${detail}`), { cause: error });
       }
     }
   }
 
-  // 3c. Manual review with full ranked view.
+  // 3c. Manual review with capped ranked view.
   const resolution: ResolutionResult = {
     status: 'unresolved',
     sourceType: 'manual-review',
@@ -679,10 +715,10 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     confidence: best?.confidence ?? 0,
     ...(narrowingMetadata ? { narrowing: narrowingMetadata } : {}),
     providerProbes: probes,
-    rankedCandidates: toAmbiguousViews(ranked),
+    rankedCandidates: toAmbiguousViews(ranked.slice(0, inputs.maxCandidates)),
     evidence: [
       ...(best?.evidence ?? ['No candidates matched this repository']),
-      ...(cappedCount > 0 ? [`Candidate cap dropped ${cappedCount} candidate(s) after partitioning`] : [])
+      ...(cappedCount > 0 ? [`Candidate cap hid ${cappedCount} lower-ranked candidate(s) from the serialized view (ranking used all candidates)`] : [])
     ]
   };
   return {
@@ -729,6 +765,7 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
   const capped = partitioned.slice(0, inputs.maxCandidates);
   const summary: ExportSummary = { attempted: 0, exported: 0, failed: 0, skipped: enumerated.length - capped.length };
   const discovered: DiscoveredService[] = [];
+  const writtenPaths = new Map<string, string>();
 
   for (const candidate of capped) {
     if (!candidate.supported) {
@@ -744,7 +781,16 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
     try {
       const exportResult = await provider.exportSpec(candidate);
       const serviceName = resolveServiceName(candidate, inputs.serviceMapping);
+      const targetPath = path.posix.join(inputs.outputDir.split(path.sep).join('/'), projectFolderName(serviceName), exportResult.filename);
+      const priorOwner = writtenPaths.get(targetPath);
+      if (priorOwner && priorOwner !== candidate.id) {
+        // Two distinct candidates resolved to the same on-disk path; writing
+        // would silently overwrite the earlier export while summary.exported
+        // still counted both. Fail this one loudly instead.
+        throw new Error(`Spec path collision at ${targetPath}: already written by ${priorOwner}`);
+      }
       const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+      writtenPaths.set(written.specPath, candidate.id);
       discovered.push({
         serviceName,
         specPath: written.specPath,

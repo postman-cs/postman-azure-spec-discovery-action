@@ -50,13 +50,24 @@ function scoreCandidate(candidate: AzureCandidateInput, signals: RepoSignals): {
     evidence.push(`Display name "${candidate.name}" matches service hint`);
   }
 
-  const tagValues = Object.values(candidate.tags).map((value) => value.toLowerCase());
-  if (serviceHints.some((hint) => hint && tagValues.some((tag) => tag === hint))) {
-    // Exact tag equality is a stronger signal than substring containment and
-    // must outrank it so "payments-live" cannot tie with "payments-live-site".
+  // Only canonical ownership tags carry selection-grade weight; an incidental
+  // tag like environment="payments-live" must not out-rank the intended match.
+  const canonicalTagKeys = ['postman:project-name', 'postman:repo', 'name'];
+  const canonicalTagValues = Object.entries(candidate.tags)
+    .filter(([key]) => canonicalTagKeys.includes(key.toLowerCase()))
+    .map(([, value]) => value.toLowerCase());
+  const allTagValues = Object.values(candidate.tags).map((value) => value.toLowerCase());
+  if (serviceHints.some((hint) => hint && canonicalTagValues.some((tag) => tag === hint))) {
+    // Exact equality on a canonical ownership tag is the strongest tag signal and
+    // must outrank substring containment so "payments-live" cannot tie with
+    // "payments-live-site".
     score += 60;
+    evidence.push('Canonical ownership tag exactly matches service hint');
+  } else if (serviceHints.some((hint) => hint && allTagValues.some((tag) => tag === hint))) {
+    // Exact match on a non-canonical tag is corroborating but not authoritative.
+    score += 40;
     evidence.push('Resource tag exactly matches service hint');
-  } else if (serviceHints.some((hint) => hint && tagValues.some((tag) => tag.includes(hint)))) {
+  } else if (serviceHints.some((hint) => hint && allTagValues.some((tag) => tag.includes(hint)))) {
     score += 40;
     evidence.push('Resource tags match service hint');
   }

@@ -41,7 +41,8 @@ import {
   ApimSdkClient,
   AppServiceSdkClient,
   createAzureCredential,
-  ResourceGraphSdkClient
+  ResourceGraphSdkClient,
+  SubscriptionsSdkClient
 } from '../src/lib/azure/clients.js';
 
 function fakeCredential() {
@@ -129,7 +130,12 @@ describe('azure sdk client wrappers', () => {
     try {
       const content = await client.exportApi('rg', 'svc', 'payments-live');
       expect(content).toContain('"openapi":"3.0.3"');
-      expect(fetchSpy).toHaveBeenCalledWith('https://blob.example/export.json?sig=REDACTED', { redirect: 'follow' });
+      // exportApi routes the SAS link through the hardened fetcher (HTTPS-only,
+      // redirect:'manual', abort signal, size caps), not a bare fetch.
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://blob.example/export.json?sig=REDACTED',
+        expect.objectContaining({ redirect: 'manual' })
+      );
     } finally {
       fetchSpy.mockRestore();
     }
@@ -146,7 +152,10 @@ describe('azure sdk client wrappers', () => {
     try {
       const content = await client.exportApi('rg', 'svc', 'payments-live');
       expect(content).toContain('"openapi":"3.0.3"');
-      expect(fetchSpy).toHaveBeenCalledWith('https://blob.example/flat.json', { redirect: 'follow' });
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://blob.example/flat.json',
+        expect.objectContaining({ redirect: 'manual' })
+      );
     } finally {
       fetchSpy.mockRestore();
     }
@@ -158,5 +167,59 @@ describe('azure sdk client wrappers', () => {
     const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
     sdk.apiExport.get.mockResolvedValue({ properties: { format: 'openapi+json-link', value: {} } });
     await expect(client.exportApi('rg', 'svc', 'payments-live')).rejects.toThrow('no download link');
+  });
+
+  it('AZ-CLIENT-006: pagination ceiling allows exactly 100 pages and rejects the 101st', async () => {
+    const credential = fakeCredential();
+    const makePagedIterable = (pageCount: number) => {
+      const iterable = {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < pageCount * 2; i += 1) yield { name: `svc-${i}`, id: `/subscriptions/s/resourceGroups/rg/x/${i}` };
+        },
+        byPage: () => ({
+          async *[Symbol.asyncIterator]() {
+            for (let p = 0; p < pageCount; p += 1) {
+              yield [
+                { name: `svc-${p}-a`, id: `/subscriptions/s/resourceGroups/rg/x/${p}a` },
+                { name: `svc-${p}-b`, id: `/subscriptions/s/resourceGroups/rg/x/${p}b` }
+              ];
+            }
+          }
+        })
+      };
+      return iterable;
+    };
+
+    const okClient = new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const okSdk = (okClient as unknown as { client: { apiManagementService: { list: ReturnType<typeof vi.fn> } } }).client;
+    okSdk.apiManagementService.list.mockReturnValue(makePagedIterable(100));
+    await expect(okClient.listServices()).resolves.toHaveLength(200);
+
+    const failClient = new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const failSdk = (failClient as unknown as { client: { apiManagementService: { list: ReturnType<typeof vi.fn> } } }).client;
+    failSdk.apiManagementService.list.mockReturnValue(makePagedIterable(101));
+    await expect(failClient.listServices()).rejects.toThrow('pagination exceeded 100 pages');
+  });
+
+  it('AZ-CLIENT-006: subscription listing rejects when nextLink never terminates', async () => {
+    const credential = fakeCredential();
+    const client = new SubscriptionsSdkClient(credential);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const page = Number(new URL(url).searchParams.get('page') ?? '0');
+      return new Response(
+        JSON.stringify({
+          value: [{ subscriptionId: `sub-${page}`, state: 'Enabled' }],
+          nextLink: `https://management.azure.com/subscriptions?api-version=2022-12-01&page=${page + 1}`
+        }),
+        { status: 200 }
+      );
+    });
+    try {
+      await expect(client.listEnabledSubscriptions()).rejects.toThrow('pagination exceeded 100 pages');
+      expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(101);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

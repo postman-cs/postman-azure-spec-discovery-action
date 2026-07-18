@@ -89,4 +89,24 @@ describe('exact tag equality precedence (AZ-RESOLVE-EXACT)', () => {
     const resolved = resolveServiceCandidate([apimCandidate, siteCandidate], hints);
     expect(resolved?.ambiguous).not.toBe(true);
   });
+
+  it('an incidental non-canonical tag does not out-rank the intended near-name match', () => {
+    const hints = signals({ serviceHints: ['payments-live'] });
+    // Intended API: near-name match on a canonical ownership tag.
+    const intended = input(
+      '/subscriptions/s/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments-live',
+      { name: 'Payments Live API', tags: { 'postman:project-name': 'payments-live-v2' } }
+    );
+    // Unrelated API that merely carries an incidental environment tag equal to the hint.
+    const incidental = input(
+      '/subscriptions/s/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/billing',
+      { name: 'Billing API', tags: { environment: 'payments-live' } }
+    );
+    const ranked = rankServiceCandidates([intended, incidental], hints);
+    // The incidental exact tag scores only the non-canonical +40, which cannot beat
+    // a canonical near-name match, so the intended API is not out-ranked by it.
+    const incidentalRank = ranked.find((c) => c.resourceId === incidental.id);
+    expect(incidentalRank?.confidence).toBeLessThanOrEqual(40);
+    expect(incidentalRank?.evidence.some((e) => e.includes('Canonical ownership tag'))).not.toBe(true);
+  });
 });

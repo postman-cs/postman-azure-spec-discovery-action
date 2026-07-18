@@ -180,4 +180,67 @@ describe('runtime execute', () => {
     expect(summary.attempted).toBe(50);
     expect(summary.skipped).toBe(25);
   });
+
+  it('explicit full ARM api-id does not match a same-named API in another service', async () => {
+    const requested = '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments';
+    const otherService = apimCandidate('payments', {
+      id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/OTHER/apis/payments',
+      apiId: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/OTHER/apis/payments'
+    });
+    const provider = stubProvider([otherService]);
+    const result = await execute(inputs({ apiId: requested }), dependencies(provider));
+    expect(result.resolution?.status).toBe('unresolved');
+    expect(provider.exportSpec).not.toHaveBeenCalled();
+  });
+
+  it('bare-name api-id matching more than one short name stays unresolved', async () => {
+    const a = apimCandidate('payments', {
+      id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svcA/apis/payments',
+      apiId: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svcA/apis/payments'
+    });
+    const b = apimCandidate('payments', {
+      id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svcB/apis/payments',
+      apiId: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svcB/apis/payments'
+    });
+    const provider = stubProvider([a, b]);
+    const result = await execute(inputs({ apiId: 'payments' }), dependencies(provider));
+    expect(result.resolution?.status).toBe('unresolved');
+    expect(result.resolution?.rankedCandidates?.length).toBe(2);
+    expect(provider.exportSpec).not.toHaveBeenCalled();
+  });
+
+  it('candidate cap does not fabricate uniqueness for tied candidates', async () => {
+    const provider = stubProvider([apimCandidate('payments-a'), apimCandidate('payments-b')]);
+    const withHint = inputs({ expectedServiceName: 'payments' });
+    withHint.maxCandidates = 1;
+    const result = await execute(withHint, dependencies(provider));
+    // Ranking runs across all candidates, so the tie is still detected as ambiguous
+    // even though only one candidate view is serialized under the cap.
+    expect(result.resolution?.status).toBe('unresolved');
+    expect(result.resolution?.sourceType).toBe('manual-review');
+    expect(provider.exportSpec).not.toHaveBeenCalled();
+  });
+
+  it('resolve-one fails loudly when the resolved candidate export throws', async () => {
+    const tagged = apimCandidate('payments', { tags: { 'postman:repo': 'org/payments' } });
+    const provider = stubProvider([tagged, apimCandidate('orders')]);
+    provider.exportSpec = vi.fn(async () => {
+      throw new Error('SAS link expired');
+    });
+    const withSlug = inputs();
+    withSlug.repoContext = { provider: 'github', repoSlug: 'org/payments' };
+    await expect(execute(withSlug, dependencies(provider))).rejects.toThrow('Export failed for resolved candidate');
+  });
+
+  it('discover-many fails an export whose path collides with an earlier one', async () => {
+    const a = apimCandidate('a', { tags: { 'postman:project-name': 'shared' } });
+    const b = apimCandidate('b', { tags: { 'postman:project-name': 'shared' } });
+    const provider = stubProvider([a, b]);
+    const result = await execute(inputs({ mode: 'discover-many' }), dependencies(provider));
+    // Both derive folder "shared"; the second is failed, not silently overwritten.
+    expect(result.exportSummary?.exported).toBe(1);
+    expect(result.exportSummary?.failed).toBe(1);
+    expect(result.discovered).toHaveLength(1);
+    expect(result.outputs['resolution-status']).toBe('unresolved');
+  });
 });

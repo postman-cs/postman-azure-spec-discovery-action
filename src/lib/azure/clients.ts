@@ -5,6 +5,8 @@ import { ResourceGraphClient } from '@azure/arm-resourcegraph';
 import { DefaultAzureCredential } from '@azure/identity';
 import type { TokenCredential } from '@azure/identity';
 
+import { fetchSpecFromUrl } from '../fetch/spec-fetcher.js';
+
 export interface AzureSdkOptions {
   requestTimeoutMs: number;
   maxAttempts: number;
@@ -96,22 +98,22 @@ async function collectBounded<T>(iterable: AsyncIterable<T>, surface: string): P
   if (paged) {
     let pages = 0;
     for await (const page of paged) {
-      items.push(...page);
       pages += 1;
-      if (pages >= MAX_LIST_PAGES) {
+      if (pages > MAX_LIST_PAGES) {
         throw new Error(`${surface} pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
       }
+      items.push(...page);
     }
     return items;
   }
   let count = 0;
   const maxItems = MAX_LIST_PAGES * 1000;
   for await (const item of iterable) {
-    items.push(item);
     count += 1;
-    if (count >= maxItems) {
+    if (count > maxItems) {
       throw new Error(`${surface} enumeration exceeded ${maxItems} items; aborting`);
     }
+    items.push(item);
   }
   return items;
 }
@@ -125,6 +127,12 @@ async function collectBounded<T>(iterable: AsyncIterable<T>, surface: string): P
  */
 function extractExportLink(result: unknown): string | undefined {
   const record = (result ?? {}) as Record<string, unknown>;
+  // Raw REST (`?export=true&format=openapi+json-link`) returns the SAS link at
+  // the top level; the readiness probe already accepts this shape.
+  const topLevel = record.link;
+  if (typeof topLevel === 'string' && topLevel) {
+    return topLevel;
+  }
   const direct = (record.value as { link?: unknown } | undefined)?.link;
   if (typeof direct === 'string' && direct) {
     return direct;
@@ -137,14 +145,21 @@ function extractExportLink(result: unknown): string | undefined {
   return undefined;
 }
 
+function isAuthorizationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /authorizationfailed|forbidden|unauthorized|\b401\b|\b403\b/i.test(message);
+}
+
 
 export class ApimSdkClient implements AzureApimClient {
   private readonly client: ApiManagementClient;
+  private readonly requestTimeoutMs?: number;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.client = new ApiManagementClient(credential, subscriptionId, {
       retryOptions: { maxRetries: options?.maxAttempts ?? 3 }
     });
+    this.requestTimeoutMs = options?.requestTimeoutMs;
   }
 
   public async listServices(resourceGroup?: string): Promise<ApimServiceSummary[]> {
@@ -170,11 +185,11 @@ export class ApimSdkClient implements AzureApimClient {
     if (!link) {
       throw new Error(`APIM export for ${apiId} returned no download link`);
     }
-    const response = await fetch(link, { redirect: 'follow' });
-    if (!response.ok) {
-      throw new Error(`APIM export link fetch failed with HTTP ${response.status}`);
-    }
-    return await response.text();
+    // The SAS blob link is HTTPS with a 5-minute TTL; route it through the same
+    // hardened transport as App Service (HTTPS-only, redirect/size/timeout caps)
+    // instead of an unbounded fetch that can hang or exhaust runner memory.
+    const fetched = await fetchSpecFromUrl(link, { timeoutMs: this.requestTimeoutMs });
+    return fetched.content;
   }
 
   public async probeApimReadAccess(resourceGroup?: string): Promise<void> {
@@ -231,8 +246,14 @@ export class AppServiceSdkClient implements AzureAppServiceClient {
       try {
         const config = await this.client.webApps.getConfiguration(siteResourceGroup, site.name);
         apiDefinitionUrl = config.apiDefinition?.url ?? undefined;
-      } catch {
-        // Site config may be inaccessible; the site is still a naming signal.
+      } catch (error) {
+        // A permission failure must not be silently reduced to "no API
+        // definition" — that would drop a real API. Transient errors are
+        // already retried by the SDK (maxRetries); surface auth failures.
+        if (isAuthorizationError(error)) {
+          throw error;
+        }
+        // Genuine non-auth read failure: keep the site as a naming signal only.
       }
       sites.push({
         name: site.name,
@@ -305,7 +326,12 @@ export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
     }
     const subscriptions: SubscriptionSummary[] = [];
     let url: string | undefined = 'https://management.azure.com/subscriptions?api-version=2022-12-01';
+    let pages = 0;
     while (url) {
+      pages += 1;
+      if (pages > MAX_LIST_PAGES) {
+        throw new Error(`Subscription listing pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
+      }
       const response = await fetch(url, { headers: { authorization: `Bearer ${token.token}` } });
       if (!response.ok) {
         throw new Error(`Subscription listing failed with HTTP ${response.status}`);
