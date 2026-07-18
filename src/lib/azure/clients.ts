@@ -3,7 +3,6 @@ import { EventGridManagementClient } from '@azure/arm-eventgrid';
 import { ServiceBusManagementClient } from '@azure/arm-servicebus';
 import type { ApiContract, ApiManagementServiceResource } from '@azure/arm-apimanagement';
 import { WebSiteManagementClient } from '@azure/arm-appservice';
-import { ResourceGraphClient } from '@azure/arm-resourcegraph';
 import { DefaultAzureCredential } from '@azure/identity';
 import type { TokenCredential } from '@azure/identity';
 
@@ -64,6 +63,7 @@ function extractResourceGroup(resourceId: string | undefined): string {
 export function createAzureCredential(): TokenCredential {
   return new DefaultAzureCredential();
 }
+
 
 /** Azure control-plane client contracts consumed by the runtime; SDK-backed by default, stubbed in tests. */
 export interface AzureApimClient {
@@ -480,18 +480,32 @@ export class AppServiceSdkClient implements AzureAppServiceClient {
   }
 }
 
+/**
+ * Resource Graph via direct ARM REST. The `@azure/arm-resourcegraph` SDK still
+ * rides the legacy ms-rest-js runtime, whose polyfilled abort signal Node's
+ * native fetch rejects outright ("Expected signal to be an instanceof
+ * AbortSignal"), so this client POSTs the documented endpoint with the same
+ * bounded fetch pattern the other generic ARM REST clients here use.
+ */
+const RESOURCE_GRAPH_API_VERSION = '2022-10-01';
+
 export class ResourceGraphSdkClient implements AzureResourceGraphClient {
-  private readonly client: ResourceGraphClient;
+  private readonly credential: TokenCredential;
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
 
   public constructor(credential: TokenCredential, options?: AzureSdkOptions) {
-    this.client = new ResourceGraphClient(credential);
+    this.credential = credential;
     this.maxAttempts = options?.maxAttempts ?? 3;
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
   }
 
   public async queryResources(subscriptionId: string, kql: string): Promise<ResourceGraphRow[]> {
+    const token = await this.credential.getToken('https://management.azure.com/.default');
+    if (!token) {
+      throw new Error('Azure credential produced no ARM token');
+    }
+    const url = `https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=${RESOURCE_GRAPH_API_VERSION}`;
     const rows: ResourceGraphRow[] = [];
     let skipToken: string | undefined;
     let pages = 0;
@@ -500,20 +514,12 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
       if (pages > MAX_LIST_PAGES) {
         throw new Error(`Resource Graph pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
       }
-      let response: { data?: unknown; skipToken?: string } | undefined;
-      for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-        try {
-          response = await this.client.resources({
-            subscriptions: [subscriptionId],
-            query: kql,
-            options: skipToken ? { skipToken } : undefined
-          }, { timeout: this.requestTimeoutMs }) as { data?: unknown; skipToken?: string };
-          break;
-        } catch (error) {
-          if (!isTransientAzureError(error) || attempt === this.maxAttempts) throw error;
-        }
-      }
-      if (!response) throw new Error('Resource Graph query exhausted its attempt limit');
+      const fetched = await this.postQuery(url, token.token, {
+        subscriptions: [subscriptionId],
+        query: kql,
+        ...(skipToken ? { options: { $skipToken: skipToken } } : {})
+      });
+      const response = fetched as { data?: unknown; $skipToken?: string; skipToken?: string };
       const data = Array.isArray(response.data) ? response.data : [];
       for (const row of data) {
         const record = row as Record<string, unknown>;
@@ -525,13 +531,43 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
           tags: (record.tags ?? {}) as Record<string, string>
         });
       }
-      const next = response.skipToken;
+      const next = response.$skipToken ?? response.skipToken;
       if (next !== undefined && next === skipToken) {
         throw new Error('Resource Graph pagination returned a repeated skip token; aborting');
       }
       skipToken = next;
     } while (skipToken);
     return rows;
+  }
+
+  private async postQuery(url: string, token: string, body: unknown): Promise<unknown> {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        if (response.ok) return await response.json();
+        if (![408, 429].includes(response.status) && response.status < 500) {
+          throw new Error(`Resource Graph query failed with HTTP ${response.status}`);
+        }
+        if (attempt === this.maxAttempts) {
+          throw new Error(`Resource Graph query failed with HTTP ${response.status}`);
+        }
+      } catch (error) {
+        if (error instanceof Error && /failed with HTTP [1-4]/.test(error.message) && !/HTTP (408|429)/.test(error.message)) throw error;
+        if (attempt === this.maxAttempts) {
+          throw new Error(`Resource Graph query failed after ${attempt} attempt(s)`, { cause: error });
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error('Resource Graph query exhausted its attempt limit');
   }
 }
 

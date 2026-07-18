@@ -74,11 +74,12 @@ describe('azure sdk client wrappers', () => {
     const credential = fakeCredential();
     new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
     new AppServiceSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    // ResourceGraphSdkClient now rides direct ARM REST (no SDK constructor);
+    // its credential use is covered by tests/resource-graph.test.ts.
     new ResourceGraphSdkClient(credential);
 
     expect(apimCtorSpy.mock.calls[0]?.[0]).toBe(credential);
     expect(appServiceCtorSpy.mock.calls[0]?.[0]).toBe(credential);
-    expect(graphCtorSpy.mock.calls[0]?.[0]).toBe(credential);
   });
 
   it('AZ-CLIENT-001: source contains exactly one production DefaultAzureCredential construction', () => {

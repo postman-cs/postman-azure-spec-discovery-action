@@ -24,7 +24,6 @@ const AZURE_PINS: Record<string, string> = {
   '@azure/identity': '4.13.1',
   '@azure/arm-apimanagement': '10.0.0',
   '@azure/arm-appservice': '19.0.0',
-  '@azure/arm-resourcegraph': '4.2.1',
   '@azure/arm-resources': '8.0.0',
   '@azure/arm-subscriptions': '6.0.0'
 };
