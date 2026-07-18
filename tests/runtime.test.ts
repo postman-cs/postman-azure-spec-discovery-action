@@ -347,3 +347,68 @@ describe('probe resilience', () => {
     expect(peak).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('provider-declared completeness', () => {
+  let repoRoot: string;
+
+  beforeEach(async () => {
+    repoRoot = await mkdtemp(path.join(tmpdir(), 'az-completeness-'));
+  });
+
+  afterEach(async () => {
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it('AZ-COMPLETE-001: a partial-declared export keeps derivedOpenApiCompleteness=partial even when it parses as full OpenAPI 3.x', async () => {
+    const armId = '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Logic/workflows/order-intake';
+    const candidate: SpecCandidate = {
+      id: armId,
+      name: 'order-intake',
+      providerType: 'logic-apps',
+      resourceGroup: 'rg',
+      tags: { 'postman:repo': 'contoso/orders' },
+      supported: true,
+      evidence: [],
+      meta: {}
+    };
+    const provider: SpecProvider = {
+      type: 'logic-apps',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates: vi.fn(async () => [candidate]),
+      exportSpec: vi.fn(async () => ({
+        content: VALID_OPENAPI,
+        format: 'openapi-json' as const,
+        filename: 'index.json' as const,
+        completeness: 'partial' as const,
+        evidence: ['synthesized partial document']
+      }))
+    };
+    const resolved = resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_SUBSCRIPTION_ID: 'sub-1', INPUT_API_ID: armId });
+    const inputs: ResolvedInputs = { ...resolved, repoRoot };
+    const files = new Map<string, string>();
+    const deps: AzureDependencies = {
+      core: reporter,
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
+      createApimClient: () => {
+        throw new Error('not used with injected providers');
+      },
+      createAppServiceClient: () => {
+        throw new Error('not used with injected providers');
+      },
+      writeSpecFile: vi.fn(async (outputPath: string, content: string) => {
+        files.set(outputPath, content);
+      }),
+      providers: [provider]
+    };
+    const result = await execute(inputs, deps);
+    expect(result.resolution?.status).toBe('resolved');
+    expect(result.resolution?.sourceType).toBe('logic-apps-workflow');
+    expect(result.resolution?.derivedOpenApiCompleteness).toBe('partial');
+    expect(result.outputs['derived-openapi-completeness']).toBe('partial');
+    // partial exports write a separate derived document rather than aliasing the spec path
+    expect(result.resolution?.derivedOpenApiPath).toContain('openapi.derived.json');
+  });
+});

@@ -10,11 +10,13 @@ import {
   AppServiceSdkClient,
   createAzureCredential,
   CustomApisSdkClient,
+  LogicWorkflowsSdkClient,
   ResourceGraphSdkClient,
   SubscriptionsSdkClient,
   type AzureApimClient,
   type AzureAppServiceClient,
   type AzureCustomApisClient,
+  type AzureLogicWorkflowsClient,
   type AzureResourceGraphClient,
   type AzureSubscriptionsClient
 } from './lib/azure/clients.js';
@@ -42,6 +44,7 @@ export interface GitHubActionDependencies {
   createApimClient?: (subscriptionId: string) => AzureApimClient;
   createAppServiceClient?: (subscriptionId: string) => AzureAppServiceClient;
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
+  createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile?: (outputPath: string, content: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -102,6 +105,9 @@ async function runActionInner(
     createCustomApisClient:
       dependencies.createCustomApisClient ??
       (useProductionProviders ? (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
+    createLogicWorkflowsClient:
+      dependencies.createLogicWorkflowsClient ??
+      (useProductionProviders ? (subscriptionId) => new LogicWorkflowsSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
     createResourceGraphClient:
       dependencies.createResourceGraphClient ??
       (useProductionProviders ? () => new ResourceGraphSdkClient(credential!, sdkOptions) : undefined),

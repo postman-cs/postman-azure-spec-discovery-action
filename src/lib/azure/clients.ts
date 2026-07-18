@@ -102,6 +102,43 @@ export interface AzureCustomApisClient {
   probeCustomApisReadAccess(resourceGroup?: string): Promise<void>;
 }
 
+/** Consumption Logic App workflow summary (list projection; no definition yet). */
+export interface LogicWorkflowSummary {
+  id: string;
+  name: string;
+  resourceGroup: string;
+  location?: string;
+  tags: Record<string, string>;
+  state?: string;
+}
+
+/**
+ * Request-triggered workflow detail. accessEndpoint is the workflow's base
+ * invoke endpoint WITHOUT any SAS material; callback URLs (listCallbackUrl)
+ * carry sig= tokens and are never requested by this client.
+ */
+export interface LogicWorkflowDetail {
+  id: string;
+  name: string;
+  resourceGroup: string;
+  tags: Record<string, string>;
+  accessEndpoint?: string;
+  triggers: Array<{
+    name: string;
+    type: string;
+    kind?: string;
+    method?: string;
+    relativePath?: string;
+    schema?: unknown;
+  }>;
+}
+
+export interface AzureLogicWorkflowsClient {
+  listWorkflows(resourceGroup?: string): Promise<LogicWorkflowSummary[]>;
+  getWorkflow(resourceGroup: string, name: string): Promise<LogicWorkflowDetail>;
+  probeLogicWorkflowsReadAccess(resourceGroup?: string): Promise<void>;
+}
+
 export interface AzureSubscriptionsClient {
   get(subscriptionId: string): Promise<SubscriptionSummary>;
   list(): Promise<SubscriptionSummary[]>;
@@ -674,6 +711,166 @@ export class CustomApisSdkClient implements AzureCustomApisClient {
     }
     if (!response.ok) {
       throw new Error(`Custom API probe failed with HTTP ${response.status}`);
+    }
+  }
+
+  private async getArmToken(): Promise<string> {
+    const token = await this.credential.getToken('https://management.azure.com/.default');
+    if (!token) {
+      throw new Error('Azure credential produced no ARM token');
+    }
+    return token.token;
+  }
+
+  private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, {
+          headers: { authorization: `Bearer ${token}` },
+          signal: controller.signal
+        });
+        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
+        if (attempt === this.maxAttempts) return response;
+      } catch (error) {
+        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error(`${operation} exhausted its attempt limit`);
+  }
+}
+
+const LOGIC_API_VERSION = '2019-05-01';
+
+interface LogicWorkflowArmEnvelope {
+  id?: string;
+  name?: string;
+  location?: string;
+  tags?: Record<string, string>;
+  properties?: {
+    state?: unknown;
+    accessEndpoint?: unknown;
+    definition?: {
+      triggers?: Record<string, {
+        type?: unknown;
+        kind?: unknown;
+        inputs?: { method?: unknown; relativePath?: unknown; schema?: unknown };
+      }>;
+    };
+  };
+}
+
+/**
+ * Consumption Logic Apps (Microsoft.Logic/workflows) via generic ARM REST.
+ * Reader-only GETs: list projects summaries; get returns the workflow
+ * definition whose Request triggers make a workflow an inbound HTTP API.
+ *
+ * Never calls listCallbackUrl / listSwagger POST actions: callback URLs embed
+ * SAS signatures and POST actions sit outside plain Reader RBAC. The
+ * accessEndpoint property is the SAS-free base endpoint and is safe to emit.
+ */
+export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
+  private readonly credential: TokenCredential;
+  private readonly subscriptionId: string;
+  private readonly maxAttempts: number;
+  private readonly requestTimeoutMs: number;
+
+  public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
+    this.credential = credential;
+    this.subscriptionId = subscriptionId;
+    this.maxAttempts = options?.maxAttempts ?? 3;
+    this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+  }
+
+  public async listWorkflows(resourceGroup?: string): Promise<LogicWorkflowSummary[]> {
+    const token = await this.getArmToken();
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Logic/workflows`
+      : 'providers/Microsoft.Logic/workflows';
+    let url: string | undefined =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${LOGIC_API_VERSION}`;
+    const summaries: LogicWorkflowSummary[] = [];
+    let pages = 0;
+    while (url) {
+      pages += 1;
+      if (pages > MAX_LIST_PAGES) {
+        throw new Error(`Logic workflow listing pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
+      }
+      const response = await this.fetchArm(url, token, 'Logic workflow listing');
+      if (!response.ok) {
+        throw new Error(`Logic workflow listing failed with HTTP ${response.status}`);
+      }
+      const body = (await response.json()) as { value?: LogicWorkflowArmEnvelope[]; nextLink?: string };
+      for (const entry of body.value ?? []) {
+        const id = entry.id ?? '';
+        const name = entry.name ?? '';
+        if (!id || !name) continue;
+        summaries.push({
+          id,
+          name,
+          resourceGroup: extractResourceGroup(id),
+          location: entry.location,
+          tags: entry.tags ?? {},
+          state: typeof entry.properties?.state === 'string' ? entry.properties.state : undefined
+        });
+      }
+      const next: string | undefined = body.nextLink;
+      if (next !== undefined && next === url) {
+        throw new Error('Logic workflow listing pagination returned a repeated nextLink; aborting');
+      }
+      url = next;
+    }
+    return summaries;
+  }
+
+  public async getWorkflow(resourceGroup: string, name: string): Promise<LogicWorkflowDetail> {
+    const token = await this.getArmToken();
+    const url =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Logic/workflows/${encodeURIComponent(name)}` +
+      `?api-version=${LOGIC_API_VERSION}`;
+    const response = await this.fetchArm(url, token, 'Logic workflow read');
+    if (!response.ok) {
+      throw new Error(`Logic workflow read failed with HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as LogicWorkflowArmEnvelope;
+    const id = body.id ?? '';
+    const workflowName = body.name ?? name;
+    const accessEndpoint = body.properties?.accessEndpoint;
+    const triggerEntries = Object.entries(body.properties?.definition?.triggers ?? {});
+    return {
+      id,
+      name: workflowName,
+      resourceGroup: extractResourceGroup(id) || resourceGroup,
+      tags: body.tags ?? {},
+      accessEndpoint: typeof accessEndpoint === 'string' && accessEndpoint ? accessEndpoint : undefined,
+      triggers: triggerEntries.map(([triggerName, trigger]) => ({
+        name: triggerName,
+        type: typeof trigger.type === 'string' ? trigger.type : '',
+        kind: typeof trigger.kind === 'string' ? trigger.kind : undefined,
+        method: typeof trigger.inputs?.method === 'string' ? trigger.inputs.method : undefined,
+        relativePath: typeof trigger.inputs?.relativePath === 'string' ? trigger.inputs.relativePath : undefined,
+        schema: trigger.inputs?.schema
+      }))
+    };
+  }
+
+  public async probeLogicWorkflowsReadAccess(resourceGroup?: string): Promise<void> {
+    const token = await this.getArmToken();
+    const scope = resourceGroup
+      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Logic/workflows`
+      : 'providers/Microsoft.Logic/workflows';
+    const url =
+      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${LOGIC_API_VERSION}&$top=1`;
+    const response = await this.fetchArm(url, token, 'Logic workflow probe');
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`AuthorizationFailed: logic workflow probe returned HTTP ${response.status}`);
+    }
+    if (!response.ok) {
+      throw new Error(`Logic workflow probe failed with HTTP ${response.status}`);
     }
   }
 

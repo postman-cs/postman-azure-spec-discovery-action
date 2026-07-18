@@ -9,6 +9,7 @@ import {
   ApimSdkClient,
   AppServiceSdkClient,
   CustomApisSdkClient,
+  LogicWorkflowsSdkClient,
   createAzureCredential,
   ResourceGraphSdkClient,
   SubscriptionsSdkClient
@@ -288,6 +289,7 @@ export async function runCli(
             createApimClient: (subscriptionId) => new ApimSdkClient(credential!, subscriptionId, sdkOptions),
             createAppServiceClient: (subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions),
             createCustomApisClient: (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions),
+            createLogicWorkflowsClient: (subscriptionId) => new LogicWorkflowsSdkClient(credential!, subscriptionId, sdkOptions),
             createResourceGraphClient: () => new ResourceGraphSdkClient(credential!, sdkOptions),
             writeSpecFile: defaultWriteSpecFile
           }

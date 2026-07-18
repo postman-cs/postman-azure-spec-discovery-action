@@ -1,6 +1,6 @@
 # Provider contracts
 
-Azure spec discovery ships four providers: `apim`, `app-service`, `custom-apis`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships five providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
 ## `apim` — Azure API Management
 
@@ -23,6 +23,13 @@ Azure spec discovery ships four providers: `apim`, `app-service`, `custom-apis`,
 - Export re-reads the connector, extracts **only** the inline swagger document, validates it like every other export, and normalizes it to JSON.
 - Secret hygiene is structural: the ARM payload carries `connectionParameters.oAuthSettings.clientSecret` beside the swagger, so the client projects only `properties.swagger`, `apiDefinitions.*SwaggerUrl`, and `backendService.serviceUrl`. `connectionParameters` is never read, logged, or serialized.
 
+## `logic-apps` — Consumption Logic App workflows
+
+- Enumerates `Microsoft.Logic/workflows` via generic ARM REST (`api-version 2019-05-01`). Reader-only GETs; disabled workflows are skipped at enumeration.
+- A workflow is a candidate when its definition declares at least one HTTP `Request` trigger; workflows without one stay visible as unsupported candidates.
+- Export **synthesizes a deliberately partial OpenAPI 3.0 document** from the Request triggers: paths from `relativePath` (fallback `/triggers/<name>/invoke`), methods, and declared request schemas. Responses are not declared in workflow definitions, so operations carry a `default` response and the export is marked `completeness: partial` — the derived-OpenAPI outputs report `partial` even though the document parses as complete OpenAPI 3.x.
+- Credential hygiene: `listCallbackUrl` (SAS token in the URL) and `listSwagger` (POST outside plain Reader) are never called. The SAS-free `accessEndpoint` is the only URL surfaced, as the OpenAPI `servers` entry.
+
 ## `iac-local` — repository Azure IaC
 
 - Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
@@ -30,4 +37,4 @@ Azure spec discovery ships four providers: `apim`, `app-service`, `custom-apis`,
 
 ## Ordering and narrowing
 
-Probe order is `apim`, `app-service`, `custom-apis`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.
+Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `iac-local`. Candidates from all available providers enter the same four-tier narrowing pipeline (`iac-fingerprint`, `rg-correlation`, `tag-prefilter`, `naming-heuristic`); the chosen tier is reported in the `narrowing-strategy` output. Tags in the `postman:*` namespace (`postman:repo`, `postman:project-name`) are the strongest ownership signals.

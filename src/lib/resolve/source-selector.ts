@@ -25,6 +25,8 @@ export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sou
       return 'iac-embedded';
     case 'custom-apis':
       return 'custom-api-swagger';
+    case 'logic-apps':
+      return 'logic-apps-workflow';
   }
 }
 

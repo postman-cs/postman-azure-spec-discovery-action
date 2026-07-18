@@ -137,6 +137,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `apim` | Azure API Management current HTTP API revision (ARM export + SAS link) | OpenAPI 3.0 JSON |
 | `app-service` | App Service `siteConfig.apiDefinition.url` document | OpenAPI JSON or YAML |
 | `custom-apis` | Logic Apps custom connector inline swagger (`Microsoft.Web/customApis`) | Swagger/OpenAPI JSON |
+| `logic-apps` | Consumption Logic App HTTP Request triggers (`Microsoft.Logic/workflows`) | Partial OpenAPI 3.0 JSON (synthesized) |
 | `iac-local` | OpenAPI embedded in repo ARM/Bicep templates or referenced by `azure.yaml` | OpenAPI JSON or YAML |
 
 Non-HTTP APIM API types (SOAP, GraphQL, WebSocket, gRPC, OData) are surfaced as visible-unsupported candidates and routed to manual review; they are never exported. Service- and workspace-scoped APIM APIs are both enumerated. Custom connectors without an inline swagger document stay visible as manual-review candidates. Azure API Center, Functions, Container Apps, and management-group enumeration are out of scope for now.

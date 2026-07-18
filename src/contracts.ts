@@ -19,7 +19,7 @@ export type ActionMode = 'resolve-one' | 'discover-many';
 
 export type ResolutionStatus = 'resolved' | 'unresolved';
 
-export type ProviderType = 'apim' | 'app-service' | 'iac-local' | 'custom-apis';
+export type ProviderType = 'apim' | 'app-service' | 'iac-local' | 'custom-apis' | 'logic-apps';
 
 export type SourceType =
   | 'repo-spec'
@@ -27,6 +27,7 @@ export type SourceType =
   | 'app-service-api-definition'
   | 'iac-embedded'
   | 'custom-api-swagger'
+  | 'logic-apps-workflow'
   | 'manual-review'
   | 'discover-many';
 
@@ -152,7 +153,7 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Resolution status: resolved or unresolved.'
     },
     'source-type': {
-      description: 'Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, manual-review, or discover-many.'
+      description: 'Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, manual-review, or discover-many.'
     },
     'mapping-confidence': {
       description: 'Numeric confidence score for the selected service candidate.'
@@ -179,7 +180,7 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Ranked ambiguous candidates as JSON when resolution is unresolved with at least two candidates; empty otherwise.'
     },
     'provider-type': {
-      description: 'Provider that produced the resolved spec: apim, app-service, iac-local, or custom-apis.'
+      description: 'Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, or logic-apps.'
     },
     'spec-format': {
       description: 'Format of the resolved spec: openapi-yaml or openapi-json.'
