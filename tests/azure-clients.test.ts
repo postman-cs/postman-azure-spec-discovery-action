@@ -205,6 +205,28 @@ describe('azure sdk client wrappers', () => {
     expect(sdk.workspaceApi.listByService).toHaveBeenCalledWith('rg', 'svc', 'team-a');
   });
 
+  it('AZ-APIM-001b: workspace listing failure on non-workspace tiers keeps service-level APIs', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as {
+      client: {
+        api: { listByService: ReturnType<typeof vi.fn> };
+        workspace: { listByService: ReturnType<typeof vi.fn> };
+        workspaceApi: { listByService: ReturnType<typeof vi.fn> };
+      };
+    }).client;
+    sdk.api.listByService.mockReturnValue((async function* () {
+      yield { name: 'service-current', displayName: 'Service current', apiType: 'http', isCurrent: true };
+    })());
+    // Consumption/Developer/Basic/Standard tiers reject the workspace surface.
+    sdk.workspace.listByService.mockReturnValue((async function* () {
+      throw new Error('ValidationError: The workspace feature is not supported in this service tier');
+    })());
+
+    const apis = await client.listApis('rg', 'svc');
+    expect(apis.map((api) => api.apiId)).toEqual(['service-current']);
+    expect(sdk.workspaceApi.listByService).not.toHaveBeenCalled();
+  });
+
   it('AZ-APIM-003: a SAS 403 triggers a fresh export and total cycles stay within maxAttempts', async () => {
     const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
     const sdk = (client as unknown as { client: { apiExport: { get: ReturnType<typeof vi.fn> } } }).client;
