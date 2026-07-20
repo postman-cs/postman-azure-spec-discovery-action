@@ -622,7 +622,7 @@ describe('R8 harness matrix contract', () => {
   it('AZ-LIVE-017: evidence phases and per-case durationMs are additive sanitized timing fields', () => {
     expect(STUB_HEALTH_TIMEOUT_MS).toBe(120_000);
     expect(STUB_HEALTH_POLL_INTERVAL_MS).toBe(5_000);
-    expect(CASE_MATRIX_CONCURRENCY).toBe(4);
+    expect(CASE_MATRIX_CONCURRENCY).toBe(5);
 
     const evidence = buildEvidence(
       [
@@ -658,7 +658,7 @@ describe('R8 harness matrix contract', () => {
 
   it('AZ-LIVE-018: case-matrix mapPool preserves catalog order under out-of-order completion', async () => {
     const order = CASE_CATALOG.map((row) => row.id).slice(0, 8);
-    expect(CASE_MATRIX_CONCURRENCY).toBe(4);
+    expect(CASE_MATRIX_CONCURRENCY).toBe(5);
 
     const deferred = order.map(() => {
       let resolve!: (value: string) => void;
