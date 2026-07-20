@@ -36,7 +36,33 @@ export type SourceType =
   | 'discover-many'
   | 'discover-estate';
 
-export type SpecFormat = 'openapi-yaml' | 'openapi-json' | 'wsdl' | 'graphql-sdl';
+/**
+ * Stable native specification format names used by repository and Azure
+ * providers. Serialization is part of the name for YAML/JSON families so
+ * later artifact writers can preserve native bytes without re-detecting.
+ */
+export type SpecFormat =
+  | 'openapi-yaml'
+  | 'openapi-json'
+  | 'asyncapi-yaml'
+  | 'asyncapi-json'
+  | 'wsdl'
+  | 'wadl'
+  | 'xsd'
+  | 'protobuf'
+  | 'graphql-sdl';
+
+/**
+ * Provider/output contract fidelity class. Association metadata must never be
+ * presented as a full specification. Optional on serialized results so existing
+ * consumers remain compatible until later lanes wire the field.
+ */
+export type ContractClass =
+  | 'authoritative'
+  | 'reconstructed'
+  | 'partial'
+  | 'association-only'
+  | 'unsupported';
 
 export type ProviderProbeStatus = 'available' | 'skipped:iam' | 'skipped:error';
 
@@ -78,6 +104,8 @@ export interface ResolutionResult {
   apiId?: string;
   providerType?: ProviderType;
   specFormat?: SpecFormat;
+  /** Optional fidelity class for later provider wiring; omitted in v1 outputs. */
+  contractClass?: ContractClass;
   derivedOpenApiPath?: string;
   derivedOpenApiVersion?: '3.0.3' | '3.1.0';
   derivedOpenApiCompleteness?: 'full' | 'partial';
@@ -95,6 +123,8 @@ export interface DiscoveredService {
   apiId?: string;
   providerType: ProviderType;
   specFormat: SpecFormat;
+  /** Optional fidelity class for later provider wiring; omitted in v1 outputs. */
+  contractClass?: ContractClass;
   derivedOpenApiPath?: string;
   derivedOpenApiVersion?: '3.0.3' | '3.1.0';
   derivedOpenApiCompleteness?: 'full' | 'partial';
@@ -188,7 +218,8 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings.'
     },
     'spec-format': {
-      description: 'Format of the resolved spec: openapi-yaml, openapi-json, wsdl, or graphql-sdl.'
+      description:
+        'Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, or graphql-sdl.'
     },
     'contract-origin': {
       description: 'Compatibility output; always empty in v1.'

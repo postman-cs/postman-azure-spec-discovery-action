@@ -32,4 +32,38 @@ describe('OpenAPI export validation', () => {
     expect(yaml.version).toBe('openapi-3.1');
     expect(yaml.isJson).toBe(false);
   });
+
+  it('accepts OpenAPI 2.0, 3.0.x, and 3.1.x separately and rejects empty/wrong-kind', () => {
+    expect(
+      parseAndValidateOpenApi(
+        JSON.stringify({ swagger: '2.0', info: { title: 's', version: '1' }, paths: { '/pets': {} } })
+      ).version
+    ).toBe('swagger-2.0');
+
+    expect(
+      parseAndValidateOpenApi(
+        'openapi: 3.0.1\ninfo:\n  title: a\n  version: "1"\npaths:\n  /a: {}\n'
+      )
+    ).toMatchObject({ version: 'openapi-3.0', isJson: false });
+
+    expect(
+      parseAndValidateOpenApi(
+        JSON.stringify({ openapi: '3.1.0', info: { title: 'b', version: '1' }, paths: { '/b': {} } })
+      )
+    ).toMatchObject({ version: 'openapi-3.1', isJson: true });
+
+    expect(() => parseAndValidateOpenApi('')).toThrow(/empty/i);
+    expect(() =>
+      parseAndValidateOpenApi(
+        JSON.stringify({
+          asyncapi: '2.6.0',
+          info: { title: 'events', version: '1' },
+          channels: { ping: {} }
+        })
+      )
+    ).toThrow(/Swagger 2\.0 or OpenAPI 3\.x/);
+    expect(() =>
+      parseAndValidateOpenApi('<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"/>')
+    ).toThrow(/not parseable|Swagger 2\.0 or OpenAPI 3\.x|object document/);
+  });
 });

@@ -1,0 +1,752 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-19",
+  "description": "Machine-readable coverage claim manifest for Azure spec discovery. Source of truth for every currently advertised route and every planned explicit unsupported route. validationState=live requires a matching passing case in validation/evidence/live-azure-surfaces.json; unit tests alone never promote a route to live.",
+  "advertisedProviders": [
+    "apim",
+    "app-service",
+    "custom-apis",
+    "logic-apps",
+    "template-specs",
+    "event-grid",
+    "service-bus",
+    "function-bindings",
+    "iac-local"
+  ],
+  "routes": [
+    {
+      "id": "repo.spec.named-file",
+      "provider": "repo",
+      "route": "named-openapi-swagger-file",
+      "implementationFiles": [
+        "src/lib/repo/specs.ts",
+        "src/lib/repo/scan.ts",
+        "src/lib/resolve/source-selector.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-yaml",
+        "openapi-json"
+      ],
+      "requiredCapability": "none (local filesystem)",
+      "positiveTests": [
+        "tests/runtime.test.ts",
+        "tests/source-selector.test.ts",
+        "tests/cli.integration.test.ts"
+      ],
+      "negativeTests": [
+        "tests/source-selector.test.ts"
+      ],
+      "securityTests": [
+        "tests/path-confinement.test.ts"
+      ],
+      "paginationTests": [],
+      "validationState": "local-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "iac-local.arm-embedded",
+      "provider": "iac-local",
+      "route": "arm-compiled-bicep-embedded-openapi",
+      "implementationFiles": [
+        "src/lib/providers/iac-local.ts",
+        "src/lib/repo/azure-iac-scanner.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "none (local filesystem)",
+      "positiveTests": [
+        "tests/iac-local-provider.test.ts",
+        "tests/runtime.test.ts"
+      ],
+      "negativeTests": [
+        "tests/iac-local-provider.test.ts",
+        "tests/iac-confinement.test.ts"
+      ],
+      "securityTests": [
+        "tests/iac-confinement.test.ts",
+        "tests/path-confinement.test.ts"
+      ],
+      "paginationTests": [],
+      "validationState": "live",
+      "liveEvidenceCase": "iac-single",
+      "unsupportedReason": null
+    },
+    {
+      "id": "apim.http.explicit-api-id",
+      "provider": "apim",
+      "route": "explicit-api-arm-id",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts",
+        "src/lib/azure/clients.ts",
+        "src/lib/resolve/source-selector.ts",
+        "src/runtime.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/apim-provider.test.ts",
+        "tests/runtime.test.ts",
+        "tests/azure-clients.test.ts"
+      ],
+      "negativeTests": [
+        "tests/runtime.test.ts",
+        "tests/apim-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/apim-provider.test.ts",
+        "tests/sanitize.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "live",
+      "liveEvidenceCase": "apim-explicit-api-id",
+      "unsupportedReason": null
+    },
+    {
+      "id": "apim.http.service-discovery",
+      "provider": "apim",
+      "route": "service-scoped-http-export",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/apim-provider.test.ts",
+        "tests/providers.test.ts",
+        "tests/azure-clients.test.ts"
+      ],
+      "negativeTests": [
+        "tests/apim-provider.test.ts",
+        "tests/openapi-validation.test.ts"
+      ],
+      "securityTests": [
+        "tests/apim-provider.test.ts",
+        "tests/sanitize.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "live",
+      "liveEvidenceCase": "apim-discovery",
+      "unsupportedReason": null
+    },
+    {
+      "id": "apim.http.workspace",
+      "provider": "apim",
+      "route": "workspace-scoped-http-export",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/azure-clients.test.ts",
+        "tests/apim-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "securityTests": [
+        "tests/sanitize.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "apim.revision.current-filter",
+      "provider": "apim",
+      "route": "current-revision-filter",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "negativeTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "apim.soap.wsdl-export",
+      "provider": "apim",
+      "route": "soap-wsdl-export",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "wsdl"
+      ],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/apim-provider.test.ts",
+        "tests/azure-clients.test.ts"
+      ],
+      "negativeTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "apim.graphql.sdl",
+      "provider": "apim",
+      "route": "graphql-sdl-retrieval",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts",
+        "src/lib/azure/clients.ts",
+        "src/lib/spec/oas-derivation.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "graphql-sdl"
+      ],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/apim-provider.test.ts",
+        "tests/oas-derivation.test.ts",
+        "tests/azure-clients.test.ts"
+      ],
+      "negativeTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "apim.websocket",
+      "provider": "apim",
+      "route": "websocket-definition-export",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts"
+      ],
+      "contractClass": "unsupported",
+      "nativeFormats": [],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unsupported",
+      "liveEvidenceCase": null,
+      "unsupportedReason": "APIM WebSocket APIs have no documented definition-byte export route; they remain visible as manual-review candidates only."
+    },
+    {
+      "id": "apim.grpc",
+      "provider": "apim",
+      "route": "grpc-proto-export",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts"
+      ],
+      "contractClass": "unsupported",
+      "nativeFormats": [],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unsupported",
+      "liveEvidenceCase": null,
+      "unsupportedReason": "APIM gRPC APIs have no documented .proto export route; use a repository artifact or API Center when available."
+    },
+    {
+      "id": "apim.odata",
+      "provider": "apim",
+      "route": "odata-definition-export",
+      "implementationFiles": [
+        "src/lib/providers/apim.ts"
+      ],
+      "contractClass": "unsupported",
+      "nativeFormats": [],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/apim-provider.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unsupported",
+      "liveEvidenceCase": null,
+      "unsupportedReason": "APIM OData APIs have no documented safe definition-byte export route; they remain visible as manual-review candidates only."
+    },
+    {
+      "id": "app-service.api-definition-url",
+      "provider": "app-service",
+      "route": "siteconfig-apidefinition-url",
+      "implementationFiles": [
+        "src/lib/providers/app-service.ts",
+        "src/lib/fetch/spec-fetcher.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json",
+        "openapi-yaml"
+      ],
+      "requiredCapability": "Reader (Microsoft.Web/sites read)",
+      "positiveTests": [
+        "tests/app-service-provider.test.ts",
+        "tests/spec-fetcher.test.ts"
+      ],
+      "negativeTests": [
+        "tests/app-service-provider.test.ts",
+        "tests/spec-fetcher.test.ts"
+      ],
+      "securityTests": [
+        "tests/spec-fetcher.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "live",
+      "liveEvidenceCase": "app-service-api-definition",
+      "unsupportedReason": null
+    },
+    {
+      "id": "custom-apis.inline-swagger",
+      "provider": "custom-apis",
+      "route": "logic-apps-custom-connector-inline-swagger",
+      "implementationFiles": [
+        "src/lib/providers/custom-apis.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "Reader (Microsoft.Web/customApis read)",
+      "positiveTests": [
+        "tests/custom-apis-provider.test.ts",
+        "tests/azure-clients.test.ts"
+      ],
+      "negativeTests": [
+        "tests/custom-apis-provider.test.ts",
+        "tests/azure-clients.test.ts"
+      ],
+      "securityTests": [
+        "tests/custom-apis-provider.test.ts",
+        "tests/azure-clients.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "logic-apps.request-trigger-synthesis",
+      "provider": "logic-apps",
+      "route": "consumption-request-trigger-partial-openapi",
+      "implementationFiles": [
+        "src/lib/providers/logic-apps.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "partial",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "Reader (Microsoft.Logic/workflows read)",
+      "positiveTests": [
+        "tests/logic-apps-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/logic-apps-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/logic-apps-provider.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "template-specs.embedded-apim",
+      "provider": "template-specs",
+      "route": "template-spec-embedded-apim-openapi",
+      "implementationFiles": [
+        "src/lib/providers/template-specs.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "partial",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "Reader (Microsoft.Resources/templateSpecs read)",
+      "positiveTests": [
+        "tests/template-specs-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/template-specs-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/template-specs-provider.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "event-grid.webhook-synthesis",
+      "provider": "event-grid",
+      "route": "webhook-delivery-partial-openapi",
+      "implementationFiles": [
+        "src/lib/providers/event-grid.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "partial",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "Reader (Microsoft.EventGrid read)",
+      "positiveTests": [
+        "tests/event-grid-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/event-grid-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/event-grid-provider.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "service-bus.topic-publish-synthesis",
+      "provider": "service-bus",
+      "route": "topic-publish-partial-openapi",
+      "implementationFiles": [
+        "src/lib/providers/service-bus.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "partial",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "Reader (Microsoft.ServiceBus read)",
+      "positiveTests": [
+        "tests/service-bus-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/service-bus-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/service-bus-provider.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "function-bindings.trigger-synthesis",
+      "provider": "function-bindings",
+      "route": "trigger-binding-partial-openapi",
+      "implementationFiles": [
+        "src/lib/providers/function-bindings.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "partial",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "Reader (Microsoft.Web/sites/functions read)",
+      "positiveTests": [
+        "tests/function-bindings-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/function-bindings-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/function-bindings-provider.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "association.postman-repo-tag",
+      "provider": "association",
+      "route": "postman-repo-tag-selection",
+      "implementationFiles": [
+        "src/lib/resolve/narrowing-pipeline.ts",
+        "src/lib/resolve/resource-graph-query.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "Reader plus Resource Graph query when tag lookup fallback is used",
+      "positiveTests": [
+        "tests/narrowing.test.ts",
+        "tests/runtime.test.ts"
+      ],
+      "negativeTests": [
+        "tests/narrowing.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [
+        "tests/resource-graph.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "association.fox-github-org-repo",
+      "provider": "association",
+      "route": "fox-githuborg-githubrepo-selection",
+      "implementationFiles": [
+        "src/lib/resolve/narrowing-pipeline.ts",
+        "src/lib/estate/enumerate.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "Reader (resource tags)",
+      "positiveTests": [
+        "tests/narrowing.test.ts",
+        "tests/estate.test.ts"
+      ],
+      "negativeTests": [
+        "tests/narrowing.test.ts",
+        "tests/estate.test.ts"
+      ],
+      "securityTests": [
+        "tests/estate.test.ts"
+      ],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "association.gateway-hostname-hint",
+      "provider": "association",
+      "route": "apim-gateway-hostname-service-hint",
+      "implementationFiles": [
+        "src/lib/repo/signals.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "none (local filesystem)",
+      "positiveTests": [
+        "tests/source-selector.test.ts"
+      ],
+      "negativeTests": [
+        "tests/source-selector.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "association.gateway-api-assignment",
+      "provider": "association",
+      "route": "self-hosted-or-workspace-gateway-api-assignment",
+      "implementationFiles": [],
+      "contractClass": "unsupported",
+      "nativeFormats": [],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [],
+      "negativeTests": [],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unsupported",
+      "liveEvidenceCase": null,
+      "unsupportedReason": "Self-hosted and workspace gateway API assignments are not enumerated; hostname hints alone do not resolve a multi-API gateway to one API path."
+    },
+    {
+      "id": "mode.discover-many",
+      "provider": "runtime",
+      "route": "discover-many-export-summary",
+      "implementationFiles": [
+        "src/runtime.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json"
+      ],
+      "requiredCapability": "Reader for each probed provider surface in scope",
+      "positiveTests": [
+        "tests/runtime.test.ts"
+      ],
+      "negativeTests": [
+        "tests/runtime.test.ts"
+      ],
+      "securityTests": [
+        "tests/sanitize.test.ts"
+      ],
+      "paginationTests": [],
+      "validationState": "live",
+      "liveEvidenceCase": "discover-many",
+      "unsupportedReason": null
+    },
+    {
+      "id": "mode.discover-estate",
+      "provider": "runtime",
+      "route": "discover-estate-repo-association",
+      "implementationFiles": [
+        "src/lib/estate/enumerate.ts",
+        "src/runtime.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "Reader plus Resource Graph query",
+      "positiveTests": [
+        "tests/estate.test.ts",
+        "tests/contract.test.ts"
+      ],
+      "negativeTests": [
+        "tests/estate.test.ts"
+      ],
+      "securityTests": [
+        "tests/estate.test.ts"
+      ],
+      "paginationTests": [
+        "tests/resource-graph.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "resolver.ambiguity",
+      "provider": "runtime",
+      "route": "fail-closed-ranked-candidates",
+      "implementationFiles": [
+        "src/lib/resolve/service-resolver.ts",
+        "src/lib/resolve/source-selector.ts",
+        "src/runtime.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "none for local fixture ambiguity; Reader when cloud candidates are present",
+      "positiveTests": [
+        "tests/runtime.test.ts",
+        "tests/source-selector.test.ts"
+      ],
+      "negativeTests": [
+        "tests/runtime.test.ts",
+        "tests/source-selector.test.ts"
+      ],
+      "securityTests": [
+        "tests/sanitize.test.ts"
+      ],
+      "paginationTests": [],
+      "validationState": "live",
+      "liveEvidenceCase": "ambiguity",
+      "unsupportedReason": null
+    },
+    {
+      "id": "platform.api-center",
+      "provider": "platform",
+      "route": "api-center-definition-inventory-export",
+      "implementationFiles": [],
+      "contractClass": "unsupported",
+      "nativeFormats": [],
+      "requiredCapability": "Azure API Center Reader (when implemented)",
+      "positiveTests": [],
+      "negativeTests": [],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unsupported",
+      "liveEvidenceCase": null,
+      "unsupportedReason": "API Center inventory and authoritative definition export are not implemented (P0 gap; POS-394)."
+    },
+    {
+      "id": "platform.sovereign-cloud",
+      "provider": "platform",
+      "route": "sovereign-cloud-arm-endpoints",
+      "implementationFiles": [
+        "src/lib/azure/cloud.ts",
+        "src/lib/azure/clients.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [],
+      "requiredCapability": "cloud-specific ARM authority and credential scope (AZURE_ENVIRONMENT / authority host)",
+      "positiveTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "negativeTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "securityTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "paginationTests": [
+        "tests/azure-clients.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    }
+  ]
+}

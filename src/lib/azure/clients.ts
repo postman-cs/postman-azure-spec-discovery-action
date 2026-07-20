@@ -7,10 +7,25 @@ import { DefaultAzureCredential } from '@azure/identity';
 import type { TokenCredential } from '@azure/identity';
 
 import { fetchSpecFromUrl } from '../fetch/spec-fetcher.js';
+import {
+  computeBoundedRetryDelayMs,
+  isTransientHttpStatus,
+  sleep as defaultSleep
+} from '../retry.js';
+import {
+  armManagementUrl,
+  assertSafeArmNextLink,
+  resolveAzureCloudProfile,
+  type AzureCloudProfile
+} from './cloud.js';
 
 export interface AzureSdkOptions {
   requestTimeoutMs: number;
   maxAttempts: number;
+  /** Injectable sleep for deterministic ARM retry tests. */
+  sleep?: (delayMs: number) => Promise<void>;
+  /** Injectable RNG for deterministic full-jitter tests. */
+  random?: () => number;
 }
 
 export interface ApimServiceSummary {
@@ -61,7 +76,8 @@ function extractResourceGroup(resourceId: string | undefined): string {
 }
 
 export function createAzureCredential(): TokenCredential {
-  return new DefaultAzureCredential();
+  const cloud = resolveAzureCloudProfile();
+  return new DefaultAzureCredential({ authorityHost: cloud.authorityHost });
 }
 
 
@@ -157,6 +173,110 @@ const EXPORT_FORMAT_OPENAPI_JSON: ApimExportFormat = 'openapi+json-link';
  * realistic subscription for this action's scope.
  */
 const MAX_LIST_PAGES = 100;
+
+function sdkClientOptions(options?: AzureSdkOptions): {
+  retryOptions: { maxRetries: number };
+  endpoint: string;
+} {
+  return {
+    retryOptions: { maxRetries: sdkMaxRetries(options) },
+    endpoint: resolveAzureCloudProfile().managementEndpoint
+  };
+}
+
+async function getArmAccessToken(credential: TokenCredential, cloud: AzureCloudProfile): Promise<string> {
+  const token = await credential.getToken(cloud.armTokenScope);
+  if (!token) {
+    throw new Error('Azure credential produced no ARM token');
+  }
+  return token.token;
+}
+
+function takeNextLink(
+  nextLink: string | undefined,
+  currentUrl: string,
+  seen: Set<string>,
+  cloud: AzureCloudProfile,
+  operation: string
+): string | undefined {
+  if (nextLink === undefined) return undefined;
+  if (nextLink === currentUrl || seen.has(nextLink)) {
+    throw new Error(`${operation} pagination returned a repeated nextLink; aborting`);
+  }
+  const safe = assertSafeArmNextLink(nextLink, cloud, operation);
+  seen.add(currentUrl);
+  return safe;
+}
+
+interface ArmRequestOptions {
+  maxAttempts: number;
+  requestTimeoutMs: number;
+  operation: string;
+  signal?: AbortSignal;
+  sleep?: (delayMs: number) => Promise<void>;
+  random?: () => number;
+  method?: string;
+  body?: string;
+  /** When true, throw on non-OK HTTP instead of returning the response. */
+  throwOnHttpError?: boolean;
+}
+
+async function armRequest(url: string, token: string, options: ArmRequestOptions): Promise<Response> {
+  const sleepFn = options.sleep ?? defaultSleep;
+  const randomFn = options.random ?? Math.random;
+  for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+    options.signal?.throwIfAborted();
+    const requestSignal = AbortSignal.any([
+      AbortSignal.timeout(options.requestTimeoutMs),
+      ...(options.signal ? [options.signal] : [])
+    ]);
+    try {
+      const response = await fetch(url, {
+        method: options.method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(options.body !== undefined ? { 'content-type': 'application/json' } : {})
+        },
+        body: options.body,
+        signal: requestSignal
+      });
+      if (response.ok) return response;
+      if (!isTransientHttpStatus(response.status)) {
+        if (options.throwOnHttpError) {
+          throw new Error(`${options.operation} failed with HTTP ${response.status}`);
+        }
+        return response;
+      }
+      if (attempt === options.maxAttempts) {
+        if (options.throwOnHttpError) {
+          throw new Error(`${options.operation} failed with HTTP ${response.status}`);
+        }
+        return response;
+      }
+      const delayMs = computeBoundedRetryDelayMs({
+        attempt,
+        retryAfterHeader: response.headers.get('retry-after'),
+        random: randomFn
+      });
+      await sleepFn(delayMs);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /failed with HTTP [1-4]/.test(error.message) &&
+        !/HTTP (408|429)/.test(error.message)
+      ) {
+        throw error;
+      }
+      if (options.signal?.aborted) throw error;
+      if (attempt === options.maxAttempts) {
+        throw new Error(`${options.operation} failed after ${attempt} attempt(s)`, { cause: error });
+      }
+      const delayMs = computeBoundedRetryDelayMs({ attempt, random: randomFn });
+      await sleepFn(delayMs);
+    }
+  }
+  throw new Error(`${options.operation} exhausted its attempt limit`);
+}
 
 async function collectBounded<T>(iterable: AsyncIterable<T>, surface: string): Promise<T[]> {
   const items: T[] = [];
@@ -288,9 +408,7 @@ export class ApimSdkClient implements AzureApimClient {
   private readonly maxAttempts: number;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
-    this.client = new ApiManagementClient(credential, subscriptionId, {
-      retryOptions: { maxRetries: sdkMaxRetries(options) }
-    });
+    this.client = new ApiManagementClient(credential, subscriptionId, sdkClientOptions(options));
     this.requestTimeoutMs = options?.requestTimeoutMs;
     this.maxAttempts = options?.maxAttempts ?? 3;
   }
@@ -429,9 +547,7 @@ export class AppServiceSdkClient implements AzureAppServiceClient {
   private readonly client: WebSiteManagementClient;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
-    this.client = new WebSiteManagementClient(credential, subscriptionId, {
-      retryOptions: { maxRetries: sdkMaxRetries(options) }
-    });
+    this.client = new WebSiteManagementClient(credential, subscriptionId, sdkClientOptions(options));
   }
 
   public async listSites(resourceGroup?: string): Promise<AppServiceSiteSummary[]> {
@@ -485,30 +601,37 @@ const RESOURCE_GRAPH_API_VERSION = '2022-10-01';
 
 export class ResourceGraphSdkClient implements AzureResourceGraphClient {
   private readonly credential: TokenCredential;
+  private readonly cloud: AzureCloudProfile;
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
+  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly random: () => number;
 
   public constructor(credential: TokenCredential, options?: AzureSdkOptions) {
     this.credential = credential;
+    this.cloud = resolveAzureCloudProfile();
     this.maxAttempts = options?.maxAttempts ?? 3;
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+    this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
   }
 
   public async queryResources(subscriptionId: string, kql: string): Promise<ResourceGraphRow[]> {
-    const token = await this.credential.getToken('https://management.azure.com/.default');
-    if (!token) {
-      throw new Error('Azure credential produced no ARM token');
-    }
-    const url = `https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=${RESOURCE_GRAPH_API_VERSION}`;
+    const token = await getArmAccessToken(this.credential, this.cloud);
+    const url = armManagementUrl(
+      this.cloud,
+      `/providers/Microsoft.ResourceGraph/resources?api-version=${RESOURCE_GRAPH_API_VERSION}`
+    );
     const rows: ResourceGraphRow[] = [];
     let skipToken: string | undefined;
+    const seenTokens = new Set<string>();
     let pages = 0;
     do {
       pages += 1;
       if (pages > MAX_LIST_PAGES) {
         throw new Error(`Resource Graph pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
       }
-      const fetched = await this.postQuery(url, token.token, {
+      const fetched = await this.postQuery(url, token, {
         subscriptions: [subscriptionId],
         query: kql,
         ...(skipToken ? { options: { $skipToken: skipToken } } : {})
@@ -526,60 +649,54 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
         });
       }
       const next = response.$skipToken ?? response.skipToken;
-      if (next !== undefined && next === skipToken) {
+      if (next !== undefined && (next === skipToken || seenTokens.has(next))) {
         throw new Error('Resource Graph pagination returned a repeated skip token; aborting');
       }
+      if (skipToken !== undefined) seenTokens.add(skipToken);
       skipToken = next;
     } while (skipToken);
     return rows;
   }
 
   private async postQuery(url: string, token: string, body: unknown): Promise<unknown> {
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: controller.signal
-        });
-        if (response.ok) return await response.json();
-        if (![408, 429].includes(response.status) && response.status < 500) {
-          throw new Error(`Resource Graph query failed with HTTP ${response.status}`);
-        }
-        if (attempt === this.maxAttempts) {
-          throw new Error(`Resource Graph query failed with HTTP ${response.status}`);
-        }
-      } catch (error) {
-        if (error instanceof Error && /failed with HTTP [1-4]/.test(error.message) && !/HTTP (408|429)/.test(error.message)) throw error;
-        if (attempt === this.maxAttempts) {
-          throw new Error(`Resource Graph query failed after ${attempt} attempt(s)`, { cause: error });
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    throw new Error('Resource Graph query exhausted its attempt limit');
+    const response = await armRequest(url, token, {
+      maxAttempts: this.maxAttempts,
+      requestTimeoutMs: this.requestTimeoutMs,
+      operation: 'Resource Graph query',
+      method: 'POST',
+      body: JSON.stringify(body),
+      sleep: this.sleep,
+      random: this.random,
+      throwOnHttpError: true
+    });
+    return await response.json();
   }
 }
 
 export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
   private readonly credential: TokenCredential;
+  private readonly cloud: AzureCloudProfile;
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
+  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly random: () => number;
 
   public constructor(credential: TokenCredential, options?: AzureSdkOptions) {
     this.credential = credential;
+    this.cloud = resolveAzureCloudProfile();
     this.maxAttempts = options?.maxAttempts ?? 3;
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+    this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
   }
 
   public async get(subscriptionId: string): Promise<SubscriptionSummary> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const response = await this.fetchArm(
-      `https://management.azure.com/subscriptions/${encodeURIComponent(subscriptionId)}?api-version=2022-12-01`,
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(subscriptionId)}?api-version=2022-12-01`
+      ),
       token,
       'Subscription lookup'
     );
@@ -593,9 +710,10 @@ export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
 
   /** ARM REST list (the @azure/arm-subscriptions v6 SDK no longer exposes subscriptions.list). */
   public async list(): Promise<SubscriptionSummary[]> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const subscriptions: SubscriptionSummary[] = [];
-    let url: string | undefined = 'https://management.azure.com/subscriptions?api-version=2022-12-01';
+    let url: string | undefined = armManagementUrl(this.cloud, '/subscriptions?api-version=2022-12-01');
+    const seen = new Set<string>();
     let pages = 0;
     while (url) {
       pages += 1;
@@ -619,41 +737,19 @@ export class SubscriptionsSdkClient implements AzureSubscriptionsClient {
           });
         }
       }
-      const next: string | undefined = body.nextLink;
-      if (next !== undefined && next === url) {
-        throw new Error('Subscription listing pagination returned a repeated nextLink; aborting');
-      }
-      url = next;
+      url = takeNextLink(body.nextLink, url, seen, this.cloud, 'Subscription listing');
     }
     return subscriptions;
   }
 
-  private async getArmToken(): Promise<string> {
-    const token = await this.credential.getToken('https://management.azure.com/.default');
-    if (!token) {
-      throw new Error('Azure credential produced no ARM token');
-    }
-    return token.token;
-  }
-
   private async fetchArm(url: string, token: string, operation: string): Promise<Response> {
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-      try {
-        const response = await fetch(url, {
-          headers: { authorization: `Bearer ${token}` },
-          signal: controller.signal
-        });
-        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
-        if (attempt === this.maxAttempts) return response;
-      } catch (error) {
-        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    throw new Error(`${operation} exhausted its attempt limit`);
+    return armRequest(url, token, {
+      maxAttempts: this.maxAttempts,
+      requestTimeoutMs: this.requestTimeoutMs,
+      operation,
+      sleep: this.sleep,
+      random: this.random
+    });
   }
 }
 const CUSTOM_APIS_API_VERSION = '2016-06-01';
@@ -699,24 +795,33 @@ function toCustomApiSummary(entry: CustomApiArmEnvelope): CustomApiSummary | und
 export class CustomApisSdkClient implements AzureCustomApisClient {
   private readonly credential: TokenCredential;
   private readonly subscriptionId: string;
+  private readonly cloud: AzureCloudProfile;
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
+  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly random: () => number;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.credential = credential;
     this.subscriptionId = subscriptionId;
+    this.cloud = resolveAzureCloudProfile();
     this.maxAttempts = options?.maxAttempts ?? 3;
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+    this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
   }
 
   public async listCustomApis(resourceGroup?: string): Promise<CustomApiSummary[]> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis`
       : 'providers/Microsoft.Web/customApis';
-    let url: string | undefined =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${CUSTOM_APIS_API_VERSION}`;
+    let url: string | undefined = armManagementUrl(
+      this.cloud,
+      `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${CUSTOM_APIS_API_VERSION}`
+    );
     const summaries: CustomApiSummary[] = [];
+    const seen = new Set<string>();
     let pages = 0;
     while (url) {
       pages += 1;
@@ -732,21 +837,19 @@ export class CustomApisSdkClient implements AzureCustomApisClient {
         const summary = toCustomApiSummary(entry);
         if (summary) summaries.push(summary);
       }
-      const next: string | undefined = body.nextLink;
-      if (next !== undefined && next === url) {
-        throw new Error('Custom API listing pagination returned a repeated nextLink; aborting');
-      }
-      url = next;
+      url = takeNextLink(body.nextLink, url, seen, this.cloud, 'Custom API listing');
     }
     return summaries;
   }
 
   public async getSwagger(resourceGroup: string, name: string): Promise<string> {
-    const token = await this.getArmToken();
-    const url =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
-      `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis/${encodeURIComponent(name)}` +
-      `?api-version=${CUSTOM_APIS_API_VERSION}`;
+    const token = await getArmAccessToken(this.credential, this.cloud);
+    const url = armManagementUrl(
+      this.cloud,
+      `/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+        `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis/${encodeURIComponent(name)}` +
+        `?api-version=${CUSTOM_APIS_API_VERSION}`
+    );
     const response = await this.fetchArm(url, token, 'Custom API read');
     if (!response.ok) {
       throw new Error(`Custom API read failed with HTTP ${response.status}`);
@@ -760,12 +863,14 @@ export class CustomApisSdkClient implements AzureCustomApisClient {
   }
 
   public async probeCustomApisReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis`
       : 'providers/Microsoft.Web/customApis';
-    const url =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${CUSTOM_APIS_API_VERSION}&$top=1`;
+    const url = armManagementUrl(
+      this.cloud,
+      `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${CUSTOM_APIS_API_VERSION}&$top=1`
+    );
     const response = await this.fetchArm(url, token, 'Custom API probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: custom API probe returned HTTP ${response.status}`);
@@ -775,31 +880,15 @@ export class CustomApisSdkClient implements AzureCustomApisClient {
     }
   }
 
-  private async getArmToken(): Promise<string> {
-    const token = await this.credential.getToken('https://management.azure.com/.default');
-    if (!token) {
-      throw new Error('Azure credential produced no ARM token');
-    }
-    return token.token;
-  }
-
   private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      signal?.throwIfAborted();
-      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
-      try {
-        const response = await fetch(url, {
-          headers: { authorization: `Bearer ${token}` },
-          signal: requestSignal
-        });
-        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
-        if (attempt === this.maxAttempts) return response;
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      }
-    }
-    throw new Error(`${operation} exhausted its attempt limit`);
+    return armRequest(url, token, {
+      maxAttempts: this.maxAttempts,
+      requestTimeoutMs: this.requestTimeoutMs,
+      operation,
+      signal,
+      sleep: this.sleep,
+      random: this.random
+    });
   }
 }
 
@@ -835,24 +924,34 @@ interface LogicWorkflowArmEnvelope {
 export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
   private readonly credential: TokenCredential;
   private readonly subscriptionId: string;
+  private readonly cloud: AzureCloudProfile;
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
+  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly random: () => number;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.credential = credential;
     this.subscriptionId = subscriptionId;
+    this.cloud = resolveAzureCloudProfile();
     this.maxAttempts = options?.maxAttempts ?? 3;
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+    this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
   }
 
   public async listWorkflows(resourceGroup?: string): Promise<LogicWorkflowSummary[]> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Logic/workflows`
       : 'providers/Microsoft.Logic/workflows';
     let url: string | undefined =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${LOGIC_API_VERSION}`;
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${LOGIC_API_VERSION}`
+      );
     const summaries: LogicWorkflowSummary[] = [];
+    const seen = new Set<string>();
     let pages = 0;
     while (url) {
       pages += 1;
@@ -877,21 +976,20 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
           state: typeof entry.properties?.state === 'string' ? entry.properties.state : undefined
         });
       }
-      const next: string | undefined = body.nextLink;
-      if (next !== undefined && next === url) {
-        throw new Error('Logic workflow listing pagination returned a repeated nextLink; aborting');
-      }
-      url = next;
+      url = takeNextLink(body.nextLink, url, seen, this.cloud, 'Logic workflow listing');
     }
     return summaries;
   }
 
   public async getWorkflow(resourceGroup: string, name: string): Promise<LogicWorkflowDetail> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const url =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
       `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Logic/workflows/${encodeURIComponent(name)}` +
-      `?api-version=${LOGIC_API_VERSION}`;
+      `?api-version=${LOGIC_API_VERSION}`
+      );
     const response = await this.fetchArm(url, token, 'Logic workflow read');
     if (!response.ok) {
       throw new Error(`Logic workflow read failed with HTTP ${response.status}`);
@@ -919,12 +1017,15 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
   }
 
   public async probeLogicWorkflowsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Logic/workflows`
       : 'providers/Microsoft.Logic/workflows';
     const url =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${LOGIC_API_VERSION}&$top=1`;
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${LOGIC_API_VERSION}&$top=1`
+      );
     const response = await this.fetchArm(url, token, 'Logic workflow probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: logic workflow probe returned HTTP ${response.status}`);
@@ -934,31 +1035,15 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
     }
   }
 
-  private async getArmToken(): Promise<string> {
-    const token = await this.credential.getToken('https://management.azure.com/.default');
-    if (!token) {
-      throw new Error('Azure credential produced no ARM token');
-    }
-    return token.token;
-  }
-
   private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      signal?.throwIfAborted();
-      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
-      try {
-        const response = await fetch(url, {
-          headers: { authorization: `Bearer ${token}` },
-          signal: requestSignal
-        });
-        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
-        if (attempt === this.maxAttempts) return response;
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      }
-    }
-    throw new Error(`${operation} exhausted its attempt limit`);
+    return armRequest(url, token, {
+      maxAttempts: this.maxAttempts,
+      requestTimeoutMs: this.requestTimeoutMs,
+      operation,
+      signal,
+      sleep: this.sleep,
+      random: this.random
+    });
   }
 }
 
@@ -1017,14 +1102,20 @@ interface DeploymentArmEnvelope {
 export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
   private readonly credential: TokenCredential;
   private readonly subscriptionId: string;
+  private readonly cloud: AzureCloudProfile;
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
+  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly random: () => number;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.credential = credential;
     this.subscriptionId = subscriptionId;
+    this.cloud = resolveAzureCloudProfile();
     this.maxAttempts = options?.maxAttempts ?? 3;
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+    this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
   }
 
   public async listTemplateSpecs(resourceGroup?: string): Promise<TemplateSpecSummary[]> {
@@ -1032,7 +1123,10 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs`
       : 'providers/Microsoft.Resources/templateSpecs';
     const first =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${TEMPLATE_SPECS_API_VERSION}`;
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${TEMPLATE_SPECS_API_VERSION}`
+      );
     const entries = await this.listPaged<TemplateSpecArmEnvelope>(first, 'Template spec listing');
     const summaries: TemplateSpecSummary[] = [];
     for (const entry of entries) {
@@ -1046,9 +1140,12 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
 
   public async listVersions(resourceGroup: string, templateSpecName: string): Promise<TemplateSpecVersionSummary[]> {
     const first =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
       `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs/${encodeURIComponent(templateSpecName)}` +
-      `/versions?api-version=${TEMPLATE_SPECS_API_VERSION}`;
+      `/versions?api-version=${TEMPLATE_SPECS_API_VERSION}`
+      );
     const entries = await this.listPaged<TemplateSpecVersionArmEnvelope>(first, 'Template spec version listing');
     const summaries: TemplateSpecVersionSummary[] = [];
     for (const entry of entries) {
@@ -1061,11 +1158,14 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
   }
 
   public async getVersionMainTemplate(resourceGroup: string, templateSpecName: string, version: string): Promise<unknown> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const url =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
       `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs/${encodeURIComponent(templateSpecName)}` +
-      `/versions/${encodeURIComponent(version)}?api-version=${TEMPLATE_SPECS_API_VERSION}`;
+      `/versions/${encodeURIComponent(version)}?api-version=${TEMPLATE_SPECS_API_VERSION}`
+      );
     const response = await this.fetchArm(url, token, 'Template spec version read');
     if (!response.ok) {
       throw new Error(`Template spec version read failed with HTTP ${response.status}`);
@@ -1076,8 +1176,11 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
 
   public async listDeployments(resourceGroup: string): Promise<DeploymentSummary[]> {
     const first =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
-      `/resourcegroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/deployments/?api-version=${DEPLOYMENTS_API_VERSION}`;
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      `/resourcegroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/deployments/?api-version=${DEPLOYMENTS_API_VERSION}`
+      );
     const entries = await this.listPaged<DeploymentArmEnvelope>(first, 'Deployment listing');
     const summaries: DeploymentSummary[] = [];
     for (const entry of entries) {
@@ -1093,12 +1196,15 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
   }
 
   public async probeTemplateSpecsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Resources/templateSpecs`
       : 'providers/Microsoft.Resources/templateSpecs';
     const url =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${TEMPLATE_SPECS_API_VERSION}&$top=1`;
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${TEMPLATE_SPECS_API_VERSION}&$top=1`
+      );
     const response = await this.fetchArm(url, token, 'Template spec probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: template spec probe returned HTTP ${response.status}`);
@@ -1109,9 +1215,10 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
   }
 
   private async listPaged<T>(firstUrl: string, operation: string): Promise<T[]> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     let url: string | undefined = firstUrl;
     const entries: T[] = [];
+    const seen = new Set<string>();
     let pages = 0;
     while (url) {
       pages += 1;
@@ -1124,40 +1231,20 @@ export class TemplateSpecsSdkClient implements AzureTemplateSpecsClient {
       }
       const body = (await response.json()) as { value?: T[]; nextLink?: string };
       entries.push(...(body.value ?? []));
-      const next: string | undefined = body.nextLink;
-      if (next !== undefined && next === url) {
-        throw new Error(`${operation} pagination returned a repeated nextLink; aborting`);
-      }
-      url = next;
+      url = takeNextLink(body.nextLink, url, seen, this.cloud, operation);
     }
     return entries;
   }
 
-  private async getArmToken(): Promise<string> {
-    const token = await this.credential.getToken('https://management.azure.com/.default');
-    if (!token) {
-      throw new Error('Azure credential produced no ARM token');
-    }
-    return token.token;
-  }
-
   private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      signal?.throwIfAborted();
-      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
-      try {
-        const response = await fetch(url, {
-          headers: { authorization: `Bearer ${token}` },
-          signal: requestSignal
-        });
-        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
-        if (attempt === this.maxAttempts) return response;
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      }
-    }
-    throw new Error(`${operation} exhausted its attempt limit`);
+    return armRequest(url, token, {
+      maxAttempts: this.maxAttempts,
+      requestTimeoutMs: this.requestTimeoutMs,
+      operation,
+      signal,
+      sleep: this.sleep,
+      random: this.random
+    });
   }
 }
 
@@ -1229,9 +1316,7 @@ export class EventGridSdkClient implements AzureEventGridClient {
   private readonly client: EventGridManagementClient;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
-    this.client = new EventGridManagementClient(credential, subscriptionId, {
-      retryOptions: { maxRetries: sdkMaxRetries(options) }
-    });
+    this.client = new EventGridManagementClient(credential, subscriptionId, sdkClientOptions(options));
   }
 
   public async listSources(resourceGroup?: string): Promise<EventGridSourceSummary[]> {
@@ -1369,9 +1454,7 @@ export class ServiceBusSdkClient implements AzureServiceBusClient {
   private readonly client: ServiceBusManagementClient;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
-    this.client = new ServiceBusManagementClient(credential, subscriptionId, {
-      retryOptions: { maxRetries: sdkMaxRetries(options) }
-    });
+    this.client = new ServiceBusManagementClient(credential, subscriptionId, sdkClientOptions(options));
   }
 
   public async listNamespaces(resourceGroup?: string): Promise<ServiceBusNamespaceSummary[]> {
@@ -1550,14 +1633,20 @@ function toBindingSummary(raw: RawBinding): FunctionBindingSummary | undefined {
 export class FunctionsSdkClient implements AzureFunctionsClient {
   private readonly credential: TokenCredential;
   private readonly subscriptionId: string;
+  private readonly cloud: AzureCloudProfile;
   private readonly maxAttempts: number;
   private readonly requestTimeoutMs: number;
+  private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly random: () => number;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.credential = credential;
     this.subscriptionId = subscriptionId;
+    this.cloud = resolveAzureCloudProfile();
     this.maxAttempts = options?.maxAttempts ?? 3;
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+    this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
   }
 
   public async listFunctionApps(resourceGroup?: string): Promise<FunctionAppSummary[]> {
@@ -1565,7 +1654,10 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/sites`
       : 'providers/Microsoft.Web/sites';
     const first =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${FUNCTIONS_API_VERSION}`;
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${FUNCTIONS_API_VERSION}`
+      );
     const entries = await this.listPaged<FunctionAppArmEnvelope>(first, 'Function app listing');
     const summaries: FunctionAppSummary[] = [];
     for (const entry of entries) {
@@ -1587,9 +1679,12 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
 
   public async listFunctions(resourceGroup: string, appName: string): Promise<FunctionSummary[]> {
     const first =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
       `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/sites/${encodeURIComponent(appName)}` +
-      `/functions?api-version=${FUNCTIONS_API_VERSION}`;
+      `/functions?api-version=${FUNCTIONS_API_VERSION}`
+      );
     const entries = await this.listPaged<FunctionArmEnvelope>(first, 'Function listing');
     const summaries: FunctionSummary[] = [];
     for (const entry of entries) {
@@ -1613,12 +1708,15 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
   }
 
   public async probeFunctionsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     const scope = resourceGroup
       ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/sites`
       : 'providers/Microsoft.Web/sites';
     const url =
-      `https://management.azure.com/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${FUNCTIONS_API_VERSION}&$top=1`;
+      armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${FUNCTIONS_API_VERSION}&$top=1`
+      );
     const response = await this.fetchArm(url, token, 'Function app probe', signal);
     if (response.status === 401 || response.status === 403) {
       throw new Error(`AuthorizationFailed: function app probe returned HTTP ${response.status}`);
@@ -1629,9 +1727,10 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
   }
 
   private async listPaged<T>(firstUrl: string, operation: string): Promise<T[]> {
-    const token = await this.getArmToken();
+    const token = await getArmAccessToken(this.credential, this.cloud);
     let url: string | undefined = firstUrl;
     const entries: T[] = [];
+    const seen = new Set<string>();
     let pages = 0;
     while (url) {
       pages += 1;
@@ -1644,39 +1743,19 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
       }
       const body = (await response.json()) as { value?: T[]; nextLink?: string };
       entries.push(...(body.value ?? []));
-      const next: string | undefined = body.nextLink;
-      if (next !== undefined && next === url) {
-        throw new Error(`${operation} pagination returned a repeated nextLink; aborting`);
-      }
-      url = next;
+      url = takeNextLink(body.nextLink, url, seen, this.cloud, operation);
     }
     return entries;
   }
 
-  private async getArmToken(): Promise<string> {
-    const token = await this.credential.getToken('https://management.azure.com/.default');
-    if (!token) {
-      throw new Error('Azure credential produced no ARM token');
-    }
-    return token.token;
-  }
-
   private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      signal?.throwIfAborted();
-      const requestSignal = AbortSignal.any([AbortSignal.timeout(this.requestTimeoutMs), ...(signal ? [signal] : [])]);
-      try {
-        const response = await fetch(url, {
-          headers: { authorization: `Bearer ${token}` },
-          signal: requestSignal
-        });
-        if (response.ok || ![408, 429].includes(response.status) && response.status < 500) return response;
-        if (attempt === this.maxAttempts) return response;
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        if (attempt === this.maxAttempts) throw new Error(`${operation} failed after ${attempt} attempt(s)`, { cause: error });
-      }
-    }
-    throw new Error(`${operation} exhausted its attempt limit`);
+    return armRequest(url, token, {
+      maxAttempts: this.maxAttempts,
+      requestTimeoutMs: this.requestTimeoutMs,
+      operation,
+      signal,
+      sleep: this.sleep,
+      random: this.random
+    });
   }
 }

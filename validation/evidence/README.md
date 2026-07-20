@@ -4,6 +4,15 @@ This is the single customer-safe evidence document for Azure spec discovery live
 
 Raw Azure identifiers (subscription, tenant, resource group, ARM IDs), hostnames, URLs, request IDs, SAS links, credential-bearing output, and `*.local.json` files must stay out of this document and out of `live-azure-surfaces.json`. The live runner keeps raw manifests and command output in gitignored local files and refreshes only the sanitized summary below.
 
+## Claim boundary
+
+Live evidence proves only the cases listed in `live-azure-surfaces.json`. It is not a full product coverage matrix.
+
+- The machine-readable coverage claim for every advertised and explicit unsupported route lives in `coverage/route-claims.json` (see `docs/COVERAGE.md`).
+- A passing unit test does not promote a route to `validationState: live`.
+- Only a matching passing case name in this evidence file may back a `live` claim.
+- Routes marked `unit-only`, `local-only`, or `unsupported` in the claim manifest are outside the live proof set below.
+
 ## Live Azure surfaces
 
 Evidence file: `live-azure-surfaces.json` (schema 1). It reports only case totals and per-case `{name, status, sourceType, providerType, specFormat}`.

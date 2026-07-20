@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
-const { apimCtorSpy, appServiceCtorSpy, graphCtorSpy } = vi.hoisted(() => ({
+const { apimCtorSpy, appServiceCtorSpy, eventGridCtorSpy, serviceBusCtorSpy, graphCtorSpy } = vi.hoisted(() => ({
   apimCtorSpy: vi.fn(),
   appServiceCtorSpy: vi.fn(),
+  eventGridCtorSpy: vi.fn(),
+  serviceBusCtorSpy: vi.fn(),
   graphCtorSpy: vi.fn()
 }));
 
@@ -33,6 +35,32 @@ vi.mock('@azure/arm-appservice', () => ({
     public webApps = { list: vi.fn(), listByResourceGroup: vi.fn(), getConfiguration: vi.fn() };
     public constructor(...args: unknown[]) {
       appServiceCtorSpy(...args);
+    }
+  }
+}));
+
+vi.mock('@azure/arm-eventgrid', () => ({
+  EventGridManagementClient: class {
+    public topics = { listBySubscription: vi.fn(), listByResourceGroup: vi.fn() };
+    public domains = { listBySubscription: vi.fn(), listByResourceGroup: vi.fn() };
+    public systemTopics = { listBySubscription: vi.fn(), listByResourceGroup: vi.fn() };
+    public topicEventSubscriptions = { list: vi.fn() };
+    public domainEventSubscriptions = { list: vi.fn() };
+    public systemTopicEventSubscriptions = { listBySystemTopic: vi.fn() };
+    public constructor(...args: unknown[]) {
+      eventGridCtorSpy(...args);
+    }
+  }
+}));
+
+vi.mock('@azure/arm-servicebus', () => ({
+  ServiceBusManagementClient: class {
+    public namespaces = { list: vi.fn(), listByResourceGroup: vi.fn() };
+    public topics = { listByNamespace: vi.fn() };
+    public subscriptions = { listByTopic: vi.fn() };
+    public rules = { listBySubscriptions: vi.fn() };
+    public constructor(...args: unknown[]) {
+      serviceBusCtorSpy(...args);
     }
   }
 }));
@@ -68,11 +96,14 @@ describe('azure sdk client wrappers', () => {
   beforeEach(() => {
     apimCtorSpy.mockReset();
     appServiceCtorSpy.mockReset();
+    eventGridCtorSpy.mockReset();
+    serviceBusCtorSpy.mockReset();
     graphCtorSpy.mockReset();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('AZ-CLIENT-001: every wrapper receives the same shared TokenCredential', () => {
@@ -469,7 +500,11 @@ describe('azure sdk client wrappers', () => {
   });
 
   it('AZ-CLIENT-004: subscription REST retries transient responses but not 401', async () => {
-    const client = new SubscriptionsSdkClient(fakeCredential(), { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const client = new SubscriptionsSdkClient(fakeCredential(), {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response('unavailable', { status: 503 }))
       .mockResolvedValueOnce(
@@ -482,6 +517,158 @@ describe('azure sdk client wrappers', () => {
     fetchSpy.mockResolvedValue(new Response('unauthorized', { status: 401 }));
     await expect(client.get('sub-1')).rejects.toThrow('HTTP 401');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('AZ-CLOUD-010: clients.ts does not hardcode the public ARM host outside the cloud profile', () => {
+    const clientsSrc = readFileSync(path.resolve(import.meta.dirname, '..', 'src/lib/azure/clients.ts'), 'utf8');
+    expect(clientsSrc).not.toContain('https://management.azure.com');
+  });
+
+  it('AZ-CLOUD-011: sovereign profiles wire SDK endpoint and REST token scope without public leakage', async () => {
+    vi.stubEnv('AZURE_ENVIRONMENT', 'AzureUSGovernment');
+    const credential = fakeCredential();
+    new ApimSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    new AppServiceSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    new EventGridSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    new ServiceBusSdkClient(credential, 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+
+    expect(apimCtorSpy.mock.calls[0]?.[2]).toMatchObject({
+      endpoint: 'https://management.usgovcloudapi.net'
+    });
+    expect(appServiceCtorSpy.mock.calls[0]?.[2]).toMatchObject({
+      endpoint: 'https://management.usgovcloudapi.net'
+    });
+    expect(eventGridCtorSpy.mock.calls[0]?.[2]).toMatchObject({
+      endpoint: 'https://management.usgovcloudapi.net'
+    });
+    expect(serviceBusCtorSpy.mock.calls[0]?.[2]).toMatchObject({
+      endpoint: 'https://management.usgovcloudapi.net'
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ subscriptionId: 'sub-1', state: 'Enabled' }), { status: 200 })
+    );
+    const subscriptions = new SubscriptionsSdkClient(credential, {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
+    await subscriptions.get('sub-1');
+    expect(credential.getToken).toHaveBeenCalledWith('https://management.usgovcloudapi.net/.default');
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      'https://management.usgovcloudapi.net/subscriptions/sub-1?api-version=2022-12-01'
+    );
+    expect(String(fetchSpy.mock.calls[0]?.[0])).not.toContain('management.azure.com');
+  });
+
+  it('AZ-CLOUD-012: China profile keeps REST requests on chinacloudapi.cn', async () => {
+    vi.stubEnv('AZURE_ENVIRONMENT', 'AzureChinaCloud');
+    const credential = fakeCredential();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ value: [] }), { status: 200 })
+    );
+    const client = new CustomApisSdkClient(credential, 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
+    await client.listCustomApis();
+    expect(credential.getToken).toHaveBeenCalledWith('https://management.chinacloudapi.cn/.default');
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('https://management.chinacloudapi.cn/');
+    expect(String(fetchSpy.mock.calls[0]?.[0])).not.toContain('management.azure.com');
+  });
+
+  it('AZ-PAGINATION-010: rejects non-HTTPS and wrong-host nextLink before forwarding credentials', async () => {
+    const credential = fakeCredential();
+    const client = new SubscriptionsSdkClient(credential, {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          value: [{ subscriptionId: 'sub-0', state: 'Enabled' }],
+          nextLink: 'http://management.azure.com/subscriptions?api-version=2022-12-01&page=1'
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(client.list()).rejects.toThrow(/HTTPS/i);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockReset();
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          value: [{ subscriptionId: 'sub-0', state: 'Enabled' }],
+          nextLink: 'https://evil.example/subscriptions?api-version=2022-12-01'
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(client.list()).rejects.toThrow(/management endpoint|nextLink host/i);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // Credential was used for the first page only; malicious nextLink must not be fetched.
+    expect(credential.getToken).toHaveBeenCalled();
+  });
+
+  it('AZ-PAGINATION-011: rejects malformed and repeated nextLink values', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ value: [], nextLink: 'not a url' }), { status: 200 })
+    );
+    await expect(client.listCustomApis()).rejects.toThrow(/malformed nextLink/i);
+
+    const repeated = vi.spyOn(globalThis, 'fetch').mockReset().mockImplementation(async (input) => {
+      const url = String(input);
+      return new Response(
+        JSON.stringify({
+          value: [
+            {
+              id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/customApis/a',
+              name: 'a',
+              properties: { swagger: {} }
+            }
+          ],
+          nextLink: url
+        }),
+        { status: 200 }
+      );
+    });
+    await expect(client.listCustomApis()).rejects.toThrow(/repeated nextLink/i);
+    expect(repeated).toHaveBeenCalledTimes(1);
+  });
+
+  it('AZ-RETRY-010: honors Retry-After seconds with injectable sleep and does not retry permanent 400', async () => {
+    const sleeps: number[] = [];
+    const client = new SubscriptionsSdkClient(fakeCredential(), {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      random: () => 0
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('slow down', { status: 429, headers: { 'Retry-After': '3' } }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ subscriptionId: 'sub-1', state: 'Enabled' }), { status: 200 })
+      );
+    await expect(client.get('sub-1')).resolves.toMatchObject({ subscriptionId: 'sub-1' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(sleeps).toEqual([3000]);
+
+    fetchSpy.mockReset();
+    sleeps.length = 0;
+    fetchSpy.mockResolvedValue(new Response('bad request', { status: 400 }));
+    await expect(client.get('sub-1')).rejects.toThrow('HTTP 400');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
   });
 });
 

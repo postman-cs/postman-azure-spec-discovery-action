@@ -1,5 +1,8 @@
 node_modules/
 coverage/
+!coverage/
+coverage/*
+!coverage/route-claims.json
 discovered-specs/
 postman-aws-spec-discovery-result.json
 validation/evidence/*.local.json
