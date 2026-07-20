@@ -183,6 +183,28 @@ describe('R4 runtime-declared specification routes', () => {
 </definitions>`,
         format: 'wsdl',
         filename: 'service.wsdl'
+      },
+      {
+        url: 'https://orders.example.com/service.wadl',
+        body: `<?xml version="1.0"?>
+<application xmlns="http://wadl.dev.java.net/2009/02">
+  <resources base="https://orders.example.com/">
+    <resource path="orders">
+      <method name="GET"/>
+    </resource>
+  </resources>
+</application>`,
+        format: 'wadl',
+        filename: 'application.wadl'
+      },
+      {
+        url: 'https://orders.example.com/schema.xsd',
+        body: `<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="Order" type="xs:string"/>
+</xs:schema>`,
+        format: 'xsd',
+        filename: 'schema.xsd'
       }
     ];
 

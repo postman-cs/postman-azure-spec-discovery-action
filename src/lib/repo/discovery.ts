@@ -66,7 +66,9 @@ function isPulumiYaml(relativePath: string): boolean {
 }
 
 function isPulumiSource(relativePath: string): boolean {
-  return /\.(?:ts|js|py|go|cs)$/i.test(relativePath) && /pulumi/i.test(relativePath);
+  // Candidate by supported source extension; parsePulumiSource rejects unrelated content.
+  // Conventional paths like infra/index.ts must not require "pulumi" in the filename.
+  return /\.(?:ts|js|py|go|cs)$/i.test(relativePath);
 }
 
 function isApiOps(relativePath: string): boolean {

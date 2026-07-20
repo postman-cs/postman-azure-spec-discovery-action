@@ -45,6 +45,14 @@ const ADO_SECRET_EXPR_RE = /\$\((?:[^)]*[Ss]ecret[^)]*|.*Password.*)\)/;
 export function isSecretPath(relativePath: string): boolean {
   const posix = relativePath.replace(/\\/g, '/');
   const base = posix.split('/').pop() ?? posix;
+
+  // Root/nested `.env` and `.env.*` are secret-bearing for generic reads.
+  // Preserve the dedicated R3 allowlisted parser path: `.azure/<environment>/.env`.
+  const isAzureEnvAllowlist = /(^|\/)\.azure\/[^/]+\/\.env$/i.test(posix);
+  if (!isAzureEnvAllowlist && (base === '.env' || /^\.env\./i.test(base))) {
+    return true;
+  }
+
   if (SECRET_BASENAME_RE.test(base)) return true;
   if (SECRET_PATH_SEGMENT_RE.test(posix)) return true;
   // Skip Pulumi passphrase / stack secret sidecars.

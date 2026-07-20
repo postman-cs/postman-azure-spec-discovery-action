@@ -32,7 +32,7 @@ Verified on 2026-07-20 at `aa3458b`:
 - `npm test`: 53 files and 532 tests passed.
 - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run verify:coverage`, and committed-bundle verification passed.
 - ADO pipeline 157 run 2714 tested compiled `dist/cli.cjs` against the paid Postman Azure subscription in 7m09s: 31 cases, 22 passed, 0 failed, 8 capability-gated, 1 local-only. Persistent stack `c5e1feed` remains running.
-- Live passes cover clean-repository APIM host/path and tag resolution, current/historical revisions, version sets, SOAP/WSDL, GraphQL SDL, explicit unsupported gRPC/OData outcomes, native and Reader Logic Apps routes, Template Specs, Event Grid, public App Service specs, and built-in MCP `ApiSpecPath` through correlated Kudu VFS.
+- Live passes cover clean-repository APIM host/path and tag resolution, current/historical revisions, version sets, SOAP/WSDL, GraphQL SDL, explicit unsupported gRPC (fixture lacked `text/protobuf`) and OData outcomes, native and Reader Logic Apps routes, Template Specs, Event Grid, public App Service specs, and built-in MCP `ApiSpecPath` through correlated Kudu VFS. APIM gRPC authoritative protobuf export via API Schema List/Get is unit-tested only; not live-validated.
 - Capability outcomes are explicit: WebSocket is unavailable on the live Consumption SKU; Custom APIs returns an Azure internal capability error; Service Bus Standard remains cost-guarded; no Functions OpenAPI extension is installed.
 - API Center source, 200/202 export/LRO, pagination, Retry-After, permission, native-format, exact-selection, and ambiguity tests are implemented. Live provisioning is blocked because the only service connection lacks subscription action `Microsoft.ApiCenter/register/action` (ADO run 2713). A subscription owner must register `Microsoft.ApiCenter`; the product and default harness never auto-register providers.
 - Release `1.3.0`, final judge closure, Linear closure, and public artifact verification remain pending this provider-registration gate.
@@ -45,7 +45,7 @@ Current implementation coverage:
 | R2 API Center ARM inventory/export | Complete, including bounded 200/202 LRO and native formats | Blocked by subscription provider registration |
 | R3 local/IaC/deployment/source-control bindings | Complete under no-exec confinement and ambiguity bounds | Compiled local matrix (`local-only`) |
 | R4 native/runtime routes and SSRF controls | Complete, including App Service API `2026-03-15` MCP and Kudu path mapping | Logic Apps, Event Grid, and App Service passing; optional capability rows explicit |
-| R5 native formats/fidelity | Complete with authoritative/reconstructed/partial/unsupported classes | APIM WSDL and GraphQL passing; local native matrix compiled |
+| R5 native formats/fidelity | Complete with authoritative/reconstructed/partial/unsupported classes; APIM gRPC conditional on `text/protobuf` via API Schema List/Get | APIM WSDL and GraphQL passing; gRPC live fixture unsupported (no protobuf schema); local native matrix compiled |
 | R6 cloud/scope/identity/retry | Complete for Public/Government/China profiles and bounded selected scopes | Public Azure passing; sovereign clouds not advertised as live |
 | R7 provider registry/narrow-before-hydration | Complete with bounded deterministic ordering and expansion-safe hydration | Exercised throughout run 2712 |
 | R8 coverage/evidence gate | Complete and machine-verified | 22 live passes; non-pass reasons explicit |
@@ -198,7 +198,8 @@ Implementation:
 - Validate OpenAPI 2.0, 3.0, and 3.1 separately and report APIM reconstruction limitations.
 - Add APIM WADL export if the current documented API version and live service prove the format.
 - Keep APIM WebSocket export unsupported while ARM returns the documented permanent 400.
-- Keep APIM gRPC/protobuf and GraphQL native export unsupported unless a documented byte route exists; resolve those protocols from repository or API Center artifacts instead.
+- Preserve GraphQL native SDL through the documented Reader schema surface.
+- APIM gRPC exception (documented 2024-05-01 API Schema List/Get byte route): export authoritative native protobuf only when API Schema List/Get returns a schema with `contentType` `text/protobuf`. When that schema is absent, keep the API visible as unsupported/manual review. Do not claim a live protobuf happy-path pass from the harness fixture (which lacked `text/protobuf` and passed as unsupported). Repository or API Center protobuf artifacts remain alternate authoritative sources.
 - Keep messaging topology and envelope synthesis partial unless an authoritative AsyncAPI/schema artifact is linked.
 
 Acceptance tests:
@@ -269,7 +270,8 @@ These are completion outcomes, not backlog, unless Azure publishes a new safe AP
 - Arbitrary gateway hostname to all backing API specifications: no documented universal reverse-lookup exists.
 - APIM developer portal scraping: unsupported and non-authoritative; use ARM export.
 - APIM WebSocket definition export: permanent unsupported-format response; report manual review.
-- APIM gRPC `.proto` export: no documented export route; use repository or API Center.
+- APIM gRPC without a `text/protobuf` schema on the documented API Schema List/Get surface: visible unsupported/manual review. Authoritative native protobuf applies only when that List/Get route returns `text/protobuf` (unit-tested; live harness fixture lacked the schema and passed as unsupported — not a protobuf live validation). Otherwise use repository or API Center protobuf artifacts.
+- APIM OData: visible unsupported/manual review.
 - Arbitrary App Service, Functions, Container Apps, ACI, AKS, Event Grid, Service Bus, or Event Hubs schema reconstruction from topology: impossible without an application artifact.
 - AKS `/openapi/v3`: describes Kubernetes APIs, not arbitrary workload handlers.
 - Blind probing of common runtime paths across an estate: prohibited by default. Only explicit or evidence-derived targets are allowed.
@@ -280,6 +282,8 @@ These are completion outcomes, not backlog, unless Azure publishes a new safe AP
 ## External Contracts
 
 - APIM export: <https://learn.microsoft.com/en-us/rest/api/apimanagement/api-export/get?view=rest-apimanagement-2024-05-01>
+- APIM API Schema List by API (gRPC `text/protobuf` discovery): <https://learn.microsoft.com/en-us/rest/api/apimanagement/api-schema/list-by-api?view=rest-apimanagement-2024-05-01>
+- APIM API Schema Get (gRPC protobuf byte route): <https://learn.microsoft.com/en-us/rest/api/apimanagement/api-schema/get?view=rest-apimanagement-2024-05-01>
 - APIM workspace APIs: <https://learn.microsoft.com/en-us/rest/api/apimanagement/workspace-api/list-by-service?view=rest-apimanagement-2024-05-01>
 - APIM self-hosted gateway assignments: <https://learn.microsoft.com/en-us/rest/api/apimanagement/gateway-api/list-by-service?view=rest-apimanagement-2024-05-01>
 - APIM revisions: <https://learn.microsoft.com/en-us/rest/api/apimanagement/api-revision/list-by-service?view=rest-apimanagement-2024-05-01>

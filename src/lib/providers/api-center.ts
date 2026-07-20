@@ -155,9 +155,18 @@ export class ApiCenterProvider implements SpecProvider {
   /**
    * Lightweight definition headers for narrowing. Deployment/environment
    * association enrichment is deferred until hydrateCandidates.
+   * Truncated inventory fails closed: partial headers are never returned as
+   * exhaustive candidates. Exact definition-ID resolution bypasses this path.
    */
   public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
     const definitions = await this.client.listDefinitions(this.options.resourceGroup);
+    // Non-enumerable definitions.truncated from the SDK client; do not treat a
+    // bounded partial inventory as exhaustive for selection or absence.
+    if (definitions.truncated === true) {
+      throw new Error(
+        'API Center inventory was truncated; refusing to treat partial results as exhaustive without an exact API Center definition binding'
+      );
+    }
     return definitions
       .map(toHeader)
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

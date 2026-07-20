@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { findIaCFiles } from './scan.js';
+import { isSecretPath } from './secret-hygiene.js';
 
 export type GatewayUrlKind = 'azure-api-net' | 'https';
 
@@ -126,11 +127,15 @@ export async function collectRepoSignals(input: CollectRepoSignalsInput): Promis
 
   const files = await findIaCFiles(input.repoRoot, IAC_EXTENSIONS);
   for (const file of files) {
+    const relative = path.relative(input.repoRoot, file).split(path.sep).join('/');
+    // Never generically read secret/state-bearing paths (root .env, tfstate, credentials, etc.).
+    if (isSecretPath(relative)) {
+      continue;
+    }
     const content = await readFile(file, 'utf8').then((value) => value).catch(() => undefined);
     if (content === undefined || content.length > MAX_FILE_BYTES) {
       continue;
     }
-    const relative = path.relative(input.repoRoot, file);
     const apiIds = extractApimApiIds(content);
     if (apiIds.length > 0) {
       inferredApiIds.push(...apiIds);
