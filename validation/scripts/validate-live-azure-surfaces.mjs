@@ -600,7 +600,23 @@ async function seedLocalR3(workspace) {
 function expectResolved(result, expectedSource) {
   const resolution = result.resolution;
   if (!resolution || resolution.status !== 'resolved') {
-    throw new Error(`expected resolved, got ${resolution?.status ?? 'missing'}`);
+    const diagnostic = resolution
+      ? {
+          status: resolution.status,
+          confidence: resolution.confidence,
+          narrowing: resolution.narrowing,
+          evidence: Array.isArray(resolution.evidence) ? resolution.evidence.slice(0, 8) : [],
+          rankedCandidates: Array.isArray(resolution.rankedCandidates)
+            ? resolution.rankedCandidates.slice(0, 8).map((candidate) => ({
+                serviceName: candidate.serviceName,
+                providerType: candidate.providerType,
+                confidence: candidate.confidence,
+                supported: candidate.supported
+              }))
+            : []
+        }
+      : { status: 'missing' };
+    throw new Error(`expected resolved, got ${resolution?.status ?? 'missing'}: ${redactSecrets(JSON.stringify(diagnostic))}`);
   }
   if (resolution.sourceType !== expectedSource) {
     throw new Error(`expected sourceType ${expectedSource}, got ${resolution.sourceType}`);
@@ -1492,7 +1508,8 @@ async function runDefaultCases({
   cliPath,
   capabilities = {},
   now = () => Date.now(),
-  caseConcurrency = CASE_MATRIX_CONCURRENCY
+  caseConcurrency = CASE_MATRIX_CONCURRENCY,
+  caseFilter = []
 }) {
   const caseTasks = [];
   const armApiId =
@@ -2434,7 +2451,13 @@ async function runDefaultCases({
     throw new Error('local R3 matrix did not exercise compiled CLI repo discovery');
   });
 
-  return mapPool(caseTasks, caseConcurrency, (task) => executeCase(task));
+  const requested = new Set(caseFilter);
+  const selected = requested.size > 0 ? caseTasks.filter((task) => requested.has(task.id)) : caseTasks;
+  const missing = [...requested].filter((id) => !caseTasks.some((task) => task.id === id));
+  if (missing.length > 0) {
+    throw new Error(`Unknown AZURE_LIVE_CASE_FILTER case(s): ${missing.join(', ')}`);
+  }
+  return mapPool(selected, caseConcurrency, (task) => executeCase(task));
 }
 
 /**
@@ -2459,6 +2482,10 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
 
   const flags = parseFlags(argv);
   const provisionFlags = parseProvisionFlags(env);
+  const caseFilter = String(env.AZURE_LIVE_CASE_FILTER ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
   const testedCommitHashPrefix = resolveCommitHashPrefix(env, runner);
 
   if (flags.dryRun || flags.renderPlan) {
@@ -2960,7 +2987,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
     const caseStarted = now();
     const results = flags.cancelRecover
       ? []
-      : await runCases({ runner, log, manifest, subscriptionId, cliPath, capabilities, now });
+      : await runCases({ runner, log, manifest, subscriptionId, cliPath, capabilities, now, caseFilter });
     phases.push({ name: 'case-matrix', durationMs: now() - caseStarted });
     evidence = buildEvidence(results, { testedCommitHashPrefix, phases: [...phases] });
     if (!flags.cancelRecover) {
