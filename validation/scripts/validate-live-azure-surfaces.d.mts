@@ -5,6 +5,9 @@ export const RUN_MARKER_TAG: string;
 export const RESOURCE_RUN_MARKER_TAG: string;
 export const PIPELINE_ID: 157;
 export const PIPELINE_NAME: string;
+export const STUB_HEALTH_TIMEOUT_MS: 120000;
+export const STUB_HEALTH_POLL_INTERVAL_MS: 5000;
+export const CASE_MATRIX_CONCURRENCY: 4;
 
 export interface LiveFlags {
   provision: boolean;
@@ -12,6 +15,7 @@ export interface LiveFlags {
   dryRun: boolean;
   renderPlan: boolean;
   cancelRecover: boolean;
+  keepAlive: boolean;
 }
 
 export interface LiveEnv {
@@ -31,6 +35,12 @@ export interface EvidenceResult {
   specFormat: string;
   contractClass: string;
   reasonCode?: string;
+  durationMs?: number;
+}
+
+export interface EvidencePhase {
+  name: string;
+  durationMs: number;
 }
 
 export interface Evidence {
@@ -44,6 +54,7 @@ export interface Evidence {
   requiresCapability: number;
   localOnly: number;
   results: EvidenceResult[];
+  phases?: EvidencePhase[];
 }
 
 export interface CaseCatalogEntry {
@@ -106,12 +117,42 @@ export function toEvidenceResult(
     specFormat?: string;
     contractClass?: string;
     reasonCode?: string;
+    durationMs?: number;
   }
 ): EvidenceResult;
 export function buildEvidence(
   results: EvidenceResult[],
-  options?: { suiteVersion?: string; testedCommitHashPrefix?: string }
+  options?: { suiteVersion?: string; testedCommitHashPrefix?: string; phases?: EvidencePhase[] }
 ): Evidence;
+export function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R> | R
+): Promise<R[]>;
+export function defaultAsyncRunner(
+  command: string,
+  args: string[],
+  options?: Record<string, unknown>
+): Promise<string>;
+export function waitForStubHealth(input?: {
+  url?: string;
+  timeoutMs?: number;
+  intervalMs?: number;
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (line: string) => void;
+}): Promise<boolean>;
+export function stubWebsocketServiceUrl(siteHostname: string): string;
+export function provisionOptionalApimApis(input: {
+  runner: (command: string, args: string[], options?: Record<string, unknown>) => string | Promise<string>;
+  log: (line: string) => void;
+  manifest: Record<string, unknown>;
+  subscriptionId: string;
+  provisionFlags: Record<string, boolean>;
+  capabilities: Record<string, { ok: boolean; reasonCode?: string }>;
+  siteHostname?: string;
+}): Promise<void>;
 export function passingLiveCaseIds(evidence: { results?: Array<{ name?: string; id?: string; status?: string }> }): Set<string>;
 export function renderExecutionPlan(input?: {
   provisionFlags?: Record<string, boolean>;
