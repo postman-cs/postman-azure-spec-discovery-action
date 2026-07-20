@@ -32,6 +32,7 @@ import {
   shouldDeleteResource,
   toEvidenceResult
 } from '../validation/scripts/validate-live-azure-surfaces.mjs';
+import { eventGridValidationResponse } from '../validation/fixtures/azure/app-service-stub/server.mjs';
 
 const repoRoot = process.cwd();
 
@@ -518,6 +519,17 @@ describe('R8 harness matrix contract', () => {
       if (hadEvidence) writeFileSync(evidencePath, baseline!, 'utf8');
       else rmSync(evidencePath, { force: true });
     }
+  });
+
+  it('AZ-LIVE-016: the disposable webhook completes Event Grid subscription validation', () => {
+    expect(eventGridValidationResponse([
+      {
+        eventType: 'Microsoft.EventGrid.SubscriptionValidationEvent',
+        data: { validationCode: 'challenge-code' }
+      }
+    ])).toEqual({ validationResponse: 'challenge-code' });
+    expect(eventGridValidationResponse([{ eventType: 'ordinary-event', data: {} }])).toBeUndefined();
+    expect(eventGridValidationResponse({})).toBeUndefined();
   });
 });
 
