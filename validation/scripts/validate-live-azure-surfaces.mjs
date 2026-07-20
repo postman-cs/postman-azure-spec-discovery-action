@@ -1084,7 +1084,16 @@ export async function teardownSharedGroupResources({
 
   for (const deploymentName of [manifest.extendedDeploymentName, manifest.deploymentName].filter(Boolean)) {
     try {
-      az(runner, ['deployment', 'group', 'delete', '--resource-group', resourceGroup, '--name', deploymentName]);
+      az(runner, [
+        'deployment',
+        'group',
+        'delete',
+        '--resource-group',
+        resourceGroup,
+        '--name',
+        deploymentName,
+        '--no-wait'
+      ]);
     } catch (error) {
       if (!isResourceNotFoundError(error)) {
         cleanupErrors.push(error);

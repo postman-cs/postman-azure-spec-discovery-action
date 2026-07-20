@@ -237,6 +237,7 @@ describe('live validation control flow', () => {
       }
       if (args[0] === 'resource' && args[1] === 'delete') return '';
       if (args[0] === 'resource' && args[1] === 'list') return '[]';
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'delete') return '';
       if (args[0] === 'graph') return JSON.stringify({ data: [] });
       throw new Error(`unexpected command ${args.join(' ')}`);
     };
@@ -247,7 +248,8 @@ describe('live validation control flow', () => {
       manifest: {
         resourceGroup: 'CSE-Azure-Team',
         runMarker: 'run-1',
-        apimName: 'apim-1'
+        apimName: 'apim-1',
+        deploymentName: 'deployment-1'
       },
       subscriptionId: 'sub-1'
     });
@@ -260,6 +262,16 @@ describe('live validation control flow', () => {
       '--no-wait'
     ]);
     expect(commands.some((args) => args[0] === 'resource' && args[1] === 'list')).toBe(true);
+    expect(commands).toContainEqual([
+      'deployment',
+      'group',
+      'delete',
+      '--resource-group',
+      'CSE-Azure-Team',
+      '--name',
+      'deployment-1',
+      '--no-wait'
+    ]);
   });
 
   it('AZ-LIVE-002: evidence construction sanitizes case results down to schema v2', () => {
