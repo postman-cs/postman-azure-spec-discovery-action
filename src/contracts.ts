@@ -29,7 +29,8 @@ export type ProviderType =
   | 'template-specs'
   | 'event-grid'
   | 'service-bus'
-  | 'function-bindings';
+  | 'function-bindings'
+  | 'runtime-declared';
 
 export type SourceType =
   | 'repo-spec'
@@ -43,6 +44,7 @@ export type SourceType =
   | 'event-grid-webhook'
   | 'service-bus-topic'
   | 'function-bindings-trigger'
+  | 'runtime-declared-spec'
   | 'manual-review'
   | 'discover-many'
   | 'discover-estate';
@@ -217,6 +219,42 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Optional Postman service-account access token, used only to enrich anonymous telemetry with the session account_type. When omitted, postman-api-key alone can mint one for the same purpose. Not used for any Azure or Postman asset operation.',
       required: false,
       default: ''
+    },
+    'enable-logic-apps-list-swagger': {
+      description:
+        'Opt-in Consumption Logic Apps native listSwagger POST. Default false. When denied or capability-absent, falls back to Reader-only Request-trigger synthesis unless require-logic-apps-native-swagger is true.',
+      required: false,
+      default: 'false'
+    },
+    'require-logic-apps-native-swagger': {
+      description:
+        'When true with enable-logic-apps-list-swagger, a permanent malformed native listSwagger response fails instead of silently synthesizing. Default false.',
+      required: false,
+      default: 'false'
+    },
+    'enable-app-service-scm-spec-fetch': {
+      description:
+        'Opt-in retrieval of App Service aiIntegration.ApiSpecPath bytes through the site SCM/VFS endpoint. Default false. Metadata is still surfaced when the path is present.',
+      required: false,
+      default: 'false'
+    },
+    'enable-functions-openapi-extension': {
+      description:
+        'Opt-in detection/export of Azure Functions OpenAPI extension endpoints evidenced by function metadata or an explicit declared path. Default false. Never lists host/function keys.',
+      required: false,
+      default: 'false'
+    },
+    'enable-runtime-declared-spec-routes': {
+      description:
+        'Opt-in provider for explicitly declared HTTPS specification URLs on App Service, Functions, Container Apps, Static Web Apps, ACI, and AKS workloads. Default false. No blind common-path probing.',
+      required: false,
+      default: 'false'
+    },
+    'runtime-declared-spec-targets-json': {
+      description:
+        'JSON array of explicit runtime-declared specification targets when enable-runtime-declared-spec-routes is true. Each entry requires id, name, workloadKind, and https url.',
+      required: false,
+      default: '[]'
     }
   },
   outputs: {
@@ -228,8 +266,9 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
     },
     'source-type': {
       description:
-        'Resolved source type: repo-spec, apim-export, api-center-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, discover-many, or discover-estate.'
+        'Resolved source type: repo-spec, apim-export, api-center-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, runtime-declared-spec, manual-review, discover-many, or discover-estate.'
     },
+
     'mapping-confidence': {
       description: 'Numeric confidence score for the selected service candidate.'
     },
@@ -257,8 +296,9 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
     },
     'provider-type': {
       description:
-        'Provider that produced the resolved spec: apim, api-center, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings.'
+        'Provider that produced the resolved spec: apim, api-center, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, function-bindings, or runtime-declared.'
     },
+
     'spec-format': {
       description:
         'Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, or graphql-sdl.'

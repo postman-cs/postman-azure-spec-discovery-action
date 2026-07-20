@@ -29,6 +29,7 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 - Lists App Service sites and reads `siteConfig.apiDefinition.url`.
 - A site is a candidate when its API definition URL is set. Export fetches the URL over HTTPS with a bounded, redirect-limited, content-validated fetch (private-address and non-HTTPS URLs are refused).
 - The fetched document is validated the same way as APIM exports before it is written.
+- With the default-off `enable-app-service-scm-spec-fetch` input, an explicit `aiIntegration.ApiSpecPath` may be fetched only through the documented SCM/VFS capability. Missing documented bytes remain association-only; no common-path probing occurs.
 
 ## `custom-apis` — Logic Apps custom connectors
 
@@ -42,7 +43,7 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 - Enumerates `Microsoft.Logic/workflows` via generic ARM REST (`api-version 2019-05-01`). Reader-only GETs; disabled workflows are skipped at enumeration.
 - A workflow is a candidate when its definition declares at least one HTTP `Request` trigger; workflows without one stay visible as unsupported candidates.
 - Export **synthesizes a deliberately partial OpenAPI 3.0 document** from the Request triggers: paths from `relativePath` (fallback `/triggers/<name>/invoke`), methods, and declared request schemas. Responses are not declared in workflow definitions, so operations carry a `default` response and the export is marked `completeness: partial` — the derived-OpenAPI outputs report `partial` even though the document parses as complete OpenAPI 3.x.
-- Credential hygiene: `listCallbackUrl` (SAS token in the URL) and `listSwagger` (POST outside plain Reader) are never called. The `accessEndpoint` is defensively reduced to its public HTTP(S) origin + path before it is surfaced as the OpenAPI `servers` entry; malformed and non-HTTP(S) values are omitted.
+- Credential hygiene: `listCallbackUrl` (SAS token in the URL) is never called. The default-off `enable-logic-apps-list-swagger` capability permits native Consumption `listSwagger` only; successful documents are reconstructed and malformed 200 responses fail. IAM/capability failures fall back to Reader-only synthesis unless `require-logic-apps-native-swagger` is true. Standard Logic Apps remain association-only unless documented bytes are present. The `accessEndpoint` is defensively reduced to its public HTTP(S) origin + path before it is surfaced as the OpenAPI `servers` entry; malformed and non-HTTP(S) values are omitted.
 
 ## `template-specs` — Template Spec embedded APIM documents
 
@@ -72,11 +73,19 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 - A function app is a supported candidate when at least one function declares a trigger binding. Apps without triggers stay visible as unsupported candidates. Candidate IDs append `/functions` so they never collide with the `app-service` provider for the same site.
 - Export **synthesizes a deliberately partial OpenAPI 3.0 document** from the trigger topology: `httpTrigger` bindings become real HTTP operations (`/api/<route>` with declared methods); event-source triggers (queue, Service Bus, Event Grid, Event Hubs, blob, timer) become `x-azure-trigger-documented` POST entries under `/functions/<name>/invocations` so the event surface stays visible without inventing public routes. Response contracts are not declared in bindings, so every operation carries a default response and the export is `completeness: partial`.
 - Credential hygiene: `listFunctionKeys`, `listHostKeys`, `listFunctionSecrets`, and app-settings values are never called. Binding `connection` properties are setting **names** only; the client projects known structural fields and never serializes raw binding payloads beyond them.
+- The default-off `enable-functions-openapi-extension` input permits only extension routes explicitly evidenced by function metadata or a declared path; it never obtains keys or probes conventional endpoints.
+
+## `runtime-declared` — opt-in named compute routes
+
+- The default-off `enable-runtime-declared-spec-routes` input accepts exact, explicitly declared HTTPS specification URLs for named App Service, Functions, Container Apps, Static Web Apps, ACI, and AKS targets. It is not an advertised automatic-discovery provider and performs no blind route probing.
+- Fetches use the guarded spec fetcher: HTTPS and no userinfo; private, loopback, link-local, CGNAT, metadata, and IPv4-mapped IPv6 destinations are refused before and after DNS resolution; redirects are bounded and cross-host redirects are refused unless explicitly declared. Requests carry no auth, cookies, or credentials. Private-network unavailability is reported distinctly from a blocked URL without revealing addresses.
+- These routes are unit-only until live validation is recorded; they make no live coverage claim.
 
 ## `iac-local` — repository Azure IaC
 
-- Always `available` (no network probe). Scans a bounded set of repository files: ARM templates (`*.json` with `Microsoft.ApiManagement` resources carrying inline OpenAPI), Bicep-compiled JSON, and `azure.yaml` service hints.
-- A single embedded spec resolves directly; multiple hits become ranked candidates like any other provider.
+- Always `available` (no network probe). Bounded lexical scanning is stable-order, byte/file/depth capped, ignores vendor/build/output/state directories, and confines `lstat`/`realpath` traversal to the repository root. It content-detects OpenAPI, AsyncAPI, WSDL, WADL, XSD, protobuf, and GraphQL SDL rather than trusting extensions.
+- Static association parsing covers `azure.yaml` and `.azure/<environment>/.env`, ARM/Bicep, Terraform/AzAPI, Pulumi, APIOps, GitHub Actions, Azure DevOps, deployment outputs/stacks/Template Specs, and source-control declarations. Only literals and same-file static references are binding-grade; unresolved indirection is association-only.
+- Secret-shaped values, state files, and secret-bearing subtrees never enter evidence. All valid local specifications remain candidates in stable order; `resolve-one` fails closed when more than one remains unless an exact binding selects one.
 
 ## `discover-estate` mode — estate repo association
 

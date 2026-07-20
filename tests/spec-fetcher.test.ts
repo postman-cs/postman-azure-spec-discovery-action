@@ -271,14 +271,74 @@ describe('spec fetcher', () => {
     await pool.close();
   });
 
-  it('rechecks DNS after every redirect hop', async () => {
+  it('rechecks DNS after every same-host redirect hop', async () => {
     lookupMock
       .mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }])
       .mockResolvedValueOnce([{ address: '192.168.1.5', family: 4 }]);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      redirectResponse('https://internal.example/spec.json')
+      redirectResponse('https://public.example/next.json')
     );
     await expect(fetchSpecFromUrl('https://public.example/spec.json')).rejects.toThrow('Private or local');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks cross-host redirects by default', async () => {
+    lookupMock.mockResolvedValueOnce([{ address: ['8', '8', '8', '8'].join('.'), family: 4 }]);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      redirectResponse('https://evil.example/spec.json')
+    );
+    await expect(fetchSpecFromUrl('https://public.example/spec.json')).rejects.toThrow('Cross-host redirects');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects userinfo credentials before DNS or fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const credentialedUrl = new URL('https://x.example/spec.json');
+    credentialedUrl.username = 'placeholder-user';
+    credentialedUrl.password = 'placeholder-password';
+    await expect(fetchSpecFromUrl(credentialedUrl.toString())).rejects.toThrow('userinfo');
+    expect(lookupMock).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects Azure IMDS / metadata hostnames before DNS', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await expect(fetchSpecFromUrl('https://metadata.google.internal/spec.json')).rejects.toThrow('Private or local');
+    await expect(fetchSpecFromUrl('https://169.254.169.254/metadata/instance')).rejects.toThrow('Private or local');
+    expect(lookupMock).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('never forwards Authorization or Cookie headers on public runtime fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(jsonResponse(VALID_BODY));
+    process.env.AZURE_CLIENT_SECRET = 'super-secret';
+    process.env.GITHUB_TOKEN = 'ghs_secret';
+    await fetchSpecFromUrl('https://api.example.com/spec.json');
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get('authorization')).toBeNull();
+    expect(headers.get('cookie')).toBeNull();
+    expect(headers.get('x-ms-client-request-id')).toBeNull();
+    expect(JSON.stringify(init.headers ?? {})).not.toContain('super-secret');
+    expect(JSON.stringify(init.headers ?? {})).not.toContain('ghs_secret');
+    delete process.env.AZURE_CLIENT_SECRET;
+    delete process.env.GITHUB_TOKEN;
+  });
+
+  it('surfaces distinct SpecFetchError codes for SSRF vs private-network failures', async () => {
+    const { SpecFetchError } = await import('../src/lib/fetch/spec-fetcher.js');
+    await expect(fetchSpecFromUrl('https://127.0.0.1/spec.json')).rejects.toMatchObject({
+      name: 'SpecFetchError',
+      code: 'blocked-ssrf'
+    });
+    lookupMock.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }]);
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('connect ECONNREFUSED 8.8.8.8:443'));
+    try {
+      await fetchSpecFromUrl('https://unreachable.example/spec.json');
+      expect.unreachable('should throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SpecFetchError);
+      expect((error as InstanceType<typeof SpecFetchError>).code).toBe('private-network-unreachable');
+    }
   });
 });

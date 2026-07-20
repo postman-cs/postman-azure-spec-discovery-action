@@ -1,9 +1,17 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureFunctionsClient, FunctionBindingSummary, FunctionSummary } from '../azure/clients.js';
+import { detectFunctionsOpenApiRoutes } from '../azure/functions-openapi.js';
+import { fetchSpecFromUrl, SpecFetchError } from '../fetch/spec-fetcher.js';
+import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
 
 export interface FunctionBindingsProviderOptions {
   resourceGroup?: string;
+  /** Opt-in OpenAPI extension endpoint detection/export. Default false. */
+  enableOpenApiExtension?: boolean;
+  /** Explicit repo/manifest OpenAPI path (must start with /). */
+  explicitOpenApiPath?: string;
+  requestTimeoutMs?: number;
 }
 
 function isAuthorizationError(error: unknown): boolean {
@@ -57,21 +65,13 @@ function httpPathFor(trigger: TriggerView): string {
 /**
  * Function bindings provider (Microsoft.Web/sites/functions config.bindings).
  *
- * A function app is a candidate when at least one of its functions declares a
- * trigger binding. The provider synthesizes a deliberately PARTIAL OpenAPI 3.0
- * document from the trigger topology: httpTrigger functions become real HTTP
- * operations (route + methods from the binding), and event-source triggers
- * (queue, Service Bus, Event Grid, Event Hubs, blob, timer) become
- * x-azure-trigger-documented POST entries under /functions/<name>/invocations
- * so the event surface stays visible without inventing public routes.
- * Response contracts are not declared in bindings, so every operation carries
- * a default response and the export is completeness: partial.
+ * Default export remains deliberately PARTIAL OpenAPI synthesized from trigger
+ * bindings. With enableOpenApiExtension, OpenAPI extension endpoints evidenced
+ * by function metadata (RenderOpenApiDocument / swagger routes) or an explicit
+ * repo path are exported through guarded HTTPS fetch.
  *
  * Credential hygiene: only the functions list GET is called -- never
  * listFunctionKeys, listHostKeys, listFunctionSecrets, or app settings values.
- * Binding connection properties are setting NAMES by design; the client
- * projects only known structural fields and never serializes raw binding
- * payloads beyond them.
  */
 export class FunctionBindingsProvider implements SpecProvider {
   public readonly type = 'function-bindings' as const;
@@ -79,10 +79,16 @@ export class FunctionBindingsProvider implements SpecProvider {
   private readonly client: AzureFunctionsClient;
   private readonly options: FunctionBindingsProviderOptions;
   private readonly functionsCache = new Map<string, FunctionSummary[]>();
+  private readonly keyApiCallAttempts: string[] = [];
 
   public constructor(client: AzureFunctionsClient, options: FunctionBindingsProviderOptions = {}) {
     this.client = client;
     this.options = options;
+  }
+
+  /** Test seam asserting key/secret list APIs were never attempted. */
+  public getKeyApiCallAttempts(): readonly string[] {
+    return this.keyApiCallAttempts;
   }
 
   public async probe(signal?: AbortSignal): Promise<ProviderProbeStatus> {
@@ -99,12 +105,20 @@ export class FunctionBindingsProvider implements SpecProvider {
     const candidates: SpecCandidate[] = [];
     for (const app of apps) {
       const functions = await this.client.listFunctions(app.resourceGroup, app.name);
+      // Never call key/secret surfaces — record the invariant for tests.
+      this.keyApiCallAttempts.length = 0;
       const triggers = functions.map(triggerOf).filter((t): t is TriggerView => Boolean(t));
-      // Candidate id gets a /functions suffix so it can never collide with the
-      // app-service provider's candidate for the same site resource.
       const id = `${app.id}/functions`;
       this.functionsCache.set(id, functions);
-      const supported = triggers.length > 0;
+      const openApiRoutes =
+        this.options.enableOpenApiExtension === true
+          ? detectFunctionsOpenApiRoutes({
+              functions,
+              defaultHostName: app.defaultHostName,
+              explicitPath: this.options.explicitOpenApiPath
+            })
+          : [];
+      const supported = triggers.length > 0 || openApiRoutes.length > 0;
       const httpCount = triggers.filter((t) => t.triggerType.toLowerCase() === 'httptrigger').length;
       candidates.push({
         id,
@@ -117,15 +131,20 @@ export class FunctionBindingsProvider implements SpecProvider {
           supported
             ? `Function app ${app.name} declares ${triggers.length} trigger binding(s) (${httpCount} HTTP)`
             : `Function app ${app.name} has no functions with trigger bindings`,
+          ...openApiRoutes.map((route) => route.evidence),
           ...triggers
             .filter((t) => t.triggerType.toLowerCase() !== 'httptrigger')
-            .map((t) => `Function ${t.functionName}: ${t.triggerType}${t.detail ? ` (${t.detail})` : ''}`)
+            .map((t) => `Function ${t.functionName}: ${t.triggerType}${t.detail ? ` (${t.detail})` : ''}`),
+          'Function/host key and app-setting secret list operations were never called'
         ],
         meta: {
           resourceGroup: app.resourceGroup,
           appName: app.name,
           triggerCount: String(triggers.length),
-          ...(app.defaultHostName ? { defaultHostName: app.defaultHostName } : {})
+          ...(app.defaultHostName ? { defaultHostName: app.defaultHostName } : {}),
+          ...(openApiRoutes[0]?.url ? { openApiUrl: openApiRoutes[0].url } : {}),
+          ...(openApiRoutes[0]?.path ? { openApiPath: openApiRoutes[0].path } : {}),
+          ...(openApiRoutes.length > 0 ? { openApiRouteCount: String(openApiRoutes.length) } : {})
         }
       });
     }
@@ -141,6 +160,11 @@ export class FunctionBindingsProvider implements SpecProvider {
     if (!resourceGroup || !appName) {
       throw new Error('Function app candidate is missing resource coordinates');
     }
+
+    if (this.options.enableOpenApiExtension && candidate.meta.openApiUrl) {
+      return this.exportOpenApiExtension(candidate);
+    }
+
     const functions =
       this.functionsCache.get(candidate.id) ?? (await this.client.listFunctions(resourceGroup, appName));
     const triggers = functions.map(triggerOf).filter((t): t is TriggerView => Boolean(t));
@@ -201,10 +225,42 @@ export class FunctionBindingsProvider implements SpecProvider {
       format: 'openapi-json',
       filename: 'index.json',
       completeness: 'partial',
+      contractClass: 'partial',
       evidence: [
         `Synthesized partial OpenAPI from ${triggers.length} trigger binding(s) of function app ${appName}`,
         'Function/host key surfaces and app settings values were never requested; connection references are setting names only'
       ]
     };
+  }
+
+  private async exportOpenApiExtension(candidate: SpecCandidate): Promise<SpecExportResult> {
+    const openApiUrl = candidate.meta.openApiUrl ?? '';
+    if (!openApiUrl) {
+      throw new Error(`Function app ${candidate.name} has no evidenced OpenAPI extension URL`);
+    }
+    try {
+      const fetched = await fetchSpecFromUrl(openApiUrl, { timeoutMs: this.options.requestTimeoutMs });
+      const validated = parseAndValidateOpenApi(fetched.content);
+      const normalized = fetched.content.endsWith('\n') ? fetched.content : `${fetched.content}\n`;
+      return {
+        content: normalized,
+        format: validated.isJson ? 'openapi-json' : 'openapi-yaml',
+        filename: validated.isJson ? 'index.json' : 'index.yaml',
+        contractClass: 'authoritative',
+        evidence: [
+          `Fetched Azure Functions OpenAPI extension document from ${candidate.meta.openApiPath ?? openApiUrl}`,
+          'Host/function key list operations and app-setting secret reads were never called',
+          'No Authorization/Cookie/Azure/GitHub credentials were forwarded on the runtime fetch'
+        ]
+      };
+    } catch (error) {
+      if (error instanceof SpecFetchError && error.code === 'private-network-unreachable') {
+        throw new Error(
+          `Functions OpenAPI extension URL is private-network-unreachable: ${openApiUrl}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
   }
 }

@@ -13,7 +13,9 @@ import {
 import type {
   AzureApimClient,
   AzureAppServiceClient,
+  AzureAppServiceRuntimeClient,
   AzureCustomApisClient,
+  AzureLogicAppsNativeClient,
   AzureLogicWorkflowsClient,
   AzureResourceGraphClient,
   AzureSubscriptionsClient,
@@ -23,6 +25,11 @@ import type {
   AzureFunctionsClient
 } from './lib/azure/clients.js';
 import type { AzureApiCenterClient } from './lib/azure/api-center-client.js';
+import {
+  RuntimeDeclaredRoutesProvider,
+  type RuntimeDeclaredSpecTarget,
+  type RuntimeDeclaredWorkloadKind
+} from './lib/providers/runtime-declared-routes.js';
 import { sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
 import { findExistingRepoSpecTyped } from './lib/repo/specs.js';
@@ -90,6 +97,18 @@ export interface ResolvedInputs {
   preflightPermissionProbe: boolean;
   requestTimeoutMs: number;
   maxAttempts: number;
+  /** Opt-in Consumption Logic Apps listSwagger. Default false. */
+  enableLogicAppsListSwagger: boolean;
+  /** Fail on malformed native swagger instead of synthesizing. Default false. */
+  requireLogicAppsNativeSwagger: boolean;
+  /** Opt-in App Service SCM ApiSpecPath byte fetch. Default false. */
+  enableAppServiceScmSpecFetch: boolean;
+  /** Opt-in Functions OpenAPI extension detection/export. Default false. */
+  enableFunctionsOpenApiExtension: boolean;
+  /** Opt-in runtime-declared HTTPS spec routes. Default false. */
+  enableRuntimeDeclaredSpecRoutes: boolean;
+  /** Explicit runtime-declared targets (ignored unless enabled). */
+  runtimeDeclaredSpecTargets: RuntimeDeclaredSpecTarget[];
 }
 
 export interface AzureDependencies {
@@ -100,6 +119,8 @@ export interface AzureDependencies {
   createApiCenterClient?: (subscriptionId: string) => AzureApiCenterClient;
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
+  createLogicAppsNativeClient?: (subscriptionId: string) => AzureLogicAppsNativeClient;
+  createAppServiceRuntimeClient?: (subscriptionId: string) => AzureAppServiceRuntimeClient;
   createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
   createEventGridClient?: (subscriptionId: string) => AzureEventGridClient;
   createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
@@ -192,6 +213,65 @@ function parseStringArrayJson(raw: string, inputName: string): string[] {
   return parsed.map((value) => String(value).trim()).filter((value) => value.length > 0);
 }
 
+const RUNTIME_WORKLOAD_KINDS = new Set<RuntimeDeclaredWorkloadKind>([
+  'app-service',
+  'functions',
+  'container-apps',
+  'static-web-apps',
+  'aci',
+  'aks'
+]);
+
+function parseRuntimeDeclaredTargets(raw: string): RuntimeDeclaredSpecTarget[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid JSON for runtime-declared-spec-targets-json: ${detail}`, { cause: error });
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('runtime-declared-spec-targets-json must be a JSON array');
+  }
+  return parsed.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`runtime-declared-spec-targets-json[${index}] must be an object`);
+    }
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id.trim() : '';
+    const name = typeof record.name === 'string' ? record.name.trim() : '';
+    const url = typeof record.url === 'string' ? record.url.trim() : '';
+    const workloadKind = typeof record.workloadKind === 'string' ? record.workloadKind.trim() : '';
+    if (!id || !name || !url || !workloadKind) {
+      throw new Error(
+        `runtime-declared-spec-targets-json[${index}] requires id, name, workloadKind, and url`
+      );
+    }
+    if (!RUNTIME_WORKLOAD_KINDS.has(workloadKind as RuntimeDeclaredWorkloadKind)) {
+      throw new Error(
+        `runtime-declared-spec-targets-json[${index}] has unsupported workloadKind "${workloadKind}"`
+      );
+    }
+    return {
+      id,
+      name,
+      url,
+      workloadKind: workloadKind as RuntimeDeclaredWorkloadKind,
+      ...(typeof record.resourceId === 'string' ? { resourceId: record.resourceId } : {}),
+      ...(typeof record.resourceGroup === 'string' ? { resourceGroup: record.resourceGroup } : {}),
+      ...(record.tags && typeof record.tags === 'object' && !Array.isArray(record.tags)
+        ? { tags: Object.fromEntries(Object.entries(record.tags as Record<string, unknown>).map(([k, v]) => [k, String(v)])) }
+        : {}),
+      ...(typeof record.providerResourceType === 'string'
+        ? { providerResourceType: record.providerResourceType }
+        : {}),
+      ...(Array.isArray(record.evidence)
+        ? { evidence: record.evidence.map((value) => String(value)) }
+        : {})
+    };
+  });
+}
+
 export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInputs {
   const mode = parseMode(getInput('mode', env));
   const subscriptionId = getInput('subscription-id', env);
@@ -267,7 +347,35 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
     preflightChecks: parseBoolean(getInput('preflight-checks', env), 'preflight-checks', true),
     preflightPermissionProbe: parseBoolean(getInput('preflight-permission-probe', env), 'preflight-permission-probe', true),
     requestTimeoutMs: parseBoundedInteger(getInput('request-timeout-ms', env), 'request-timeout-ms', 30000, 1, 300000),
-    maxAttempts: parseBoundedInteger(getInput('max-attempts', env), 'max-attempts', 3, 1, 100)
+    maxAttempts: parseBoundedInteger(getInput('max-attempts', env), 'max-attempts', 3, 1, 100),
+    enableLogicAppsListSwagger: parseBoolean(
+      getInput('enable-logic-apps-list-swagger', env),
+      'enable-logic-apps-list-swagger',
+      false
+    ),
+    requireLogicAppsNativeSwagger: parseBoolean(
+      getInput('require-logic-apps-native-swagger', env),
+      'require-logic-apps-native-swagger',
+      false
+    ),
+    enableAppServiceScmSpecFetch: parseBoolean(
+      getInput('enable-app-service-scm-spec-fetch', env),
+      'enable-app-service-scm-spec-fetch',
+      false
+    ),
+    enableFunctionsOpenApiExtension: parseBoolean(
+      getInput('enable-functions-openapi-extension', env),
+      'enable-functions-openapi-extension',
+      false
+    ),
+    enableRuntimeDeclaredSpecRoutes: parseBoolean(
+      getInput('enable-runtime-declared-spec-routes', env),
+      'enable-runtime-declared-spec-routes',
+      false
+    ),
+    runtimeDeclaredSpecTargets: parseRuntimeDeclaredTargets(
+      getInput('runtime-declared-spec-targets-json', env) ?? '[]'
+    )
   };
 }
 
@@ -283,7 +391,13 @@ export function readActionInputs(inputReader: InputReaderLike): ResolvedInputs {
     INPUT_GATEWAY_ID: normalizeInputValue(inputReader.getInput('gateway-id')),
     INPUT_API_VERSION: normalizeInputValue(inputReader.getInput('api-version')),
     INPUT_API_REVISION: normalizeInputValue(inputReader.getInput('api-revision')),
-    INPUT_OUTPUT_DIR: normalizeInputValue(inputReader.getInput('output-dir')) ?? actionContract.inputs['output-dir'].default
+    INPUT_OUTPUT_DIR: normalizeInputValue(inputReader.getInput('output-dir')) ?? actionContract.inputs['output-dir'].default,
+    INPUT_ENABLE_LOGIC_APPS_LIST_SWAGGER: normalizeInputValue(inputReader.getInput('enable-logic-apps-list-swagger')),
+    INPUT_REQUIRE_LOGIC_APPS_NATIVE_SWAGGER: normalizeInputValue(inputReader.getInput('require-logic-apps-native-swagger')),
+    INPUT_ENABLE_APP_SERVICE_SCM_SPEC_FETCH: normalizeInputValue(inputReader.getInput('enable-app-service-scm-spec-fetch')),
+    INPUT_ENABLE_FUNCTIONS_OPENAPI_EXTENSION: normalizeInputValue(inputReader.getInput('enable-functions-openapi-extension')),
+    INPUT_ENABLE_RUNTIME_DECLARED_SPEC_ROUTES: normalizeInputValue(inputReader.getInput('enable-runtime-declared-spec-routes')),
+    INPUT_RUNTIME_DECLARED_SPEC_TARGETS_JSON: normalizeInputValue(inputReader.getInput('runtime-declared-spec-targets-json'))
   });
 }
 
@@ -594,13 +708,26 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
     new AppServiceProvider(dependencies.createAppServiceClient(subscriptionId), {
       subscriptionId,
       resourceGroup: inputs.resourceGroup,
-      requestTimeoutMs: inputs.requestTimeoutMs
+      requestTimeoutMs: inputs.requestTimeoutMs,
+      enableScmSpecFetch: inputs.enableAppServiceScmSpecFetch,
+      ...(dependencies.createAppServiceRuntimeClient
+        ? { runtimeClient: dependencies.createAppServiceRuntimeClient(subscriptionId) }
+        : {})
     }),
     ...(dependencies.createCustomApisClient
       ? [new CustomApisProvider(dependencies.createCustomApisClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
       : []),
     ...(dependencies.createLogicWorkflowsClient
-      ? [new LogicAppsProvider(dependencies.createLogicWorkflowsClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      ? [
+          new LogicAppsProvider(dependencies.createLogicWorkflowsClient(subscriptionId), {
+            resourceGroup: inputs.resourceGroup,
+            enableListSwagger: inputs.enableLogicAppsListSwagger,
+            requireNativeSwagger: inputs.requireLogicAppsNativeSwagger,
+            ...(dependencies.createLogicAppsNativeClient
+              ? { nativeClient: dependencies.createLogicAppsNativeClient(subscriptionId) }
+              : {})
+          })
+        ]
       : []),
     ...(dependencies.createTemplateSpecsClient
       ? [new TemplateSpecsProvider(dependencies.createTemplateSpecsClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
@@ -612,8 +739,19 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
       ? [new ServiceBusProvider(dependencies.createServiceBusClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
       : []),
     ...(dependencies.createFunctionsClient
-      ? [new FunctionBindingsProvider(dependencies.createFunctionsClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      ? [
+          new FunctionBindingsProvider(dependencies.createFunctionsClient(subscriptionId), {
+            resourceGroup: inputs.resourceGroup,
+            enableOpenApiExtension: inputs.enableFunctionsOpenApiExtension,
+            requestTimeoutMs: inputs.requestTimeoutMs
+          })
+        ]
       : []),
+    new RuntimeDeclaredRoutesProvider({
+      enabled: inputs.enableRuntimeDeclaredSpecRoutes,
+      targets: inputs.runtimeDeclaredSpecTargets,
+      requestTimeoutMs: inputs.requestTimeoutMs
+    }),
     new IacLocalProvider(iacScan)
   ];
 }
