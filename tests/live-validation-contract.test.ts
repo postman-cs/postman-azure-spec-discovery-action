@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -23,6 +23,7 @@ import {
   passingLiveCaseIds,
   renderExecutionPlan,
   requiredEnv,
+  runLiveValidation,
   resolveSubscriptionId,
   hasExactResourceIdentity,
   teardownDedicatedResourceGroup,
@@ -456,6 +457,14 @@ describe('R8 harness matrix contract', () => {
     expect(liveStack).toContain('postman:repo');
     expect(liveStack).toContain('GithubOrg');
     expect(liveStack).toMatch(/service-inherited|path-selects payments-live|Clean-repo isolation/i);
+    const revisionStart = liveStack.indexOf('resource paymentsApiRev2');
+    const revisionEnd = liveStack.indexOf('resource ordersApi');
+    const revisionBlock = revisionStart >= 0 && revisionEnd > revisionStart
+      ? liveStack.slice(revisionStart, revisionEnd)
+      : '';
+    expect(revisionBlock).toContain('sourceApiId: paymentsApi.id');
+    expect(revisionBlock).not.toMatch(/\bapiVersionSetId\s*:/);
+    expect(revisionBlock).not.toMatch(/\bapiVersion\s*:/);
     const extended = readFileSync(join(repoRoot, 'validation/fixtures/azure/extended-stack.bicep'), 'utf8');
     expect(extended).toContain('Microsoft.Logic/workflows');
     expect(extended).toContain('Microsoft.EventGrid/topics');
@@ -463,6 +472,52 @@ describe('R8 harness matrix contract', () => {
     const runbook = readFileSync(join(repoRoot, 'docs/LIVE_TESTING_RUNBOOK.md'), 'utf8');
     expect(runbook).toMatch(/GITHUB_REPOSITORY/);
     expect(runbook).toMatch(/terminal absence|awaits group deletion/i);
+  });
+
+  it('AZ-LIVE-015: provisioning failure writes sanitized failure evidence after shared-group teardown, then rethrows', async () => {
+    const evidencePath = join(repoRoot, 'validation/evidence/live-azure-surfaces.json');
+    const hadEvidence = existsSync(evidencePath);
+    const baseline = hadEvidence ? readFileSync(evidencePath, 'utf8') : undefined;
+    const originalFailure = new Error('provisioning exploded with secret=do-not-persist');
+    const runner = (command: string, args: string[]) => {
+      if (command !== 'az') throw new Error(`unexpected command ${command}`);
+      if (args[0] === 'account') return '';
+      if (args[0] === 'group' && args[1] === 'show') {
+        return JSON.stringify({ name: 'CSE-Azure-Team', id: '/subscriptions/sub-1/resourceGroups/CSE-Azure-Team' });
+      }
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'create') throw originalFailure;
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'delete') return '';
+      if (args[0] === 'resource' && args[1] === 'show') throw new Error('ResourceNotFound');
+      if (args[0] === 'resource' && args[1] === 'list') return '[]';
+      if (args[0] === 'graph') return JSON.stringify({ data: [] });
+      throw new Error(`unexpected az command ${args.join(' ')}`);
+    };
+
+    try {
+      await expect(runLiveValidation({
+        argv: ['--provision', '--teardown'],
+        env: {
+          AZURE_SUBSCRIPTION_ID: 'sub-1',
+          AZURE_LOCATION: 'eastus2',
+          AZURE_RESOURCE_GROUP: 'CSE-Azure-Team',
+          AZURE_LIVE_COMMIT_PREFIX: 'f3c7775'
+        },
+        deps: { runner, log: () => undefined }
+      })).rejects.toBe(originalFailure);
+
+      const evidence = JSON.parse(readFileSync(evidencePath, 'utf8'));
+      expect(evidence).toMatchObject({
+        schemaVersion: 2,
+        testedCommitHashPrefix: 'f3c7775',
+        cases: 1,
+        failed: 1,
+        results: [{ id: 'runner', status: 'fail', reasonCode: 'cli-failed' }]
+      });
+      expect(JSON.stringify(evidence)).not.toContain('do-not-persist');
+    } finally {
+      if (hadEvidence) writeFileSync(evidencePath, baseline!, 'utf8');
+      else rmSync(evidencePath, { force: true });
+    }
   });
 });
 
