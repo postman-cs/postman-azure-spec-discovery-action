@@ -74,7 +74,7 @@ The runner executes the R8 case catalog (baseline six + APIM clean-repo/format/u
 | Template Specs | Embedded APIM OpenAPI definition. |
 | Event Grid | Webhook partial contract via run-owned App Service endpoint **without secret query**. |
 | Service Bus | Standard topic/subscription only when explicitly opted in and cost-bounded; otherwise `requires-capability` (`cost-guard-blocked`). |
-| Functions / App Service runtime | OpenAPI extension and SCM `ApiSpecPath` must prove those exact routes (seeded metadata) or return `requires-capability` — never public `apiDefinition` / binding-synthesis fallback. |
+| Functions / App Service runtime | OpenAPI extension and SCM `ApiSpecPath` must prove those exact routes (seeded `properties.aiIntegration` on the `2026-03-15` App Service surface) or return `requires-capability` — never public `apiDefinition` / binding-synthesis fallback. |
 | Local R3 | Compiled CLI format/parser matrix; `local-only`; no Azure calls. |
 
 ## Capability vs GCP category mismatch

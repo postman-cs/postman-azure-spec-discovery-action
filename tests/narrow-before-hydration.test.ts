@@ -157,6 +157,7 @@ describe('narrow-before-hydration (R7 / POS-400)', () => {
         content: VALID_OPENAPI,
         format: 'openapi-json' as const,
         filename: 'index.json',
+        contractClass: 'partial' as const,
         evidence: ['logic export']
       }))
     };
@@ -204,6 +205,7 @@ describe('narrow-before-hydration (R7 / POS-400)', () => {
     const result = await execute(inputs(), baseDeps([logicProvider, functionsProvider, apimProvider]));
     expect(result.resolution?.status).toBe('resolved');
     expect(result.resolution?.providerType).toBe('logic-apps');
+    expect(result.resolution?.contractClass).toBe('partial');
     expect(logicProvider.listCandidateHeaders).toHaveBeenCalled();
     expect(functionsProvider.listCandidateHeaders).toHaveBeenCalled();
     expect(apimProvider.listCandidateHeaders).toHaveBeenCalled();
@@ -614,6 +616,42 @@ describe('narrow-before-hydration (R7 / POS-400)', () => {
     );
     expect(result.resolution?.status).toBe('resolved');
     expect(result.resolution?.serviceName).toBe('workflow');
+    expect(provider.exportSpec).toHaveBeenCalledTimes(1);
+  });
+
+  it('AZ-R7-020: hydration may expand a selected header to a new exportable candidate ID', async () => {
+    const headerId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Resources/templateSpecs/payments/versions/v1';
+    const expandedId = `${headerId}/embedded/0`;
+    const header = candidate('template-specs', 'v1', {
+      id: headerId,
+      tags: { 'postman:project-name': 'payments' }
+    });
+    const provider: SpecProvider = {
+      type: 'template-specs',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates: vi.fn(async () => []),
+      listCandidateHeaders: vi.fn(async () => [{ ...header, headerHydrated: false }]),
+      hydrateCandidates: vi.fn(async () => [
+        {
+          ...header,
+          id: expandedId,
+          name: 'payments-embedded',
+          evidence: [...header.evidence, 'expanded embedded API']
+        }
+      ]),
+      exportSpec: vi.fn(async () => ({
+        content: VALID_OPENAPI,
+        format: 'openapi-json' as const,
+        filename: 'index.json',
+        contractClass: 'partial' as const,
+        evidence: ['template export']
+      }))
+    };
+
+    const result = await execute(inputs({ expectedServiceName: 'payments' }), baseDeps([provider]));
+    expect(result.resolution?.status).toBe('resolved');
+    expect(result.resolution?.contractClass).toBe('partial');
     expect(provider.exportSpec).toHaveBeenCalledTimes(1);
   });
 

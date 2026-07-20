@@ -12,7 +12,7 @@ import {
   type ArmRestClientOptions
 } from './arm-rest.js';
 
-const WEB_API_VERSION = '2023-12-01';
+const WEB_API_VERSION = '2026-03-15';
 
 /** Absolute ceiling for SCM/VFS OpenAPI artifacts (matches guarded public-spec fetch). */
 const MAX_SCM_ARTIFACT_BYTES = 10 * 1024 * 1024;
@@ -57,6 +57,7 @@ interface SiteArmEnvelope {
       apiDefinition?: { url?: unknown };
       metadata?: Array<{ name?: unknown; value?: unknown }>;
     };
+    aiIntegration?: { ApiSpecPath?: unknown; apiSpecPath?: unknown };
   };
 }
 
@@ -74,7 +75,10 @@ function str(value: unknown): string | undefined {
 
 function extractApiSpecPath(config: ConfigArmEnvelope | undefined, site: SiteArmEnvelope | undefined): string | undefined {
   const direct =
-    str(config?.properties?.aiIntegration?.ApiSpecPath) ?? str(config?.properties?.aiIntegration?.apiSpecPath);
+    str(site?.properties?.aiIntegration?.ApiSpecPath) ??
+    str(site?.properties?.aiIntegration?.apiSpecPath) ??
+    str(config?.properties?.aiIntegration?.ApiSpecPath) ??
+    str(config?.properties?.aiIntegration?.apiSpecPath);
   if (direct) return direct;
   const metadata = [
     ...(config?.properties?.metadata ?? []),

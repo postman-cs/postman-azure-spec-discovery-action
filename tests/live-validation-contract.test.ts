@@ -843,7 +843,9 @@ describe('R8 harness matrix contract', () => {
     await provisionCustomConnectorBounded({
       asyncRunner: async (_command, args, options) => {
         calls.push({ args, options });
-        if (args[0] === 'resource') return JSON.stringify({ location: 'eastus', tags: {} });
+        if (args[0] === 'rest' && args.includes('get')) {
+          return JSON.stringify({ location: 'eastus', tags: {} });
+        }
         throw new Error('InternalServerError');
       },
       log: () => undefined,
@@ -861,7 +863,7 @@ describe('R8 harness matrix contract', () => {
     });
 
     expect(capabilities['custom-connector']).toEqual({ ok: false, reasonCode: 'capability-absent' });
-    const put = calls.find((call) => call.args[0] === 'rest');
+    const put = calls.find((call) => call.args[0] === 'rest' && call.args.includes('put'));
     expect(put?.options).toEqual({ timeout: 30_000 });
     expect(put?.args.join(' ')).toContain('pmspecsiteabcd1234.azurewebsites.net');
     expect(put?.args.join(' ')).toContain('"location":"eastus"');

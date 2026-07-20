@@ -810,7 +810,7 @@ export async function provisionOptionalApimApis({
           displayName: 'Payments GraphQL API',
           path: 'payments-graphql',
           protocols: ['https'],
-          apiType: 'graphql'
+          type: 'graphql'
         }
       },
       afterCreate: async () => {
@@ -917,20 +917,14 @@ export async function provisionCustomConnectorBounded({
     return;
   }
 
+  const url =
+    `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
+    `/providers/Microsoft.Web/customApis/${manifest.customConnectorName}?api-version=2016-06-01`;
   let connectorLocation = location;
   try {
     const existing = await azJsonAsync(
       asyncRunner,
-      [
-        'resource',
-        'show',
-        '--resource-group',
-        manifest.resourceGroup,
-        '--resource-type',
-        'Microsoft.Web/customApis',
-        '--name',
-        manifest.customConnectorName
-      ],
+      ['rest', '--method', 'get', '--url', url],
       { timeout: CUSTOM_CONNECTOR_TIMEOUT_MS }
     );
     connectorLocation = String(existing?.location || location);
@@ -946,9 +940,6 @@ export async function provisionCustomConnectorBounded({
     }
   }
 
-  const url =
-    `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
-    `/providers/Microsoft.Web/customApis/${manifest.customConnectorName}?api-version=2016-06-01`;
   const body = {
     location: connectorLocation,
     tags: {
@@ -2329,6 +2320,9 @@ async function runDefaultCases({
     const configUrl =
       `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
       `/providers/Microsoft.Web/sites/${manifest.siteName}/config/web?api-version=2023-12-01`;
+    const siteUrl =
+      `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
+      `/providers/Microsoft.Web/sites/${manifest.siteName}?api-version=2026-03-15`;
     let seeded = false;
     try {
       az(runner, [
@@ -2340,10 +2334,33 @@ async function runDefaultCases({
         '--body',
         JSON.stringify({
           properties: {
-            apiDefinition: { url: null },
-            metadata: [
-              { name: 'ApiSpecPath', value: '/home/site/wwwroot/openapi.json' }
-            ]
+            apiDefinition: { url: null }
+          }
+        })
+      ]);
+      az(runner, [
+        'rest',
+        '--method',
+        'patch',
+        '--url',
+        siteUrl,
+        '--body',
+        JSON.stringify({
+          properties: {
+            aiIntegration: {
+              ApiSpecPath: '/home/site/wwwroot/openapi.json',
+              Mcp: {
+                Servers: [
+                  {
+                    Name: 'payments-live',
+                    Description: 'Persistent live validation MCP surface',
+                    Enabled: true,
+                    Endpoint: '/mcp',
+                    ToolList: ['*']
+                  }
+                ]
+              }
+            }
           }
         })
       ]);
