@@ -523,6 +523,100 @@ describe('narrow-before-hydration (R7 / POS-400)', () => {
     expect(hydrateOther).not.toHaveBeenCalled();
   });
 
+  it('AZ-R7-018: exact gateway selection remains the winner when hydration ranking originally placed it later', async () => {
+    await writeFile(path.join(repoRoot, 'README.md'), 'Gateway: https://svc.azure-api.net/payments\n', 'utf8');
+    const ordersId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/a-orders';
+    const invoicesId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/b-invoices';
+    const paymentsId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/z-payments';
+    const orders = candidate('apim', 'orders', {
+      id: ordersId,
+      apiId: ordersId,
+      name: 'shared-service',
+      tags: { 'postman:project-name': 'shared-service' },
+      meta: { path: 'orders', hostnames: 'svc.azure-api.net' }
+    });
+    const payments = candidate('apim', 'payments', {
+      id: paymentsId,
+      apiId: paymentsId,
+      name: 'shared-service',
+      tags: { 'postman:project-name': 'shared-service' },
+      meta: { path: 'payments', hostnames: 'svc.azure-api.net' }
+    });
+    const invoices = candidate('apim', 'invoices', {
+      id: invoicesId,
+      apiId: invoicesId,
+      name: 'shared-service',
+      tags: { 'postman:project-name': 'shared-service' },
+      meta: { path: 'invoices', hostnames: 'svc.azure-api.net' }
+    });
+    const provider: SpecProvider = {
+      type: 'apim',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates: vi.fn(async () => [orders, invoices, payments]),
+      listCandidateHeaders: vi.fn(async () => [
+        { ...orders, headerHydrated: true },
+        { ...invoices, headerHydrated: true },
+        { ...payments, headerHydrated: true }
+      ]),
+      hydrateCandidates: vi.fn(async (headers) => headers),
+      exportSpec: vi.fn(async () => ({
+        content: VALID_OPENAPI,
+        format: 'openapi-json' as const,
+        filename: 'index.json',
+        evidence: ['export']
+      }))
+    };
+
+    const gatewayInputs = inputs();
+    gatewayInputs.repoContext = { ...gatewayInputs.repoContext, repoSlug: undefined };
+    const result = await execute(gatewayInputs, baseDeps([provider]));
+    expect(result.resolution?.status).toBe('resolved');
+    expect(result.resolution?.apiId).toBe(paymentsId);
+    expect(result.resolution?.narrowing?.tier).toBe('gateway-host-path');
+  });
+
+  it('AZ-R7-019: api-filter can isolate a parent resource by its full ARM path', async () => {
+    const currentId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Logic/workflows/current-stack';
+    const oldId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Logic/workflows/old-stack';
+    const current = candidate('logic-apps', 'workflow', {
+      id: currentId,
+      tags: { 'postman:project-name': 'workflow' }
+    });
+    const old = candidate('logic-apps', 'workflow', {
+      id: oldId,
+      tags: { 'postman:project-name': 'workflow' }
+    });
+    const provider: SpecProvider = {
+      type: 'logic-apps',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates: vi.fn(async () => [old, current]),
+      listCandidateHeaders: vi.fn(async () => [
+        { ...old, headerHydrated: true },
+        { ...current, headerHydrated: true }
+      ]),
+      hydrateCandidates: vi.fn(async (headers) => headers),
+      exportSpec: vi.fn(async () => ({
+        content: VALID_OPENAPI,
+        format: 'openapi-json' as const,
+        filename: 'index.json',
+        evidence: ['export']
+      }))
+    };
+
+    const result = await execute(
+      inputs({ apiFilter: /current-stack/, expectedServiceName: 'workflow' }),
+      baseDeps([provider])
+    );
+    expect(result.resolution?.status).toBe('resolved');
+    expect(result.resolution?.serviceName).toBe('workflow');
+    expect(provider.exportSpec).toHaveBeenCalledTimes(1);
+  });
+
   it('C7/Q3: a non-settling header provider is aborted and another provider still resolves', async () => {
     const previousDeadline = headerEnumerationDeadline.ms;
     headerEnumerationDeadline.ms = 25;

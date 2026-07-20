@@ -808,7 +808,7 @@ describe('R8 harness matrix contract', () => {
     });
 
     expect(capabilities['apim-websocket']).toEqual({ ok: true });
-    const websocketBody = bodies.find((body) => body.includes('"apiType":"websocket"'));
+    const websocketBody = bodies.find((body) => body.includes('"type":"websocket"'));
     expect(websocketBody).toBeTruthy();
     expect(websocketBody).not.toContain('serviceUrl');
   });
@@ -843,7 +843,7 @@ describe('R8 harness matrix contract', () => {
     await provisionCustomConnectorBounded({
       asyncRunner: async (_command, args, options) => {
         calls.push({ args, options });
-        if (args[0] === 'resource') throw new Error('ResourceNotFound');
+        if (args[0] === 'resource') return JSON.stringify({ location: 'eastus', tags: {} });
         throw new Error('InternalServerError');
       },
       log: () => undefined,
@@ -864,6 +864,7 @@ describe('R8 harness matrix contract', () => {
     const put = calls.find((call) => call.args[0] === 'rest');
     expect(put?.options).toEqual({ timeout: 30_000 });
     expect(put?.args.join(' ')).toContain('pmspecsiteabcd1234.azurewebsites.net');
+    expect(put?.args.join(' ')).toContain('"location":"eastus"');
     const bicep = readFileSync(join(repoRoot, 'validation/fixtures/azure/extended-stack.bicep'), 'utf8');
     expect(bicep).not.toContain('Microsoft.Web/customApis');
     expect(bicep).not.toContain('customConnectorName');
