@@ -13,6 +13,17 @@ export interface SpecCandidate {
   meta: Record<string, string>;
 }
 
+/**
+ * Optional companion artifact already present as exact bytes in a provider
+ * response (or path-confined repository sibling). Never synthesized by
+ * concatenating or remotely fetching with Azure credentials.
+ */
+export interface SpecExportArtifact {
+  /** Path relative to the service export folder (no `..`, no absolute). */
+  relativePath: string;
+  content: string;
+}
+
 export interface SpecExportResult {
   content: string;
   format: SpecFormat;
@@ -27,6 +38,11 @@ export interface SpecExportResult {
   completeness?: 'full' | 'partial';
   /** Optional fidelity class declared by the exporting provider. */
   contractClass?: ContractClass;
+  /**
+   * Optional dependency-byte companions. Written beside the primary via the
+   * existing path-confined materialization path; primary remains `spec-path`.
+   */
+  artifacts?: SpecExportArtifact[];
 }
 
 /**

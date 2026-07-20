@@ -335,6 +335,54 @@ describe('ApiCenterProvider', () => {
     expect(listDeployments).not.toHaveBeenCalled();
   });
 
+  it('AZ-APIC-PROV-005d: no-import protobuf/WSDL stay authoritative; imported deps are partial', async () => {
+    const closedProto = new ApiCenterProvider(
+      client({
+        exportSpecification: vi.fn(async () => ({ content: PROTO, source: 'inline' as const }))
+      }),
+      { subscriptionId: 'sub-1' }
+    );
+    const [closedCandidate] = await closedProto.listCandidates();
+    const closedExport = await closedProto.exportSpec(closedCandidate!);
+    expect(closedExport.contractClass).toBe('authoritative');
+    expect(closedExport.evidence.join(' ')).toMatch(/dependency-closed|No external protobuf dependency/i);
+
+    const importedProto = `syntax = "proto3";
+package echo;
+import "shared.proto";
+service Echo { rpc Ping (Empty) returns (Empty); }
+message Empty {}
+`;
+    const openProto = new ApiCenterProvider(
+      client({
+        exportSpecification: vi.fn(async () => ({ content: importedProto, source: 'inline' as const }))
+      }),
+      { subscriptionId: 'sub-1' }
+    );
+    const [openCandidate] = await openProto.listCandidates();
+    const openExport = await openProto.exportSpec(openCandidate!);
+    expect(openExport.contractClass).toBe('partial');
+    expect(openExport.completeness).toBe('partial');
+    expect(openExport.evidence.join(' ')).toMatch(/shared\.proto|unresolved dependency/i);
+
+    const importedWsdl = `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema" name="Echo">
+  <types><xsd:schema><xsd:import namespace="urn:x" schemaLocation="types.xsd"/></xsd:schema></types>
+  <portType name="EchoPort"/>
+</definitions>`;
+    const openWsdl = new ApiCenterProvider(
+      client({
+        exportSpecification: vi.fn(async () => ({ content: importedWsdl, source: 'inline' as const }))
+      }),
+      { subscriptionId: 'sub-1' }
+    );
+    const [wsdlCandidate] = await openWsdl.listCandidates();
+    const wsdlExport = await openWsdl.exportSpec(wsdlCandidate!);
+    expect(wsdlExport.contractClass).toBe('partial');
+    expect(wsdlExport.evidence.join(' ')).toMatch(/types\.xsd|unresolved dependency/i);
+  });
+
   it('AZ-APIC-PROV-005: all native formats export with stable filenames; empty/malformed/wrong-kind fail', async () => {
     const cases: Array<{ content: string; format: string; filename: string }> = [
       { content: OPENAPI_JSON, format: 'openapi-json', filename: 'index.json' },

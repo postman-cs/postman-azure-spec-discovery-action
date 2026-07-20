@@ -166,6 +166,44 @@ message HealthRequest {}
 message HealthReply { string status = 1; }
 `;
 
+const PROTO_WITH_IMPORT = `syntax = "proto3";
+package payments;
+import "common/types.proto";
+service Payments {
+  rpc GetHealth (HealthRequest) returns (HealthReply);
+}
+message HealthRequest {}
+message HealthReply { string status = 1; }
+`;
+
+const WSDL_WITH_XSD_IMPORT = `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://postman.example/payments"
+             name="PaymentsSoap"
+             targetNamespace="http://postman.example/payments">
+  <types>
+    <xsd:schema>
+      <xsd:import namespace="urn:shared" schemaLocation="shared.xsd"/>
+    </xsd:schema>
+  </types>
+  <message name="GetHealthRequest"/>
+  <message name="GetHealthResponse"/>
+  <portType name="PaymentsPortType">
+    <operation name="GetHealth">
+      <input message="tns:GetHealthRequest"/>
+      <output message="tns:GetHealthResponse"/>
+    </operation>
+  </portType>
+  <binding name="PaymentsBinding" type="tns:PaymentsPortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+  </binding>
+  <service name="PaymentsService">
+    <port name="PaymentsPort" binding="tns:PaymentsBinding"/>
+  </service>
+</definitions>`;
+
 describe('APIM SOAP and GraphQL exports', () => {
   it('exports SOAP as native WSDL after validation', async () => {
     const client = clientForApiType('soap');
@@ -174,13 +212,26 @@ describe('APIM SOAP and GraphQL exports', () => {
     const candidate = (await provider.listCandidates())[0]!;
 
     expect(candidate.supported).toBe(true);
-    await expect(provider.exportSpec(candidate)).resolves.toMatchObject({
+    const exported = await provider.exportSpec(candidate);
+    expect(exported).toMatchObject({
       content: REALISTIC_WSDL,
       format: 'wsdl',
       filename: 'service.wsdl',
       contractClass: 'authoritative'
     });
+    expect(exported.evidence.join(' ')).toMatch(/dependency-closed|No external wsdl dependency/i);
     expect(client.exportApi).toHaveBeenCalledWith('rg', 'svc', 'payments', undefined, 'wsdl-link');
+  });
+
+  it('AZ-APIM-SOAP-DEP: WSDL with unresolved XSD import is partial', async () => {
+    const client = clientForApiType('soap');
+    vi.mocked(client.exportApi).mockResolvedValue(WSDL_WITH_XSD_IMPORT);
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+    const exported = await provider.exportSpec(candidate);
+    expect(exported.contractClass).toBe('partial');
+    expect(exported.completeness).toBe('partial');
+    expect(exported.evidence.join(' ')).toMatch(/shared\.xsd|unresolved dependency/i);
   });
 
   it('exports GraphQL SDL after validation and preserves native bytes', async () => {
@@ -258,8 +309,19 @@ describe('APIM gRPC protobuf schema list/get', () => {
       filename: 'service.proto',
       contractClass: 'authoritative'
     });
+    expect(exported.evidence.join(' ')).toMatch(/dependency-closed|No external protobuf dependency/i);
     expect(client.getProtobufSchema).toHaveBeenCalledWith('rg', 'svc', 'payments', undefined);
     expect(client.exportApi).not.toHaveBeenCalled();
+  });
+
+  it('AZ-APIM-GRPC-002b: protobuf with unresolved import is partial, never authoritative/full', async () => {
+    const client = grpcClientWithProtobuf(PROTO_WITH_IMPORT);
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+    const exported = await provider.exportSpec(candidate);
+    expect(exported.contractClass).toBe('partial');
+    expect(exported.completeness).toBe('partial');
+    expect(exported.evidence.join(' ')).toMatch(/unresolved dependency|common\/types\.proto/i);
   });
 
   it('AZ-APIM-GRPC-003: malformed/message-only protobuf stays unsupported at export', async () => {

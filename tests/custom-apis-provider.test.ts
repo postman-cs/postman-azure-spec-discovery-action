@@ -214,6 +214,62 @@ describe('CustomApisProvider', () => {
     expect(exported.contractClass).toBe('reconstructed');
     expect(exported.completeness).toBe('partial');
   });
+
+  it('AZ-CAPI-017: WSDL with unresolved XSD import is partial; SoapToRest+import stays reconstructed', async () => {
+    const wsdlWithImport = `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://postman.example/payments"
+             name="PaymentsSoap"
+             targetNamespace="http://postman.example/payments">
+  <types>
+    <xsd:schema>
+      <xsd:import namespace="urn:shared" schemaLocation="shared.xsd"/>
+    </xsd:schema>
+  </types>
+  <message name="GetHealthRequest"/>
+  <message name="GetHealthResponse"/>
+  <portType name="PaymentsPortType">
+    <operation name="GetHealth">
+      <input message="tns:GetHealthRequest"/>
+      <output message="tns:GetHealthResponse"/>
+    </operation>
+  </portType>
+  <binding name="PaymentsBinding" type="tns:PaymentsPortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+  </binding>
+  <service name="PaymentsService">
+    <port name="PaymentsPort" binding="tns:PaymentsBinding"/>
+  </service>
+</definitions>`;
+
+    const passThrough = new CustomApisProvider(
+      client({
+        listCustomApis: vi.fn(async () => [
+          connector({ hasSwagger: false, hasWsdl: true, wsdlImportMethod: 'SoapPassThrough' })
+        ]),
+        getWsdl: vi.fn(async () => ({ content: wsdlWithImport, importMethod: 'SoapPassThrough' }))
+      })
+    );
+    const [passCandidate] = await passThrough.listCandidates();
+    const passExport = await passThrough.exportSpec(passCandidate!);
+    expect(passExport.contractClass).toBe('partial');
+    expect(passExport.evidence.join(' ')).toMatch(/shared\.xsd|unresolved dependency/i);
+
+    const soapToRest = new CustomApisProvider(
+      client({
+        listCustomApis: vi.fn(async () => [
+          connector({ hasSwagger: false, hasWsdl: true, wsdlImportMethod: 'SoapToRest' })
+        ]),
+        getWsdl: vi.fn(async () => ({ content: wsdlWithImport, importMethod: 'SoapToRest' }))
+      })
+    );
+    const [restCandidate] = await soapToRest.listCandidates();
+    const restExport = await soapToRest.exportSpec(restCandidate!);
+    expect(restExport.contractClass).toBe('reconstructed');
+    expect(restExport.completeness).toBe('partial');
+  });
 });
 
 describe('toSafePublicUrl', () => {

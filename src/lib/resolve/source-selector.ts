@@ -1,4 +1,4 @@
-import type { ProviderType, ResolutionResult, SpecFormat } from '../../contracts.js';
+import type { ContractClass, ProviderType, ResolutionResult, SpecFormat } from '../../contracts.js';
 import { sourceTypeForProvider } from '../providers/registry.js';
 import type { RankedServiceCandidate } from './service-resolver.js';
 
@@ -6,6 +6,7 @@ export interface SourceSelectionInput {
   existingSpecPath?: string;
   existingSpecFormat?: SpecFormat;
   existingSpecEvidence?: string[];
+  existingContractClass?: ContractClass;
   candidate?: RankedServiceCandidate;
   fallbackServiceName?: string;
 }
@@ -43,6 +44,7 @@ export function chooseSource(input: SourceSelectionInput): ResolutionResult {
       specPath: input.existingSpecPath,
       ...(input.candidate?.apiId ? { apiId: input.candidate.apiId } : {}),
       specFormat: input.existingSpecFormat,
+      ...(input.existingContractClass ? { contractClass: input.existingContractClass } : {}),
       evidence: [
         ...(input.existingSpecEvidence?.length ? input.existingSpecEvidence : ['Resolved from existing repository specification']),
         ...(input.candidate?.evidence ?? [])

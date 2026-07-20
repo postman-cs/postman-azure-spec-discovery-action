@@ -57,7 +57,9 @@ import {
 import { runNarrowingPipeline, type NarrowingCandidate, type NarrowingResult } from './lib/resolve/narrowing-pipeline.js';
 import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
 import { enumerateEstate, parseRepoSlug, type EstateRepo } from './lib/estate/enumerate.js';
+import { assessNativeDependencyFidelity } from './lib/spec/dependency-fidelity.js';
 import { parseAndValidateNativeSpec } from './lib/spec/native-formats.js';
+import { resolveRepoNativeDependencyCompanions } from './lib/repo/native-dependency-bundle.js';
 import { ApimProvider, parseApimApiArmId } from './lib/providers/apim.js';
 import { ApiCenterProvider } from './lib/providers/api-center.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
@@ -735,7 +737,7 @@ async function resolveBoundNativeSpec(
   let format: SpecFormat;
   try {
     content = await readFile(absolutePath, 'utf8');
-    const validated = parseAndValidateNativeSpec(content);
+    const validated = parseAndValidateNativeSpec(content, undefined, path.posix.basename(relativePath));
     format = validated.format;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -745,6 +747,17 @@ async function resolveBoundNativeSpec(
       )
     );
   }
+  const companions = await resolveRepoNativeDependencyCompanions({
+    repoRoot: inputs.repoRoot,
+    primaryRelativePath: relativePath,
+    primaryContent: content,
+    format
+  });
+  const fidelity = assessNativeDependencyFidelity({
+    content,
+    format,
+    availableDependencyKeys: companions.availableKeys
+  });
   const matchedLocal = discovery?.localSpecs.find(
     (spec) => normalizeRepoRelativePath(spec.path) === relativePath
   );
@@ -755,11 +768,13 @@ async function resolveBoundNativeSpec(
     confidence: 100,
     specPath: relativePath,
     specFormat: format,
+    contractClass: fidelity.contractClass,
     evidence: [
       ...(binding?.evidence ?? []),
       ...(discoverySelection?.evidence ?? []),
       ...(matchedLocal?.evidence ?? []),
-      `Resolved exact native repository specification ${relativePath} as ${format}`
+      `Resolved exact native repository specification ${relativePath} as ${format}`,
+      ...fidelity.evidence
     ]
   };
 }
@@ -1731,10 +1746,24 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   const localSpecs = discovery.localSpecs;
   if (localSpecs.length === 1 && localSpecs[0]) {
     const only = localSpecs[0];
+    const absolutePath = resolvePathWithinRoot(inputs.repoRoot, only.path, 'nativeSpecPath');
+    const content = await readFile(absolutePath, 'utf8');
+    const companions = await resolveRepoNativeDependencyCompanions({
+      repoRoot: inputs.repoRoot,
+      primaryRelativePath: only.path,
+      primaryContent: content,
+      format: only.format
+    });
+    const fidelity = assessNativeDependencyFidelity({
+      content,
+      format: only.format,
+      availableDependencyKeys: companions.availableKeys
+    });
     const resolution = chooseSource({
       existingSpecPath: only.path,
       existingSpecFormat: only.format,
-      existingSpecEvidence: only.evidence,
+      existingSpecEvidence: [...only.evidence, ...fidelity.evidence],
+      existingContractClass: fidelity.contractClass,
       fallbackServiceName: inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop()
     });
     return {
