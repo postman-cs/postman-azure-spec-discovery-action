@@ -1,6 +1,6 @@
 import { parse } from 'yaml';
 
-import type { SpecFormat } from '../../contracts.js';
+import type { ContractClass, SpecFormat } from '../../contracts.js';
 
 export interface OpenApiDerivationInput {
   content: string;
@@ -14,6 +14,50 @@ export interface OpenApiDerivationResult {
   version: '3.0.3' | '3.1.0';
   completeness: 'full' | 'partial';
   evidence: string[];
+}
+
+/**
+ * Declared fidelity from a provider or earlier resolution step. Derivation may
+ * downgrade completeness but must never upgrade `partial` or `reconstructed`
+ * inputs to `full`.
+ */
+export interface DeclaredFidelity {
+  completeness?: 'full' | 'partial';
+  contractClass?: ContractClass;
+}
+
+/**
+ * Clamp derived OpenAPI completeness so provider-declared `partial` or
+ * `reconstructed` fidelity is never upgraded to `full`. Pure helper for later
+ * runtime wiring; does not mutate the input object.
+ */
+export function applyDeclaredFidelity(
+  result: OpenApiDerivationResult,
+  declared?: DeclaredFidelity
+): OpenApiDerivationResult {
+  if (!declared) return result;
+
+  const mustStayPartial =
+    declared.completeness === 'partial'
+    || declared.contractClass === 'partial'
+    || declared.contractClass === 'reconstructed'
+    || declared.contractClass === 'association-only'
+    || declared.contractClass === 'unsupported';
+
+  if (!mustStayPartial || result.completeness === 'partial') {
+    return result;
+  }
+
+  const reason =
+    declared.completeness === 'partial'
+      ? 'Provider declared this export partial (synthesized from a non-spec surface)'
+      : `Contract class ${declared.contractClass} forbids upgrading derived OpenAPI completeness to full`;
+
+  return {
+    ...result,
+    completeness: 'partial',
+    evidence: [...result.evidence, reason]
+  };
 }
 
 interface OpenApiDocument {

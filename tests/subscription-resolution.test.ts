@@ -26,6 +26,11 @@ describe('subscription resolution', () => {
     await expect(resolveSubscriptionId(undefined, none)).rejects.toThrow(
       'No enabled Azure subscriptions were found; pass --subscription-id after authenticating.'
     );
+    // Absence is scoped to what the credential can see — never a global Azure claim.
+    await expect(resolveSubscriptionId(undefined, none)).rejects.toSatisfy((error: Error) => {
+      expect(error.message.toLowerCase()).not.toMatch(/no azure subscriptions exist|across azure|in azure globally/);
+      return true;
+    });
 
     const multiple = clientWith([
       { subscriptionId: 'aaaaaaaa-0000-0000-0000-000000000001', state: 'Enabled' },
