@@ -143,8 +143,8 @@ describe('runtime execute', () => {
   it('AZ-GRAPH-001: production runtime issues one paged candidate query and enriches enumerated candidates', async () => {
     const candidate = apimCandidate('payments');
     const provider = stubProvider([candidate, apimCandidate('orders')]);
-    const queryResources = vi.fn(async (subscriptionId: string, kql: string) => {
-      expect(subscriptionId).toBe('sub-1');
+    const queryResources = vi.fn(async (subscriptionIds: string | readonly string[], kql: string) => {
+      expect(subscriptionIds).toEqual(['sub-1']);
       expect(kql).toContain('Resources');
       return [
         {

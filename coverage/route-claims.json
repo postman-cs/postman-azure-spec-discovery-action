@@ -940,6 +940,37 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null
+    },
+    {
+      "id": "platform.multi-subscription-scope",
+      "provider": "platform",
+      "route": "explicit-multi-subscription-and-scoped-absence",
+      "implementationFiles": [
+        "src/runtime.ts",
+        "src/lib/azure/clients.ts",
+        "src/lib/estate/enumerate.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [],
+      "requiredCapability": "Reader (or provider-specific) on each explicitly selected subscription scope",
+      "positiveTests": [
+        "tests/multi-subscription-r6.test.ts",
+        "tests/subscription-resolution.test.ts",
+        "tests/estate.test.ts"
+      ],
+      "negativeTests": [
+        "tests/multi-subscription-r6.test.ts",
+        "tests/subscription-resolution.test.ts"
+      ],
+      "securityTests": [
+        "tests/multi-subscription-r6.test.ts"
+      ],
+      "paginationTests": [
+        "tests/resource-graph.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
     }
   ]
 }

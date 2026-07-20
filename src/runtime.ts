@@ -75,6 +75,11 @@ export interface ReporterLike {
 export interface ResolvedInputs {
   mode: ActionMode;
   subscriptionId?: string;
+  /**
+   * Explicit multi-subscription scopes from subscription-ids-json after
+   * normalize/dedupe-reject/sort. Empty means use singular or single-enabled behavior.
+   */
+  subscriptionIds: string[];
   resourceGroup?: string;
   apiId?: string;
   apiCenterDefinitionId?: string;
@@ -213,6 +218,51 @@ function parseStringArrayJson(raw: string, inputName: string): string[] {
   return parsed.map((value) => String(value).trim()).filter((value) => value.length > 0);
 }
 
+/**
+ * Parse subscription-ids-json. Empty/missing yields []. Rejects non-arrays, empty
+ * entries, and case-insensitive duplicates. Surviving IDs are sorted lexically
+ * (case-insensitive) for stable behavior and output.
+ */
+function parseSubscriptionIdsJson(raw: string | undefined): string[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid JSON for subscription-ids-json: ${detail}`, { cause: error });
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('subscription-ids-json must be a JSON array');
+  }
+  const trimmed = parsed.map((value) => String(value).trim());
+  if (trimmed.some((value) => value.length === 0)) {
+    throw new Error('subscription-ids-json must not contain empty subscription IDs');
+  }
+  if (trimmed.length === 0) return [];
+  const seen = new Map<string, string>();
+  for (const id of trimmed) {
+    const key = id.toLowerCase();
+    if (seen.has(key)) {
+      throw new Error('subscription-ids-json contains duplicate subscription IDs after normalization');
+    }
+    seen.set(key, id);
+  }
+  return [...seen.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
+function assertSubscriptionInputCompatibility(subscriptionId: string | undefined, subscriptionIds: string[]): void {
+  if (!subscriptionId || subscriptionIds.length === 0) return;
+  if (
+    subscriptionIds.length !== 1 ||
+    subscriptionIds[0]!.toLowerCase() !== subscriptionId.toLowerCase()
+  ) {
+    throw new Error(
+      'subscription-id and subscription-ids-json conflict unless both identify exactly the same one subscription ID'
+    );
+  }
+}
+
 const RUNTIME_WORKLOAD_KINDS = new Set<RuntimeDeclaredWorkloadKind>([
   'app-service',
   'functions',
@@ -275,6 +325,8 @@ function parseRuntimeDeclaredTargets(raw: string): RuntimeDeclaredSpecTarget[] {
 export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInputs {
   const mode = parseMode(getInput('mode', env));
   const subscriptionId = getInput('subscription-id', env);
+  const subscriptionIds = parseSubscriptionIdsJson(getInput('subscription-ids-json', env));
+  assertSubscriptionInputCompatibility(subscriptionId, subscriptionIds);
   const resourceGroup = getInput('resource-group', env);
   const apiId = getInput('api-id', env);
   const apiCenterDefinitionId = getInput('api-center-definition-id', env);
@@ -327,6 +379,7 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
   return {
     mode,
     subscriptionId,
+    subscriptionIds,
     resourceGroup,
     apiId,
     apiCenterDefinitionId,
@@ -384,6 +437,7 @@ export function readActionInputs(inputReader: InputReaderLike): ResolvedInputs {
     ...process.env,
     INPUT_MODE: normalizeInputValue(inputReader.getInput('mode')) ?? actionContract.inputs.mode.default,
     INPUT_SUBSCRIPTION_ID: normalizeInputValue(inputReader.getInput('subscription-id')),
+    INPUT_SUBSCRIPTION_IDS_JSON: normalizeInputValue(inputReader.getInput('subscription-ids-json')),
     INPUT_RESOURCE_GROUP: normalizeInputValue(inputReader.getInput('resource-group')),
     INPUT_API_ID: normalizeInputValue(inputReader.getInput('api-id')),
     INPUT_API_CENTER_DEFINITION_ID: normalizeInputValue(inputReader.getInput('api-center-definition-id')),
@@ -517,15 +571,17 @@ export async function resolveSubscriptionId(
 ): Promise<string> {
   if (explicitSubscriptionId) {
     try {
-    await subscriptions.get(explicitSubscriptionId);
-    return explicitSubscriptionId;
+      await subscriptions.get(explicitSubscriptionId);
+      return explicitSubscriptionId;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!/\b(401|403)\b/.test(message)) {
         throw error;
       }
       const listed = await subscriptions.list();
-      const match = listed.find((subscription) => subscription.subscriptionId === explicitSubscriptionId);
+      const match = listed.find(
+        (subscription) => subscription.subscriptionId.toLowerCase() === explicitSubscriptionId.toLowerCase()
+      );
       if (!match) {
         throw new Error(
           'The explicit --subscription-id could not be verified: direct lookup was denied and the subscription is not visible via listing.'
@@ -544,6 +600,87 @@ export async function resolveSubscriptionId(
     throw new Error('No enabled Azure subscriptions were found; pass --subscription-id after authenticating.');
   }
   throw new Error('Multiple enabled Azure subscriptions were found; pass --subscription-id explicitly.');
+}
+
+/**
+ * Resolve one or more selected subscription scopes. Explicit subscription-ids-json
+ * entries are verified independently (never auto-enumerating every visible
+ * subscription). Empty explicit lists keep singular / single-enabled behavior.
+ */
+export async function resolveSubscriptionIds(
+  selection: { subscriptionId?: string; subscriptionIds?: string[] },
+  subscriptions: AzureSubscriptionsClient
+): Promise<string[]> {
+  const explicit = selection.subscriptionIds ?? [];
+  if (explicit.length > 0) {
+    const ordered = [...explicit].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    const verified: string[] = [];
+    for (const id of ordered) {
+      verified.push(await resolveSubscriptionId(id, subscriptions));
+    }
+    return verified;
+  }
+  return [await resolveSubscriptionId(selection.subscriptionId, subscriptions)];
+}
+
+function scopedAbsenceEvidence(subscriptionCount: number, resourceGroup?: string): string {
+  const groupNote = resourceGroup ? ', resource-group scoped' : '';
+  return `No visible candidates in selected scope(s) (${subscriptionCount} subscription(s)${groupNote})`;
+}
+
+function subscriptionIdFromArmId(armId: string): string | undefined {
+  const match = /^\/subscriptions\/([^/]+)/i.exec(armId);
+  return match?.[1];
+}
+
+function mergeCandidatesByArmId(candidates: SpecCandidate[]): SpecCandidate[] {
+  const byId = new Map<string, SpecCandidate>();
+  for (const candidate of candidates) {
+    const key = candidate.id.toLowerCase();
+    if (!byId.has(key)) {
+      byId.set(key, candidate);
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+interface BoundProvider {
+  subscriptionId?: string;
+  provider: SpecProvider;
+}
+
+function findBoundProvider(bound: BoundProvider[], candidate: SpecCandidate): SpecProvider | undefined {
+  const sub = subscriptionIdFromArmId(candidate.id)?.toLowerCase();
+  const sameType = bound.filter((entry) => entry.provider.type === candidate.providerType);
+  if (sub) {
+    const scoped = sameType.find((entry) => entry.subscriptionId?.toLowerCase() === sub);
+    if (scoped) return scoped.provider;
+    // A full ARM ID must never fall through to another subscription's client.
+    // Unscoped entries are test/injection seams and remain valid for existing
+    // provider-injection callers; production entries are all subscription-bound.
+    return sameType.find((entry) => !entry.subscriptionId)?.provider;
+  }
+  return sameType.find((entry) => !entry.subscriptionId)?.provider ?? sameType[0]?.provider;
+}
+
+function findApimProviderForArmId(bound: BoundProvider[], armId: string): ApimProvider | undefined {
+  const sub = subscriptionIdFromArmId(armId)?.toLowerCase();
+  for (const entry of bound) {
+    if (!(entry.provider instanceof ApimProvider)) continue;
+    if (sub && entry.subscriptionId && entry.subscriptionId.toLowerCase() !== sub) continue;
+    return entry.provider;
+  }
+  return undefined;
+}
+
+function findApiCenterProviderForArmId(bound: BoundProvider[], armId: string): ApiCenterProvider | undefined {
+  const sub = subscriptionIdFromArmId(armId)?.toLowerCase();
+  for (const entry of bound) {
+    if (!(entry.provider instanceof ApiCenterProvider)) continue;
+    if (sub && entry.subscriptionId && entry.subscriptionId.toLowerCase() !== sub) continue;
+    return entry.provider;
+  }
+  return undefined;
 }
 
 export async function defaultWriteSpecFile(outputPath: string, content: string, rootPath: string): Promise<void> {
@@ -688,92 +825,180 @@ async function probeProviders(providers: SpecProvider[], core: ReporterLike): Pr
   return { providers: available, probes: settled };
 }
 
-function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependencies: AzureDependencies, iacScan: IacScanResult): SpecProvider[] {
-  if (dependencies.providers) {
-    return dependencies.providers;
-  }
-  return [
-    new ApimProvider(dependencies.createApimClient(subscriptionId), {
+function buildCloudProvidersForSubscription(
+  inputs: ResolvedInputs,
+  subscriptionId: string,
+  dependencies: AzureDependencies
+): BoundProvider[] {
+  const bound: BoundProvider[] = [
+    {
       subscriptionId,
-      resourceGroup: inputs.resourceGroup
-    }),
+      provider: new ApimProvider(dependencies.createApimClient(subscriptionId), {
+        subscriptionId,
+        resourceGroup: inputs.resourceGroup
+      })
+    },
     ...(dependencies.createApiCenterClient
       ? [
-          new ApiCenterProvider(dependencies.createApiCenterClient(subscriptionId), {
+          {
             subscriptionId,
-            resourceGroup: inputs.resourceGroup
-          })
+            provider: new ApiCenterProvider(dependencies.createApiCenterClient(subscriptionId), {
+              subscriptionId,
+              resourceGroup: inputs.resourceGroup
+            })
+          }
         ]
       : []),
-    new AppServiceProvider(dependencies.createAppServiceClient(subscriptionId), {
+    {
       subscriptionId,
-      resourceGroup: inputs.resourceGroup,
-      requestTimeoutMs: inputs.requestTimeoutMs,
-      enableScmSpecFetch: inputs.enableAppServiceScmSpecFetch,
-      ...(dependencies.createAppServiceRuntimeClient
-        ? { runtimeClient: dependencies.createAppServiceRuntimeClient(subscriptionId) }
-        : {})
-    }),
+      provider: new AppServiceProvider(dependencies.createAppServiceClient(subscriptionId), {
+        subscriptionId,
+        resourceGroup: inputs.resourceGroup,
+        requestTimeoutMs: inputs.requestTimeoutMs,
+        enableScmSpecFetch: inputs.enableAppServiceScmSpecFetch,
+        ...(dependencies.createAppServiceRuntimeClient
+          ? { runtimeClient: dependencies.createAppServiceRuntimeClient(subscriptionId) }
+          : {})
+      })
+    },
     ...(dependencies.createCustomApisClient
-      ? [new CustomApisProvider(dependencies.createCustomApisClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      ? [
+          {
+            subscriptionId,
+            provider: new CustomApisProvider(dependencies.createCustomApisClient(subscriptionId), {
+              resourceGroup: inputs.resourceGroup
+            })
+          }
+        ]
       : []),
     ...(dependencies.createLogicWorkflowsClient
       ? [
-          new LogicAppsProvider(dependencies.createLogicWorkflowsClient(subscriptionId), {
-            resourceGroup: inputs.resourceGroup,
-            enableListSwagger: inputs.enableLogicAppsListSwagger,
-            requireNativeSwagger: inputs.requireLogicAppsNativeSwagger,
-            ...(dependencies.createLogicAppsNativeClient
-              ? { nativeClient: dependencies.createLogicAppsNativeClient(subscriptionId) }
-              : {})
-          })
+          {
+            subscriptionId,
+            provider: new LogicAppsProvider(dependencies.createLogicWorkflowsClient(subscriptionId), {
+              resourceGroup: inputs.resourceGroup,
+              enableListSwagger: inputs.enableLogicAppsListSwagger,
+              requireNativeSwagger: inputs.requireLogicAppsNativeSwagger,
+              ...(dependencies.createLogicAppsNativeClient
+                ? { nativeClient: dependencies.createLogicAppsNativeClient(subscriptionId) }
+                : {})
+            })
+          }
         ]
       : []),
     ...(dependencies.createTemplateSpecsClient
-      ? [new TemplateSpecsProvider(dependencies.createTemplateSpecsClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      ? [
+          {
+            subscriptionId,
+            provider: new TemplateSpecsProvider(dependencies.createTemplateSpecsClient(subscriptionId), {
+              resourceGroup: inputs.resourceGroup
+            })
+          }
+        ]
       : []),
     ...(dependencies.createEventGridClient
-      ? [new EventGridProvider(dependencies.createEventGridClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      ? [
+          {
+            subscriptionId,
+            provider: new EventGridProvider(dependencies.createEventGridClient(subscriptionId), {
+              resourceGroup: inputs.resourceGroup
+            })
+          }
+        ]
       : []),
     ...(dependencies.createServiceBusClient
-      ? [new ServiceBusProvider(dependencies.createServiceBusClient(subscriptionId), { resourceGroup: inputs.resourceGroup })]
+      ? [
+          {
+            subscriptionId,
+            provider: new ServiceBusProvider(dependencies.createServiceBusClient(subscriptionId), {
+              resourceGroup: inputs.resourceGroup
+            })
+          }
+        ]
       : []),
     ...(dependencies.createFunctionsClient
       ? [
-          new FunctionBindingsProvider(dependencies.createFunctionsClient(subscriptionId), {
-            resourceGroup: inputs.resourceGroup,
-            enableOpenApiExtension: inputs.enableFunctionsOpenApiExtension,
-            requestTimeoutMs: inputs.requestTimeoutMs
-          })
+          {
+            subscriptionId,
+            provider: new FunctionBindingsProvider(dependencies.createFunctionsClient(subscriptionId), {
+              resourceGroup: inputs.resourceGroup,
+              enableOpenApiExtension: inputs.enableFunctionsOpenApiExtension,
+              requestTimeoutMs: inputs.requestTimeoutMs
+            })
+          }
         ]
-      : []),
-    new RuntimeDeclaredRoutesProvider({
+      : [])
+  ];
+  return bound;
+}
+
+function buildBoundProviders(
+  inputs: ResolvedInputs,
+  subscriptionIds: string[],
+  dependencies: AzureDependencies,
+  iacScan: IacScanResult
+): BoundProvider[] {
+  if (dependencies.providers) {
+    return dependencies.providers.map((provider) => ({ provider }));
+  }
+  const bound: BoundProvider[] = [];
+  for (const subscriptionId of subscriptionIds) {
+    bound.push(...buildCloudProvidersForSubscription(inputs, subscriptionId, dependencies));
+  }
+  bound.push({
+    provider: new RuntimeDeclaredRoutesProvider({
       enabled: inputs.enableRuntimeDeclaredSpecRoutes,
       targets: inputs.runtimeDeclaredSpecTargets,
       requestTimeoutMs: inputs.requestTimeoutMs
-    }),
-    new IacLocalProvider(iacScan)
-  ];
+    })
+  });
+  bound.push({ provider: new IacLocalProvider(iacScan) });
+  return bound;
 }
 
 async function queryResourceGraph(
   inputs: ResolvedInputs,
-  subscriptionId: string,
+  subscriptionIds: string[],
   dependencies: AzureDependencies
 ): Promise<Map<string, { resourceGroup: string; tags: Record<string, string> }>> {
-  if (!dependencies.createResourceGraphClient) return new Map();
+  if (!dependencies.createResourceGraphClient || subscriptionIds.length === 0) return new Map();
+  const client = dependencies.createResourceGraphClient();
+  const kql = buildCandidateQuery(inputs.resourceGroup);
+  const toMap = (rows: Array<{ id: string; resourceGroup: string; tags: Record<string, string> }>) =>
+    new Map(rows.map((row) => [row.id.toLowerCase(), { resourceGroup: row.resourceGroup, tags: row.tags }]));
+
   try {
-    const rows = await dependencies.createResourceGraphClient().queryResources(
-      subscriptionId,
-      buildCandidateQuery(inputs.resourceGroup)
-    );
-    return new Map(
-      rows.map((row) => [row.id.toLowerCase(), { resourceGroup: row.resourceGroup, tags: row.tags }])
-    );
+    const rows = await client.queryResources(subscriptionIds, kql);
+    return toMap(rows);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    dependencies.core.warning(sanitizeLogMessage(`Resource Graph candidate query failed: ${detail}`));
-    return new Map();
+    if (subscriptionIds.length === 1) {
+      dependencies.core.warning(sanitizeLogMessage(`Resource Graph candidate query failed: ${detail}`));
+      return new Map();
+    }
+    // Bounded deterministic per-scope aggregate when a multi-scope request fails.
+    const merged = new Map<string, { resourceGroup: string; tags: Record<string, string> }>();
+    let failures = 0;
+    for (const subscriptionId of subscriptionIds) {
+      try {
+        const rows = await client.queryResources(subscriptionId, kql);
+        for (const [key, value] of toMap(rows)) {
+          if (!merged.has(key)) merged.set(key, value);
+        }
+      } catch {
+        failures += 1;
+      }
+    }
+    if (failures > 0) {
+      dependencies.core.warning(
+        sanitizeLogMessage(
+          `Resource Graph candidate query failed for ${failures} of ${subscriptionIds.length} selected scope(s)`
+        )
+      );
+    } else {
+      dependencies.core.warning(sanitizeLogMessage(`Resource Graph candidate query failed: ${detail}`));
+    }
+    return merged;
   }
 }
 
@@ -931,12 +1156,22 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     };
   }
 
-  // 3. Cloud discovery.
-  const subscriptionId = await resolveSubscriptionId(inputs.subscriptionId, dependencies.subscriptions);
-  const graphRows = await queryResourceGraph(inputs, subscriptionId, dependencies);
-  const providers = buildProviders(inputs, subscriptionId, dependencies, iacScan);
+  // 3. Cloud discovery across selected subscription scope(s).
+  const subscriptionIds = await resolveSubscriptionIds(
+    { subscriptionId: inputs.subscriptionId, subscriptionIds: inputs.subscriptionIds },
+    dependencies.subscriptions
+  );
+  const subscriptionId = subscriptionIds[0]!;
+  const graphRows = await queryResourceGraph(inputs, subscriptionIds, dependencies);
+  const boundProviders = buildBoundProviders(inputs, subscriptionIds, dependencies, iacScan);
   const { providers: availableProviders, probes } = await core.group('Probe available providers', () =>
-    probeProviders(providers, core)
+    probeProviders(
+      boundProviders.map((entry) => entry.provider),
+      core
+    )
+  );
+  const availableBound = boundProviders.filter((entry) =>
+    availableProviders.some((provider) => provider === entry.provider)
   );
 
   const signals = await collectRepoSignals({
@@ -955,9 +1190,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   // 3a0. Exact API Center definition ID / binding wins over cloud ranking.
   if (selectors.apiCenterDefinitionId) {
     const requestedDefinitionId = selectors.apiCenterDefinitionId;
-    const apiCenter = availableProviders.find(
-      (provider): provider is ApiCenterProvider => provider instanceof ApiCenterProvider
-    );
+    const apiCenter = findApiCenterProviderForArmId(availableBound, requestedDefinitionId);
     // A complete definition ARM id supplies every export coordinate.  Resolve it
     // directly rather than inventorying all services/versions and risking a
     // first/latest selection among otherwise ambiguous definitions.
@@ -965,7 +1198,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     // retain exact-id filtering there. Production ApiCenterProvider never needs
     // broad inventory for a complete definition ARM id.
     const injectedApiCenter = !apiCenter
-      ? availableProviders.find((provider) => provider.type === 'api-center')
+      ? availableBound.find((entry) => entry.provider.type === 'api-center')?.provider
       : undefined;
     const target = apiCenter
       ? apiCenter.resolveExplicitDefinition(requestedDefinitionId)
@@ -1049,22 +1282,26 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   }
 
   const enumerated = applyApiFilter(
-    enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows),
+    mergeCandidatesByArmId(
+      enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows)
+    ),
     inputs.apiFilter
   );
 
   // 3a. Explicit api-id / exact binding is a caller selection with confidence 100.
   if (selectors.apiId) {
     const requestedApiId = selectors.apiId;
-    const isFullArmId = requestedApiId.startsWith('/subscriptions/');
+    const isFullArmId = /^\/subscriptions\//i.test(requestedApiId);
     let target: SpecCandidate | undefined;
     if (isFullArmId) {
       target = enumerated.find(
-        (candidate) => candidate.apiId === requestedApiId || candidate.id === requestedApiId
+        (candidate) =>
+          candidate.apiId?.toLowerCase() === requestedApiId.toLowerCase() ||
+          candidate.id.toLowerCase() === requestedApiId.toLowerCase()
       );
       // Historical ;rev=N may be absent from current-revision enumeration.
       if (!target && /;rev=\d+/i.test(requestedApiId) && parseApimApiArmId(requestedApiId)) {
-        const apim = availableProviders.find((provider): provider is ApimProvider => provider instanceof ApimProvider);
+        const apim = findApimProviderForArmId(availableBound, requestedApiId);
         if (apim) {
           target = await apim.resolveExplicitApi(requestedApiId);
         }
@@ -1144,10 +1381,8 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     }
     if (target) {
       const provider =
-        availableProviders.find((p) => p.type === target!.providerType) ??
-        (target.providerType === 'apim'
-          ? availableProviders.find((p): p is ApimProvider => p instanceof ApimProvider)
-          : undefined);
+        findBoundProvider(availableBound, target) ??
+        (target.providerType === 'apim' ? findApimProviderForArmId(availableBound, target.id) : undefined);
       if (provider) {
         const exportResult = await provider.exportSpec(target);
         const serviceName = resolveServiceName(target, inputs.serviceMapping);
@@ -1209,6 +1444,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     {
       repoSlug: inputs.repoContext.repoSlug,
       subscriptionId,
+      subscriptionIds,
       resourceGroup: inputs.resourceGroup,
       repoTagKeys: inputs.repoTagKeys,
       environment: selectors.environment,
@@ -1253,7 +1489,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
 
   if (best && !best.ambiguous && best.supported && best.confidence >= MINIMUM_RESOLVED_CONFIDENCE) {
     const target = partitioned.find((candidate) => candidate.id === best?.resourceId);
-    const provider = target ? availableProviders.find((p) => p.type === target.providerType) : undefined;
+    const provider = target ? findBoundProvider(availableBound, target) : undefined;
     if (target && provider) {
       try {
         const exportResult = await provider.exportSpec(target);
@@ -1307,7 +1543,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     providerProbes: probes,
     rankedCandidates: toAmbiguousViews(ranked.slice(0, inputs.maxCandidates)),
     evidence: [
-      ...(best?.evidence ?? ['No candidates matched this repository']),
+      ...(best?.evidence ?? [scopedAbsenceEvidence(subscriptionIds.length, inputs.resourceGroup)]),
       ...(cappedCount > 0 ? [`Candidate cap hid ${cappedCount} lower-ranked candidate(s) from the serialized view (ranking used all candidates)`] : [])
     ]
   };
@@ -1322,15 +1558,27 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
 async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDependencies): Promise<ExecutionResult> {
   const core = dependencies.core;
   const iacScan = await scanAzureIac(inputs.repoRoot, inputs.outputDir);
-  const subscriptionId = await resolveSubscriptionId(inputs.subscriptionId, dependencies.subscriptions);
-  const graphRows = await queryResourceGraph(inputs, subscriptionId, dependencies);
-  const providers = buildProviders(inputs, subscriptionId, dependencies, iacScan);
+  const subscriptionIds = await resolveSubscriptionIds(
+    { subscriptionId: inputs.subscriptionId, subscriptionIds: inputs.subscriptionIds },
+    dependencies.subscriptions
+  );
+  const subscriptionId = subscriptionIds[0]!;
+  const graphRows = await queryResourceGraph(inputs, subscriptionIds, dependencies);
+  const boundProviders = buildBoundProviders(inputs, subscriptionIds, dependencies, iacScan);
   const { providers: availableProviders, probes } = await core.group('Probe available providers', () =>
-    probeProviders(providers, core)
+    probeProviders(
+      boundProviders.map((entry) => entry.provider),
+      core
+    )
+  );
+  const availableBound = boundProviders.filter((entry) =>
+    availableProviders.some((provider) => provider === entry.provider)
   );
 
   const enumerated = applyApiFilter(
-    enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows),
+    mergeCandidatesByArmId(
+      enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows)
+    ),
     inputs.apiFilter
   );
   // R5.AC6: partition by repo narrowing BEFORE the cap so canonical-tag matches
@@ -1345,6 +1593,7 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
     {
       repoSlug: inputs.repoContext.repoSlug,
       subscriptionId,
+      subscriptionIds,
       resourceGroup: inputs.resourceGroup,
       repoTagKeys: inputs.repoTagKeys,
       environment: inputs.environment,
@@ -1368,7 +1617,7 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
       summary.skipped += 1;
       continue;
     }
-    const provider = availableProviders.find((p) => p.type === candidate.providerType);
+    const provider = findBoundProvider(availableBound, candidate);
     if (!provider) {
       summary.skipped += 1;
       continue;
@@ -1428,9 +1677,12 @@ async function runDiscoverEstate(inputs: ResolvedInputs, dependencies: AzureDepe
   if (!dependencies.createResourceGraphClient) {
     throw new Error('discover-estate requires a Resource Graph client');
   }
-  const subscriptionId = await resolveSubscriptionId(inputs.subscriptionId, dependencies.subscriptions);
+  const subscriptionIds = await resolveSubscriptionIds(
+    { subscriptionId: inputs.subscriptionId, subscriptionIds: inputs.subscriptionIds },
+    dependencies.subscriptions
+  );
   const estate = await core.group('Enumerate estate repo associations', () =>
-    enumerateEstate(dependencies.createResourceGraphClient!(), subscriptionId, inputs.resourceGroup)
+    enumerateEstate(dependencies.createResourceGraphClient!(), subscriptionIds, inputs.resourceGroup)
   );
   core.info(sanitizeLogMessage(`discover-estate found ${estate.length} repo association(s)`));
 

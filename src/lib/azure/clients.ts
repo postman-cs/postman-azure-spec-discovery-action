@@ -123,7 +123,22 @@ export interface AzureAppServiceClient {
 }
 
 export interface AzureResourceGraphClient {
-  queryResources(subscriptionId: string, kql: string): Promise<ResourceGraphRow[]>;
+  /**
+   * Query Resource Graph for one or more subscription scopes. Prefer one request
+   * with every selected subscription when the API contract permits.
+   */
+  queryResources(subscriptionIds: string | readonly string[], kql: string): Promise<ResourceGraphRow[]>;
+}
+
+export function normalizeResourceGraphSubscriptions(
+  subscriptionIds: string | readonly string[]
+): string[] {
+  const list = (Array.isArray(subscriptionIds) ? [...subscriptionIds] : [subscriptionIds])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  return [...new Map(list.map((value) => [value.toLowerCase(), value])).values()].sort((a, b) =>
+    a.toLowerCase().localeCompare(b.toLowerCase())
+  );
 }
 
 /**
@@ -820,7 +835,14 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
     this.random = options?.random ?? Math.random;
   }
 
-  public async queryResources(subscriptionId: string, kql: string): Promise<ResourceGraphRow[]> {
+  public async queryResources(
+    subscriptionIds: string | readonly string[],
+    kql: string
+  ): Promise<ResourceGraphRow[]> {
+    const subscriptions = normalizeResourceGraphSubscriptions(subscriptionIds);
+    if (subscriptions.length === 0) {
+      throw new Error('Resource Graph query requires at least one subscription scope');
+    }
     const token = await getArmAccessToken(this.credential, this.cloud);
     const url = armManagementUrl(
       this.cloud,
@@ -836,7 +858,7 @@ export class ResourceGraphSdkClient implements AzureResourceGraphClient {
         throw new Error(`Resource Graph pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
       }
       const fetched = await this.postQuery(url, token, {
-        subscriptions: [subscriptionId],
+        subscriptions,
         query: kql,
         ...(skipToken ? { options: { $skipToken: skipToken } } : {})
       });

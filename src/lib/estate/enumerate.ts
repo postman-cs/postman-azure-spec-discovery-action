@@ -178,12 +178,31 @@ export function dedupeEstate(rows: ResourceGraphRow[]): EstateRepo[] {
     .sort((a, b) => `${a.org}/${a.repo}`.localeCompare(`${b.org}/${b.repo}`));
 }
 
-/** Run the estate sweep: one paginated ARG query, then pure dedupe. */
+/**
+ * Run the estate sweep with one multi-scope ARG request when possible. If ARG
+ * rejects that aggregate request, retry each explicit scope so a visibility
+ * failure in one subscription cannot discard associations visible in another.
+ * If every fallback scope fails, preserve the failure rather than reporting an
+ * empty roster as though it were an absence result.
+ */
 export async function enumerateEstate(
   client: AzureResourceGraphClient,
-  subscriptionId: string,
+  subscriptionIds: string | readonly string[],
   resourceGroup?: string
 ): Promise<EstateRepo[]> {
-  const rows = await client.queryResources(subscriptionId, buildEstateQuery(resourceGroup));
+  const scopes = Array.isArray(subscriptionIds) ? [...subscriptionIds] : [subscriptionIds];
+  const query = buildEstateQuery(resourceGroup);
+  let rows: ResourceGraphRow[];
+  try {
+    rows = await client.queryResources(subscriptionIds, query);
+  } catch (error) {
+    if (scopes.length <= 1) throw error;
+    const settled = await Promise.allSettled(scopes.map((scope) => client.queryResources(scope, query)));
+    const successful = settled.filter(
+      (result): result is PromiseFulfilledResult<ResourceGraphRow[]> => result.status === 'fulfilled'
+    );
+    if (successful.length === 0) throw error;
+    rows = successful.flatMap((result) => result.value);
+  }
   return dedupeEstate(rows);
 }

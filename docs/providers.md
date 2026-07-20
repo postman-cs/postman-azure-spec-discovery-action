@@ -6,6 +6,14 @@ Azure spec discovery ships ten providers: `apim`, `api-center`, `app-service`, `
 
 Use Azure `Reader` at the chosen subscription or resource-group scope for providers that use generic read operations. APIM exports additionally require `API Management Service Reader` at the relevant APIM service, resource group, or subscription scope. API Center authoritative export requires the control-plane action `Microsoft.ApiCenter/services/workspaces/apis/versions/definitions/exportSpecification/action` (typically via Azure API Center Service Reader) in addition to service/workspace read rights. Optional API Center data-plane inventory permissions can enrich search UX in the Azure portal but are never required by this action and are never called. Inaccessible providers fail-soft as `skipped:iam`, so discovery continues through providers the credential can read. Grant permissions only for the providers relevant to the workflow; the action does not require every provider permission.
 
+## Cloud, subscription scope, and absence
+
+- Azure Public, US Government, and China endpoint profiles share one cloud abstraction for ARM/token audiences. Advertise a sovereign profile only after live validation in that cloud.
+- Discovery enumerates only the selected subscription scope(s): singular `subscription-id`, explicit `subscription-ids-json`, or the single enabled subscription visible to the credential. The action never auto-enumerates every visible subscription.
+- `subscription-ids-json` is a JSON array of subscription IDs. It conflicts with `subscription-id` unless both identify exactly the same one ID. Entries are verified independently (get with list fallback on 401/403), reject empty/invalid arrays and case-insensitive duplicates, and run in stable lexical order.
+- Resource Graph prefers one request that includes every selected subscription scope. Absence is scoped: evidence reports `no visible candidates in selected scope(s)` with counts, never a global claim that no APIs exist, and never hidden subscription names or IDs in errors.
+- Provider IAM failure in one selected subscription does not erase successful candidates from another. A selected exact export failure remains fatal.
+
 ## `apim` — Azure API Management
 
 - Enumerates every visible APIM service (subscription-wide or scoped by `resource-group`) plus each service workspace and lists both service- and workspace-scoped APIs.
@@ -89,7 +97,7 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 
 ## `discover-estate` mode — estate repo association
 
-Not a provider. `mode: discover-estate` runs a separate association-only enumerator (`src/lib/estate/enumerate.ts`) instead of the SpecProvider pipeline: one Resource Graph KQL over `Resources` + `ResourceContainers` where any repo-association tag (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`) is nonempty, deduped to an org/repo roster. It writes `repos.json` under `output-dir` and emits the roster on the `repos-json`/`repo-count` outputs. Association only: no spec export, no PRs, no GitHub writes. Tag values that do not parse as org/repo coordinates (URLs, `git@` forms, and bare slugs are accepted; anything else, including connection-string-shaped values, is dropped) never reach the roster. Estate mode never selects anything; resolve-one select-grade tag shapes are defined in the following narrowing section.
+Not a provider. `mode: discover-estate` runs a separate association-only enumerator (`src/lib/estate/enumerate.ts`) instead of the SpecProvider pipeline: one Resource Graph KQL over `Resources` + `ResourceContainers` where any repo-association tag (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`) is nonempty, scoped to the selected subscription(s), deduped to an org/repo roster. It sends one multi-scope request; if that aggregate request fails, it retries each selected scope and retains associations from scopes that remain visible. It writes `repos.json` under `output-dir` and emits the roster on the `repos-json`/`repo-count` outputs. Association only: no spec export, no PRs, no GitHub writes. Tag values that do not parse as org/repo coordinates (URLs, `git@` forms, and bare slugs are accepted; anything else, including connection-string-shaped values, is dropped) never reach the roster. Estate mode never selects anything; resolve-one select-grade tag shapes are defined in the following narrowing section.
 
 ## Ordering and narrowing
 

@@ -172,6 +172,9 @@ export class ApimProvider implements SpecProvider {
   public async resolveExplicitApi(apiArmOrName: string): Promise<SpecCandidate | undefined> {
     const parsed = parseApimApiArmId(apiArmOrName);
     if (!parsed) return undefined;
+    if (parsed.subscriptionId.toLowerCase() !== this.options.subscriptionId.toLowerCase()) {
+      return undefined;
+    }
     if (
       this.options.resourceGroup &&
       parsed.resourceGroup.toLowerCase() !== this.options.resourceGroup.toLowerCase()
