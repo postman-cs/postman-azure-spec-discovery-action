@@ -74,6 +74,8 @@ export interface AppServiceSiteSummary {
   resourceGroup: string;
   tags: Record<string, string>;
   apiDefinitionUrl?: string;
+  /** Exact aiIntegration.ApiSpecPath when projected by a runtime client. */
+  apiSpecPath?: string;
 }
 
 export interface ResourceGraphRow {
@@ -181,6 +183,16 @@ export interface AzureLogicWorkflowsClient {
   listWorkflows(resourceGroup?: string): Promise<LogicWorkflowSummary[]>;
   getWorkflow(resourceGroup: string, name: string): Promise<LogicWorkflowDetail>;
   probeLogicWorkflowsReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * Opt-in Consumption listSwagger POST. Implementations that do not support
+   * the elevated action may omit this method; providers treat absence as
+   * capability-absent and fall back to Reader-only synthesis.
+   */
+  listSwagger?(
+    resourceGroup: string,
+    workflowName: string,
+    signal?: AbortSignal
+  ): Promise<import('./logic-apps-native-client.js').LogicListSwaggerResult>;
 }
 
 export interface AzureSubscriptionsClient {
@@ -1106,12 +1118,11 @@ interface LogicWorkflowArmEnvelope {
 
 /**
  * Consumption Logic Apps (Microsoft.Logic/workflows) via generic ARM REST.
- * Reader-only GETs: list projects summaries; get returns the workflow
- * definition whose Request triggers make a workflow an inbound HTTP API.
- *
- * Never calls listCallbackUrl / listSwagger POST actions: callback URLs embed
- * SAS signatures and POST actions sit outside plain Reader RBAC. The
- * accessEndpoint property is the SAS-free base endpoint and is safe to emit.
+ * Reader-only GETs by default: list projects summaries; get returns the
+ * workflow definition whose Request triggers make a workflow an inbound HTTP
+ * API. Opt-in listSwagger is delegated to LogicAppsNativeSdkClient and never
+ * calls listCallbackUrl (SAS). The accessEndpoint property is the SAS-free
+ * base endpoint and is safe to emit after sanitization.
  */
 export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
   private readonly credential: TokenCredential;
@@ -1121,6 +1132,8 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
   private readonly requestTimeoutMs: number;
   private readonly sleep: (delayMs: number) => Promise<void>;
   private readonly random: () => number;
+  private readonly sdkOptions?: AzureSdkOptions;
+  private nativeClient?: import('./logic-apps-native-client.js').LogicAppsNativeSdkClient;
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.credential = credential;
@@ -1130,6 +1143,7 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
     this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
     this.sleep = options?.sleep ?? defaultSleep;
     this.random = options?.random ?? Math.random;
+    this.sdkOptions = options;
   }
 
   public async listWorkflows(resourceGroup?: string): Promise<LogicWorkflowSummary[]> {
@@ -1225,6 +1239,22 @@ export class LogicWorkflowsSdkClient implements AzureLogicWorkflowsClient {
     if (!response.ok) {
       throw new Error(`Logic workflow probe failed with HTTP ${response.status}`);
     }
+  }
+
+  public async listSwagger(
+    resourceGroup: string,
+    workflowName: string,
+    signal?: AbortSignal
+  ): Promise<import('./logic-apps-native-client.js').LogicListSwaggerResult> {
+    const { LogicAppsNativeSdkClient } = await import('./logic-apps-native-client.js');
+    this.nativeClient ??= new LogicAppsNativeSdkClient(this.credential, this.subscriptionId, {
+      maxAttempts: this.maxAttempts,
+      requestTimeoutMs: this.requestTimeoutMs,
+      sleep: this.sleep,
+      random: this.random,
+      ...this.sdkOptions
+    });
+    return this.nativeClient.listSwagger(resourceGroup, workflowName, signal);
   }
 
   private async fetchArm(url: string, token: string, operation: string, signal?: AbortSignal): Promise<Response> {
@@ -1951,3 +1981,18 @@ export class FunctionsSdkClient implements AzureFunctionsClient {
     });
   }
 }
+
+export {
+  LogicAppsNativeSdkClient,
+  type AzureLogicAppsNativeClient,
+  type LogicListSwaggerResult,
+  type StandardLogicWorkflowDetail,
+  type StandardLogicWorkflowSummary
+} from './logic-apps-native-client.js';
+export {
+  AppServiceRuntimeSdkClient,
+  type AzureAppServiceRuntimeClient,
+  type AppServiceRuntimeSiteConfig,
+  type AppServiceScmFetchResult
+} from './app-service-runtime-client.js';
+export { detectFunctionsOpenApiRoutes, type FunctionsOpenApiRoute } from './functions-openapi.js';

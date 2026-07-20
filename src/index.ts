@@ -8,9 +8,11 @@ import { resolveActionVersion } from './action-version.js';
 import {
   ApimSdkClient,
   AppServiceSdkClient,
+  AppServiceRuntimeSdkClient,
   createAzureCredential,
   CustomApisSdkClient,
   LogicWorkflowsSdkClient,
+  LogicAppsNativeSdkClient,
   ResourceGraphSdkClient,
   SubscriptionsSdkClient,
   TemplateSpecsSdkClient,
@@ -19,7 +21,9 @@ import {
   FunctionsSdkClient,
   type AzureApimClient,
   type AzureAppServiceClient,
+  type AzureAppServiceRuntimeClient,
   type AzureCustomApisClient,
+  type AzureLogicAppsNativeClient,
   type AzureLogicWorkflowsClient,
   type AzureResourceGraphClient,
   type AzureSubscriptionsClient,
@@ -55,6 +59,8 @@ export interface GitHubActionDependencies {
   createApiCenterClient?: (subscriptionId: string) => AzureApiCenterClient;
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
+  createLogicAppsNativeClient?: (subscriptionId: string) => AzureLogicAppsNativeClient;
+  createAppServiceRuntimeClient?: (subscriptionId: string) => AzureAppServiceRuntimeClient;
   createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
   createEventGridClient?: (subscriptionId: string) => AzureEventGridClient;
   createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
@@ -125,6 +131,12 @@ async function runActionInner(
     createLogicWorkflowsClient:
       dependencies.createLogicWorkflowsClient ??
       (useProductionProviders ? (subscriptionId) => new LogicWorkflowsSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
+    createLogicAppsNativeClient:
+      dependencies.createLogicAppsNativeClient ??
+      (useProductionProviders ? (subscriptionId) => new LogicAppsNativeSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
+    createAppServiceRuntimeClient:
+      dependencies.createAppServiceRuntimeClient ??
+      (useProductionProviders ? (subscriptionId) => new AppServiceRuntimeSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
     createTemplateSpecsClient:
       dependencies.createTemplateSpecsClient ??
       (useProductionProviders ? (subscriptionId) => new TemplateSpecsSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
@@ -206,8 +218,9 @@ export { ApimProvider, buildApimApiArmId } from './lib/providers/apim.js';
 export { ApiCenterProvider, parseApiCenterDefinitionArmId, safeNativeFilename } from './lib/providers/api-center.js';
 export { ApiCenterSdkClient, extractApiCenterExportPayload } from './lib/azure/api-center-client.js';
 export { AppServiceProvider } from './lib/providers/app-service.js';
+export { RuntimeDeclaredRoutesProvider } from './lib/providers/runtime-declared-routes.js';
 export { IacLocalProvider } from './lib/providers/iac-local.js';
-export { fetchSpecFromUrl } from './lib/fetch/spec-fetcher.js';
+export { fetchSpecFromUrl, SpecFetchError } from './lib/fetch/spec-fetcher.js';
 export { parseAndValidateOpenApi } from './lib/spec/validate-openapi.js';
 export { deriveOpenApiDocument, type OpenApiDerivationInput, type OpenApiDerivationResult } from './lib/spec/oas-derivation.js';
 export { renderAmbiguityStepSummary, appendAmbiguityStepSummary } from './lib/logging/step-summary.js';

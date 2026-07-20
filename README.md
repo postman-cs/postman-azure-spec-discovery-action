@@ -111,6 +111,12 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `output-dir` | Directory under the repository root where generated specs are written. | no | `discovered-specs` |
 | `postman-api-key` | Optional service-account PMAK used to mint or re-mint a postman-access-token for telemetry enrichment (account_type). Not used for any Azure or Postman asset operation. | no | n/a |
 | `postman-access-token` | Optional Postman service-account access token, used only to enrich anonymous telemetry with the session account_type. When omitted, postman-api-key alone can mint one for the same purpose. Not used for any Azure or Postman asset operation. | no | n/a |
+| `enable-logic-apps-list-swagger` | Opt-in Consumption Logic Apps native listSwagger POST. Default false. When denied or capability-absent, falls back to Reader-only Request-trigger synthesis unless require-logic-apps-native-swagger is true. | no | `false` |
+| `require-logic-apps-native-swagger` | When true with enable-logic-apps-list-swagger, a permanent malformed native listSwagger response fails instead of silently synthesizing. Default false. | no | `false` |
+| `enable-app-service-scm-spec-fetch` | Opt-in retrieval of App Service aiIntegration.ApiSpecPath bytes through the site SCM/VFS endpoint. Default false. Metadata is still surfaced when the path is present. | no | `false` |
+| `enable-functions-openapi-extension` | Opt-in detection/export of Azure Functions OpenAPI extension endpoints evidenced by function metadata or an explicit declared path. Default false. Never lists host/function keys. | no | `false` |
+| `enable-runtime-declared-spec-routes` | Opt-in provider for explicitly declared HTTPS specification URLs on App Service, Functions, Container Apps, Static Web Apps, ACI, and AKS workloads. Default false. No blind common-path probing. | no | `false` |
+| `runtime-declared-spec-targets-json` | JSON array of explicit runtime-declared specification targets when enable-runtime-declared-spec-routes is true. Each entry requires id, name, workloadKind, and https url. | no | `[]` |
 <!-- inputs-table:end -->
 
 ## Outputs
@@ -120,7 +126,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | --- | --- |
 | `resolution-json` | JSON resolution result describing status, source type, confidence, and evidence. |
 | `resolution-status` | Resolution status: resolved or unresolved. |
-| `source-type` | Resolved source type: repo-spec, apim-export, api-center-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, discover-many, or discover-estate. |
+| `source-type` | Resolved source type: repo-spec, apim-export, api-center-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, runtime-declared-spec, manual-review, discover-many, or discover-estate. |
 | `mapping-confidence` | Numeric confidence score for the selected service candidate. |
 | `spec-path` | Path to the resolved or generated specification when available. |
 | `api-id` | Full APIM API ARM resource ID or API Center definition ARM resource ID when those providers resolve; empty for App Service or IaC-local resolutions. |
@@ -129,7 +135,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `service-count` | discover-many output: number of exported services. |
 | `export-summary-json` | JSON summary of attempted, exported, failed, and skipped candidates. |
 | `candidates-json` | Ranked ambiguous candidates as JSON when resolution is unresolved with at least two candidates; empty otherwise. |
-| `provider-type` | Provider that produced the resolved spec: apim, api-center, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings. |
+| `provider-type` | Provider that produced the resolved spec: apim, api-center, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, function-bindings, or runtime-declared. |
 | `spec-format` | Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, or graphql-sdl. |
 | `contract-origin` | Compatibility output; always empty in v1. |
 | `contract-metadata-path` | Compatibility output; always empty in v1. |

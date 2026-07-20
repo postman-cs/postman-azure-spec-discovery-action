@@ -37,6 +37,8 @@ export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sou
       return 'service-bus-topic';
     case 'function-bindings':
       return 'function-bindings-trigger';
+    case 'runtime-declared':
+      return 'runtime-declared-spec';
   }
 }
 

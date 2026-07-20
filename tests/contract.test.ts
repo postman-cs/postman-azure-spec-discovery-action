@@ -51,7 +51,13 @@ const LOCKED_INPUT_ORDER = [
   'api-center-definition-id',
   'output-dir',
   'postman-api-key',
-  'postman-access-token'
+  'postman-access-token',
+  'enable-logic-apps-list-swagger',
+  'require-logic-apps-native-swagger',
+  'enable-app-service-scm-spec-fetch',
+  'enable-functions-openapi-extension',
+  'enable-runtime-declared-spec-routes',
+  'runtime-declared-spec-targets-json'
 ];
 
 describe('action contract', () => {

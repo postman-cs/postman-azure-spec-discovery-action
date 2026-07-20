@@ -7,8 +7,10 @@ import { resolveActionVersion } from './action-version.js';
 import {
   ApimSdkClient,
   AppServiceSdkClient,
+  AppServiceRuntimeSdkClient,
   CustomApisSdkClient,
   LogicWorkflowsSdkClient,
+  LogicAppsNativeSdkClient,
   createAzureCredential,
   ResourceGraphSdkClient,
   SubscriptionsSdkClient,
@@ -84,7 +86,13 @@ const CLI_INPUT_NAMES = [
   'request-timeout-ms',
   'max-attempts',
   'postman-api-key',
-  'postman-access-token'
+  'postman-access-token',
+  'enable-logic-apps-list-swagger',
+  'require-logic-apps-native-swagger',
+  'enable-app-service-scm-spec-fetch',
+  'enable-functions-openapi-extension',
+  'enable-runtime-declared-spec-routes',
+  'runtime-declared-spec-targets-json'
 ] as const;
 
 const META_OPTIONS = new Set(['result-json', 'dotenv-path', 'help', 'version']);
@@ -301,6 +309,8 @@ export async function runCli(
             createApiCenterClient: (subscriptionId) => new ApiCenterSdkClient(credential!, subscriptionId, sdkOptions),
             createCustomApisClient: (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions),
             createLogicWorkflowsClient: (subscriptionId) => new LogicWorkflowsSdkClient(credential!, subscriptionId, sdkOptions),
+            createLogicAppsNativeClient: (subscriptionId) => new LogicAppsNativeSdkClient(credential!, subscriptionId, sdkOptions),
+            createAppServiceRuntimeClient: (subscriptionId) => new AppServiceRuntimeSdkClient(credential!, subscriptionId, sdkOptions),
             createTemplateSpecsClient: (subscriptionId) => new TemplateSpecsSdkClient(credential!, subscriptionId, sdkOptions),
             createEventGridClient: (subscriptionId) => new EventGridSdkClient(credential!, subscriptionId, sdkOptions),
             createServiceBusClient: (subscriptionId) => new ServiceBusSdkClient(credential!, subscriptionId, sdkOptions),

@@ -809,6 +809,112 @@
       "unsupportedReason": null
     },
     {
+      "id": "repo.spec.native-formats-r3",
+      "provider": "repo",
+      "route": "bounded-content-detected-local-native-specs",
+      "implementationFiles": [
+        "src/lib/repo/discovery.ts",
+        "src/lib/repo/specs.ts",
+        "src/lib/repo/scan.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-yaml",
+        "openapi-json",
+        "asyncapi-yaml",
+        "asyncapi-json",
+        "wsdl",
+        "wadl",
+        "xsd",
+        "protobuf",
+        "graphql-sdl"
+      ],
+      "requiredCapability": "none (local filesystem)",
+      "positiveTests": ["tests/repo-discovery-r3.test.ts"],
+      "negativeTests": ["tests/repo-discovery-r3.test.ts"],
+      "securityTests": ["tests/repo-discovery-r3.test.ts"],
+      "paginationTests": [],
+      "validationState": "local-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "logic-apps.native-list-swagger-r4",
+      "provider": "logic-apps",
+      "route": "opt-in-consumption-list-swagger",
+      "implementationFiles": [
+        "src/lib/providers/logic-apps.ts",
+        "src/lib/azure/logic-apps-native-client.ts"
+      ],
+      "contractClass": "reconstructed",
+      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "requiredCapability": "Microsoft.Logic/workflows/triggers/listSwagger/action",
+      "positiveTests": ["tests/logic-apps-native-r4.test.ts"],
+      "negativeTests": ["tests/logic-apps-native-r4.test.ts"],
+      "securityTests": ["tests/logic-apps-native-r4.test.ts"],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "app-service.documented-scm-spec-r4",
+      "provider": "app-service",
+      "route": "opt-in-apispecpath-scm-vfs",
+      "implementationFiles": [
+        "src/lib/providers/app-service.ts",
+        "src/lib/azure/app-service-runtime-client.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "requiredCapability": "documented App Service SCM/VFS access",
+      "positiveTests": ["tests/app-service-r4.test.ts"],
+      "negativeTests": ["tests/app-service-r4.test.ts"],
+      "securityTests": ["tests/app-service-r4.test.ts"],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "function-bindings.openapi-extension-r4",
+      "provider": "function-bindings",
+      "route": "opt-in-evidenced-openapi-extension",
+      "implementationFiles": [
+        "src/lib/providers/function-bindings.ts",
+        "src/lib/azure/functions-openapi.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "requiredCapability": "documented Functions OpenAPI extension route",
+      "positiveTests": ["tests/functions-openapi-r4.test.ts"],
+      "negativeTests": ["tests/functions-openapi-r4.test.ts"],
+      "securityTests": ["tests/functions-openapi-r4.test.ts"],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "runtime-declared.explicit-https-r4",
+      "provider": "runtime-declared",
+      "route": "opt-in-explicit-https-target",
+      "implementationFiles": [
+        "src/lib/providers/runtime-declared-routes.ts",
+        "src/lib/fetch/spec-fetcher.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "requiredCapability": "explicit named runtime target",
+      "positiveTests": ["tests/runtime-declared-r4.test.ts"],
+      "negativeTests": ["tests/runtime-declared-r4.test.ts"],
+      "securityTests": ["tests/runtime-declared-r4.test.ts"],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
       "id": "platform.sovereign-cloud",
       "provider": "platform",
       "route": "sovereign-cloud-arm-endpoints",
