@@ -33,7 +33,7 @@ No IDs, UUIDs, hosts, URLs, names, paths, SAS, tokens, request IDs, or spec bodi
 
 ## Live Azure surfaces
 
-Latest committed run: 31 cases, 22 passed, 0 failed, 8 requires-capability, 1 local-only. ADO pipeline 157 run 2714 tested immutable commit `aa3458b` on 2026-07-20 in 7m09s and retained the persistent paid stack.
+Latest committed run: 31 cases, 22 passed, 0 failed, 8 requires-capability, 1 local-only. ADO pipeline 157 run 2717 tested immutable commit `03dfff4` on 2026-07-20 in 8m10s and retained the persistent paid stack.
 
 The eight non-pass Azure lanes are explicit facts, not hidden failures: API Center provider registration was absent (four cases), the Consumption APIM SKU rejected WebSocket inventory, `Microsoft.Web/customApis` returned an internal capability error, Service Bus Standard remained cost-guarded, and no Functions OpenAPI extension was installed. The compiled CLI local-format matrix is `local-only` by design.
 
