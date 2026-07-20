@@ -223,6 +223,45 @@ describe('live validation control flow', () => {
     expect(commands.some((args) => args[0] === 'resource' && args[1] === 'delete')).toBe(false);
   });
 
+  it('AZ-LIVE-002: verified shared-group deletes are asynchronous before the bounded absence audit', async () => {
+    const commands: string[][] = [];
+    const runner = (_command: string, args: string[]) => {
+      commands.push(args);
+      if (args[0] === 'resource' && args[1] === 'show') {
+        return JSON.stringify({
+          name: 'apim-1',
+          type: 'Microsoft.ApiManagement/service',
+          id: '/subscriptions/sub-1/resourceGroups/CSE-Azure-Team/providers/Microsoft.ApiManagement/service/apim-1',
+          tags: { 'postman:run-marker': 'run-1' }
+        });
+      }
+      if (args[0] === 'resource' && args[1] === 'delete') return '';
+      if (args[0] === 'resource' && args[1] === 'list') return '[]';
+      if (args[0] === 'graph') return JSON.stringify({ data: [] });
+      throw new Error(`unexpected command ${args.join(' ')}`);
+    };
+
+    await teardownSharedGroupResources({
+      runner,
+      log: () => undefined,
+      manifest: {
+        resourceGroup: 'CSE-Azure-Team',
+        runMarker: 'run-1',
+        apimName: 'apim-1'
+      },
+      subscriptionId: 'sub-1'
+    });
+
+    expect(commands).toContainEqual([
+      'resource',
+      'delete',
+      '--ids',
+      '/subscriptions/sub-1/resourceGroups/CSE-Azure-Team/providers/Microsoft.ApiManagement/service/apim-1',
+      '--no-wait'
+    ]);
+    expect(commands.some((args) => args[0] === 'resource' && args[1] === 'list')).toBe(true);
+  });
+
   it('AZ-LIVE-002: evidence construction sanitizes case results down to schema v2', () => {
     const resolution = {
       status: 'resolved',
