@@ -1041,7 +1041,7 @@ export async function teardownSharedGroupResources({
           // Child resources commonly have no tags; their exact ARM identity plus a
           // fully verified run-marked root parent is the deletion authority.
           log(`Deleting run-marked ${resource.type} ${nestedName}`);
-          az(runner, ['resource', 'delete', '--ids', show.id]);
+          az(runner, ['resource', 'delete', '--ids', show.id, '--no-wait']);
         } else {
           log(`REFUSING nested deletion: identity or parent marker mismatch for ${nestedName}`);
         }
@@ -1068,7 +1068,7 @@ export async function teardownSharedGroupResources({
         })
       ) {
         log(`Deleting run-marked ${resource.type} ${name} from shared group ${resourceGroup}`);
-        az(runner, ['resource', 'delete', '--ids', resourceShow.id]);
+        az(runner, ['resource', 'delete', '--ids', resourceShow.id, '--no-wait']);
       } else {
         log(`REFUSING deletion: ${name} failed the run-marker/resource identity check.`);
       }
