@@ -843,7 +843,7 @@ export async function provisionOptionalApimApis({
           displayName: 'Payments WebSocket API',
           path: 'payments-websocket',
           protocols: ['wss'],
-          apiType: 'websocket'
+          type: 'websocket'
         }
       }
     },
@@ -917,6 +917,7 @@ export async function provisionCustomConnectorBounded({
     return;
   }
 
+  let connectorLocation = location;
   try {
     const existing = await azJsonAsync(
       asyncRunner,
@@ -932,6 +933,7 @@ export async function provisionCustomConnectorBounded({
       ],
       { timeout: CUSTOM_CONNECTOR_TIMEOUT_MS }
     );
+    connectorLocation = String(existing?.location || location);
     if (existing?.tags?.[RESOURCE_RUN_MARKER_TAG] === manifest.runMarker) {
       capabilities['custom-connector'] = { ok: true };
       recordManifestResource(manifest, { type: 'Microsoft.Web/customApis', name: manifest.customConnectorName });
@@ -948,7 +950,7 @@ export async function provisionCustomConnectorBounded({
     `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
     `/providers/Microsoft.Web/customApis/${manifest.customConnectorName}?api-version=2016-06-01`;
   const body = {
-    location,
+    location: connectorLocation,
     tags: {
       [RESOURCE_RUN_MARKER_TAG]: manifest.runMarker,
       'postman:project-name': 'payments-connector'
@@ -1609,6 +1611,7 @@ async function runDefaultCases({
   });
 
   defineCase('apim-discovery', async (workspace) => {
+    await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'payments-live' });
     const result = runCli(
       runner,
       cliPath,
@@ -1667,6 +1670,8 @@ async function runDefaultCases({
         subscriptionId,
         '--resource-group',
         manifest.resourceGroup,
+        '--api-filter',
+        `${manifest.apimName}/apis/payments-live$`,
         '--repo-root',
         workspace,
         '--result-json',
@@ -1892,6 +1897,7 @@ async function runDefaultCases({
   defineCase('apim-version-set', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
+    await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'payments-live' });
     const result = runCli(
       runner,
       cliPath,
@@ -1904,6 +1910,8 @@ async function runDefaultCases({
         'payments-live',
         '--api-version',
         'v1',
+        '--api-filter',
+        `${manifest.apimName}/apis/payments-live$`,
         '--repo-root',
         workspace,
         '--result-json',
@@ -1921,6 +1929,7 @@ async function runDefaultCases({
   defineCase('apim-soap-wsdl', async (workspace) => {
     const gated = capabilityGate('apim-soap');
     if (gated) return gated;
+    await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'payments-soap' });
     const result = runCli(
       runner,
       cliPath,
@@ -1932,7 +1941,7 @@ async function runDefaultCases({
         '--expected-service-name',
         'Payments SOAP API',
         '--api-filter',
-        'payments-soap',
+        `${manifest.apimName}/apis/payments-soap$`,
         '--repo-root',
         workspace,
         '--result-json',
@@ -1946,6 +1955,7 @@ async function runDefaultCases({
   defineCase('apim-graphql-sdl', async (workspace) => {
     const gated = capabilityGate('apim-graphql');
     if (gated) return gated;
+    await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'payments-graphql' });
     const result = runCli(
       runner,
       cliPath,
@@ -1957,7 +1967,7 @@ async function runDefaultCases({
         '--expected-service-name',
         'Payments GraphQL API',
         '--api-filter',
-        'payments-graphql',
+        `${manifest.apimName}/apis/payments-graphql$`,
         '--repo-root',
         workspace,
         '--result-json',
@@ -2089,6 +2099,8 @@ async function runDefaultCases({
         manifest.resourceGroup,
         '--expected-service-name',
         'payments-logic',
+        '--api-filter',
+        manifest.logicAppName,
         '--enable-logic-apps-list-swagger',
         'true',
         '--require-logic-apps-native-swagger',
@@ -2134,6 +2146,8 @@ async function runDefaultCases({
         manifest.resourceGroup,
         '--expected-service-name',
         'payments-logic',
+        '--api-filter',
+        manifest.logicAppName,
         '--enable-logic-apps-list-swagger',
         'false',
         '--repo-root',
@@ -2163,6 +2177,8 @@ async function runDefaultCases({
         manifest.resourceGroup,
         '--expected-service-name',
         'payments-connector',
+        '--api-filter',
+        manifest.customConnectorName,
         '--repo-root',
         workspace,
         '--result-json',
@@ -2186,6 +2202,8 @@ async function runDefaultCases({
         manifest.resourceGroup,
         '--expected-service-name',
         'payments-templatespec',
+        '--api-filter',
+        manifest.templateSpecName,
         '--repo-root',
         workspace,
         '--result-json',
@@ -2209,6 +2227,8 @@ async function runDefaultCases({
         manifest.resourceGroup,
         '--expected-service-name',
         'payments-eventgrid',
+        '--api-filter',
+        manifest.eventGridTopicName,
         '--repo-root',
         workspace,
         '--result-json',
@@ -2321,7 +2341,9 @@ async function runDefaultCases({
         JSON.stringify({
           properties: {
             apiDefinition: { url: null },
-            aiIntegration: { ApiSpecPath: '/home/site/wwwroot/openapi.json' }
+            metadata: [
+              { name: 'ApiSpecPath', value: '/home/site/wwwroot/openapi.json' }
+            ]
           }
         })
       ]);

@@ -1417,7 +1417,12 @@ function enrichCandidatesFromGraph(
 
 function applyApiFilter(candidates: SpecCandidate[], apiFilter: RegExp | undefined): SpecCandidate[] {
   if (!apiFilter) return candidates;
-  return candidates.filter((candidate) => apiFilter.test(candidate.name) || apiFilter.test(candidate.id.split('/').pop() ?? candidate.id));
+  return candidates.filter(
+    (candidate) =>
+      apiFilter.test(candidate.name) ||
+      apiFilter.test(candidate.id) ||
+      apiFilter.test(candidate.id.split('/').pop() ?? candidate.id)
+  );
 }
 
 /**
@@ -2209,6 +2214,11 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         workingBest.evidence = [...workingBest.evidence, ...narrowing.evidence];
       }
     }
+    workingRanked.sort(
+      (left, right) =>
+        right.confidence - left.confidence ||
+        (left.resourceId < right.resourceId ? -1 : left.resourceId > right.resourceId ? 1 : 0)
+    );
     // Hydration changed support/identity or preserved same-rank ambiguity → fail closed.
     const hydratedTopConfidence = workingRanked[0]?.confidence;
     const hydratedTies =
