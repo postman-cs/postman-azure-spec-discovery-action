@@ -27,11 +27,11 @@ Every provider and output must declare one of these classes. Association metadat
 
 ## Current Evidence
 
-Verified on 2026-07-20 at `99c42c5`:
+Verified on 2026-07-20 at `aa3458b`:
 
-- `npm test`: 51 files and 504 tests passed.
+- `npm test`: 53 files and 532 tests passed.
 - `npm run typecheck`, `npm run lint`, `npm run build`, `npm run verify:coverage`, and committed-bundle verification passed.
-- ADO pipeline 157 run 2712 tested compiled `dist/cli.cjs` against the paid Postman Azure subscription in 7m29s: 31 cases, 22 passed, 0 failed, 8 capability-gated, 1 local-only. Persistent stack `c5e1feed` remains running.
+- ADO pipeline 157 run 2714 tested compiled `dist/cli.cjs` against the paid Postman Azure subscription in 7m09s: 31 cases, 22 passed, 0 failed, 8 capability-gated, 1 local-only. Persistent stack `c5e1feed` remains running.
 - Live passes cover clean-repository APIM host/path and tag resolution, current/historical revisions, version sets, SOAP/WSDL, GraphQL SDL, explicit unsupported gRPC/OData outcomes, native and Reader Logic Apps routes, Template Specs, Event Grid, public App Service specs, and built-in MCP `ApiSpecPath` through correlated Kudu VFS.
 - Capability outcomes are explicit: WebSocket is unavailable on the live Consumption SKU; Custom APIs returns an Azure internal capability error; Service Bus Standard remains cost-guarded; no Functions OpenAPI extension is installed.
 - API Center source, 200/202 export/LRO, pagination, Retry-After, permission, native-format, exact-selection, and ambiguity tests are implemented. Live provisioning is blocked because the only service connection lacks subscription action `Microsoft.ApiCenter/register/action` (ADO run 2713). A subscription owner must register `Microsoft.ApiCenter`; the product and default harness never auto-register providers.

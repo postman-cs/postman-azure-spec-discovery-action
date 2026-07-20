@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "suiteVersion": "r8-pos-396-v1",
-  "testedCommitHashPrefix": "99c42c5",
+  "testedCommitHashPrefix": "aa3458b",
   "capturedAt": "2026-07-20",
   "cases": 31,
   "passed": 22,
@@ -17,7 +17,7 @@
       "sourceType": "apim-export",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 13798
+      "durationMs": 21253
     },
     {
       "id": "apim-discovery",
@@ -27,7 +27,7 @@
       "sourceType": "apim-export",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 86135
+      "durationMs": 63038
     },
     {
       "id": "app-service-api-definition",
@@ -37,7 +37,7 @@
       "sourceType": "app-service-api-definition",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 72682
+      "durationMs": 36612
     },
     {
       "id": "discover-many",
@@ -47,7 +47,7 @@
       "sourceType": "discover-many",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 27688
+      "durationMs": 50120
     },
     {
       "id": "iac-single",
@@ -57,7 +57,7 @@
       "sourceType": "iac-embedded",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 86431
+      "durationMs": 63328
     },
     {
       "id": "ambiguity",
@@ -67,7 +67,7 @@
       "sourceType": "manual-review",
       "specFormat": "",
       "contractClass": "association-only",
-      "durationMs": 13847
+      "durationMs": 21394
     },
     {
       "id": "apim-clean-repo-tag",
@@ -77,7 +77,7 @@
       "sourceType": "apim-export",
       "specFormat": "openapi-json",
       "contractClass": "association-only",
-      "durationMs": 13564
+      "durationMs": 35405
     },
     {
       "id": "apim-clean-repo-fox-pair",
@@ -87,7 +87,7 @@
       "sourceType": "apim-export",
       "specFormat": "openapi-json",
       "contractClass": "association-only",
-      "durationMs": 39489
+      "durationMs": 49138
     },
     {
       "id": "apim-gateway-host-path",
@@ -97,7 +97,7 @@
       "sourceType": "apim-export",
       "specFormat": "openapi-json",
       "contractClass": "association-only",
-      "durationMs": 26862
+      "durationMs": 20814
     },
     {
       "id": "apim-host-only-ambiguity",
@@ -107,7 +107,7 @@
       "sourceType": "manual-review",
       "specFormat": "",
       "contractClass": "association-only",
-      "durationMs": 25290
+      "durationMs": 28036
     },
     {
       "id": "apim-version-revision-ambiguity",
@@ -117,7 +117,7 @@
       "sourceType": "manual-review",
       "specFormat": "",
       "contractClass": "association-only",
-      "durationMs": 39313
+      "durationMs": 42941
     },
     {
       "id": "apim-explicit-historical-revision",
@@ -127,7 +127,7 @@
       "sourceType": "apim-export",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 13241
+      "durationMs": 13752
     },
     {
       "id": "apim-version-set",
@@ -137,7 +137,7 @@
       "sourceType": "apim-export",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 26573
+      "durationMs": 42368
     },
     {
       "id": "apim-soap-wsdl",
@@ -147,7 +147,7 @@
       "sourceType": "apim-export",
       "specFormat": "wsdl",
       "contractClass": "authoritative",
-      "durationMs": 26241
+      "durationMs": 55937
     },
     {
       "id": "apim-graphql-sdl",
@@ -157,7 +157,7 @@
       "sourceType": "apim-export",
       "specFormat": "graphql-sdl",
       "contractClass": "authoritative",
-      "durationMs": 39534
+      "durationMs": 13247
     },
     {
       "id": "apim-unsupported-websocket",
@@ -168,7 +168,7 @@
       "specFormat": "",
       "contractClass": "unsupported",
       "reasonCode": "sku-unsupported",
-      "durationMs": 12909
+      "durationMs": 1
     },
     {
       "id": "apim-unsupported-grpc",
@@ -178,7 +178,7 @@
       "sourceType": "manual-review",
       "specFormat": "",
       "contractClass": "unsupported",
-      "durationMs": 12993
+      "durationMs": 14233
     },
     {
       "id": "apim-unsupported-odata",
@@ -188,7 +188,7 @@
       "sourceType": "manual-review",
       "specFormat": "",
       "contractClass": "unsupported",
-      "durationMs": 13435
+      "durationMs": 27402
     },
     {
       "id": "api-center-openapi-export",
@@ -210,7 +210,7 @@
       "specFormat": "graphql-sdl",
       "contractClass": "authoritative",
       "reasonCode": "provider-not-registered",
-      "durationMs": 1
+      "durationMs": 0
     },
     {
       "id": "api-center-exact-binding",
@@ -221,7 +221,7 @@
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
       "reasonCode": "provider-not-registered",
-      "durationMs": 1
+      "durationMs": 0
     },
     {
       "id": "api-center-ambiguity",
@@ -232,7 +232,7 @@
       "specFormat": "",
       "contractClass": "association-only",
       "reasonCode": "provider-not-registered",
-      "durationMs": 0
+      "durationMs": 14994
     },
     {
       "id": "logic-apps-list-swagger",
@@ -242,7 +242,7 @@
       "sourceType": "logic-apps-workflow",
       "specFormat": "openapi-json",
       "contractClass": "reconstructed",
-      "durationMs": 14651
+      "durationMs": 14993
     },
     {
       "id": "logic-apps-reader-synthesis",
@@ -252,7 +252,7 @@
       "sourceType": "logic-apps-workflow",
       "specFormat": "openapi-json",
       "contractClass": "partial",
-      "durationMs": 21096
+      "durationMs": 15173
     },
     {
       "id": "custom-apis-inline-swagger",
@@ -263,7 +263,7 @@
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
       "reasonCode": "capability-absent",
-      "durationMs": 21097
+      "durationMs": 15173
     },
     {
       "id": "template-specs-embedded-apim",
@@ -273,7 +273,7 @@
       "sourceType": "template-spec-embedded",
       "specFormat": "openapi-json",
       "contractClass": "partial",
-      "durationMs": 35188
+      "durationMs": 16674
     },
     {
       "id": "event-grid-webhook-partial",
@@ -283,7 +283,7 @@
       "sourceType": "event-grid-webhook",
       "specFormat": "openapi-json",
       "contractClass": "partial",
-      "durationMs": 13316
+      "durationMs": 30869
     },
     {
       "id": "service-bus-topic-partial",
@@ -294,7 +294,7 @@
       "specFormat": "openapi-json",
       "contractClass": "partial",
       "reasonCode": "cost-guard-blocked",
-      "durationMs": 0
+      "durationMs": 30869
     },
     {
       "id": "function-bindings-openapi-extension",
@@ -305,7 +305,7 @@
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
       "reasonCode": "capability-absent",
-      "durationMs": 0
+      "durationMs": 1
     },
     {
       "id": "app-service-apispecpath-runtime",
@@ -315,7 +315,7 @@
       "sourceType": "app-service-api-definition",
       "specFormat": "openapi-json",
       "contractClass": "authoritative",
-      "durationMs": 65487
+      "durationMs": 74195
     },
     {
       "id": "local-r3-format-parser-matrix",
@@ -326,29 +326,29 @@
       "specFormat": "",
       "contractClass": "authoritative",
       "reasonCode": "local-only-matrix",
-      "durationMs": 351
+      "durationMs": 74538
     }
   ],
   "phases": [
     {
       "name": "live-stack-deploy",
-      "durationMs": 1335
+      "durationMs": 1091
     },
     {
       "name": "parallel-provision",
-      "durationMs": 7265
+      "durationMs": 6156
     },
     {
       "name": "apim-export-ready",
-      "durationMs": 1581
+      "durationMs": 1402
     },
     {
       "name": "extended-stack",
-      "durationMs": 5717
+      "durationMs": 4788
     },
     {
       "name": "case-matrix",
-      "durationMs": 373447
+      "durationMs": 358111
     }
   ]
 }
