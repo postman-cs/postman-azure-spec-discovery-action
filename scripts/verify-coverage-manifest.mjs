@@ -250,11 +250,22 @@ export function verifyCoverageManifest(input) {
     return { ok: false, errors };
   }
 
+  // Evidence schema 1 (legacy) or 2 (R8). Only status=pass backs live claims.
+  // requires-capability / local-only / fail never promote validationState=live.
+  if (evidence.schemaVersion !== 1 && evidence.schemaVersion !== 2) {
+    errors.push(`live evidence schemaVersion must be 1 or 2, found ${JSON.stringify(evidence.schemaVersion)}`);
+  }
+
   const evidenceResults = Array.isArray(evidence.results) ? evidence.results : [];
   const passingEvidence = new Set(
     evidenceResults
-      .filter((row) => row && typeof row === 'object' && row.status === 'pass' && isNonEmptyString(row.name))
-      .map((row) => row.name)
+      .filter((row) => row && typeof row === 'object' && row.status === 'pass')
+      .map((row) => {
+        if (isNonEmptyString(row.name)) return row.name;
+        if (isNonEmptyString(row.id)) return row.id;
+        return '';
+      })
+      .filter((name) => name.length > 0)
   );
 
   const routes = Array.isArray(manifest.routes) ? manifest.routes : null;
@@ -334,6 +345,11 @@ export function verifyCoverageManifest(input) {
       errors.push(`route ${label}: unsupportedReason must be null/empty unless the row is unsupported`);
     }
 
+    const plannedLiveEvidenceCase =
+      typeof route.plannedLiveEvidenceCase === 'string'
+        ? route.plannedLiveEvidenceCase.trim()
+        : route.plannedLiveEvidenceCase;
+
     if (validationState === 'live') {
       if (!isNonEmptyString(liveEvidenceCase)) {
         errors.push(`route ${label}: liveEvidenceCase is required when validationState is live`);
@@ -346,6 +362,15 @@ export function verifyCoverageManifest(input) {
       errors.push(
         `route ${label}: liveEvidenceCase is only allowed when validationState is live (found ${JSON.stringify(liveEvidenceCase)})`
       );
+    }
+
+    // plannedLiveEvidenceCase maps harness case ids while status stays unit-only.
+    if (plannedLiveEvidenceCase !== null && plannedLiveEvidenceCase !== undefined && plannedLiveEvidenceCase !== '') {
+      if (!isNonEmptyString(plannedLiveEvidenceCase)) {
+        errors.push(`route ${label}: plannedLiveEvidenceCase must be a non-empty string when set`);
+      } else if (validationState === 'live') {
+        errors.push(`route ${label}: plannedLiveEvidenceCase is not used when validationState is live (use liveEvidenceCase)`);
+      }
     }
 
     if (Array.isArray(route.implementationFiles)) {

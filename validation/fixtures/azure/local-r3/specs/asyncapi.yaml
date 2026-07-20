@@ -1,0 +1,10 @@
+asyncapi: 2.6.0
+info:
+  title: Local R3 Events
+  version: 1.0.0
+channels:
+  health/tick:
+    subscribe:
+      message:
+        payload:
+          type: object
