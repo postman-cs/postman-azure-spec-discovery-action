@@ -4,26 +4,15 @@
  * same KQL with each returned $skipToken; narrowing tiers never add queries.
  */
 
+import { registeredResourceGraphTypes } from '../providers/registry.js';
+
 /** Escape a value for embedding inside a single-quoted KQL string literal. */
 export function escapeKqlString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-const CANDIDATE_TYPES = [
-  'microsoft.apimanagement/service/apis',
-  'microsoft.apimanagement/service/workspaces/apis',
-  'microsoft.web/sites',
-  'microsoft.web/customapis',
-  'microsoft.logic/workflows',
-  'microsoft.resources/templatespecs/versions',
-  'microsoft.eventgrid/topics',
-  'microsoft.eventgrid/domains',
-  'microsoft.eventgrid/systemtopics',
-  'microsoft.servicebus/namespaces/topics'
-];
-
 export function buildCandidateQuery(resourceGroup?: string): string {
-  const typeFilter = CANDIDATE_TYPES.map((type) => `'${type}'`).join(', ');
+  const typeFilter = registeredResourceGraphTypes().map((type) => `'${type}'`).join(', ');
   const lines = [
     'Resources',
     `| where type in~ (${typeFilter})`

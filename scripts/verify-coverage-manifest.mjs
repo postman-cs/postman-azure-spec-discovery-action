@@ -27,6 +27,65 @@ export const ADVERTISED_PROVIDERS = Object.freeze([
   'iac-local'
 ]);
 
+/**
+ * Compare provider registration rows (from src/lib/providers/registry.ts) to
+ * coverage manifest routes. Invoked from Vitest; the CLI path still validates
+ * advertisedProviders against docs + routes.
+ *
+ * @param {{
+ *   registrations: Array<{
+ *     providerType: string,
+ *     defaultContractClass: string,
+ *     nativeFormats: string[],
+ *     requiredCapability: string
+ *   }>,
+ *   manifest: { routes?: unknown }
+ * }} input
+ * @returns {{ ok: boolean, errors: string[] }}
+ */
+export function verifyProviderRegistrationsAgainstManifest(input) {
+  const errors = [];
+  const routes = Array.isArray(input.manifest?.routes) ? input.manifest.routes : null;
+  if (!routes) {
+    return { ok: false, errors: ['manifest.routes must be an array'] };
+  }
+  const registrations = Array.isArray(input.registrations) ? input.registrations : [];
+  const advertised = registrations.filter((row) => row && row.providerType !== 'runtime-declared');
+  for (const expected of ADVERTISED_PROVIDERS) {
+    if (!advertised.some((row) => row.providerType === expected)) {
+      errors.push(`registration missing advertised provider ${expected}`);
+    }
+  }
+  for (const registration of advertised) {
+    const provider = registration.providerType;
+    const providerRoutes = routes.filter((route) => route && route.provider === provider);
+    if (providerRoutes.length === 0) {
+      errors.push(`registration ${provider}: no coverage routes`);
+      continue;
+    }
+    if (!providerRoutes.some((route) => route.contractClass === registration.defaultContractClass)) {
+      errors.push(
+        `registration ${provider}: defaultContractClass ${JSON.stringify(registration.defaultContractClass)} missing from coverage rows`
+      );
+    }
+    if (!providerRoutes.some((route) => route.requiredCapability === registration.requiredCapability)) {
+      errors.push(
+        `registration ${provider}: requiredCapability ${JSON.stringify(registration.requiredCapability)} missing from coverage rows`
+      );
+    }
+    const formats = new Set(
+      providerRoutes.flatMap((route) => (Array.isArray(route.nativeFormats) ? route.nativeFormats : []))
+    );
+    if (
+      !Array.isArray(registration.nativeFormats) ||
+      !registration.nativeFormats.some((format) => formats.has(format))
+    ) {
+      errors.push(`registration ${provider}: nativeFormats do not intersect coverage rows`);
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 export const CONTRACT_CLASSES = Object.freeze(
   new Set(['authoritative', 'reconstructed', 'partial', 'association-only', 'unsupported'])
 );

@@ -1656,8 +1656,15 @@ export interface ServiceBusTopicSummary {
   subscriptions: ServiceBusSubscriptionSummary[];
 }
 
+export interface ServiceBusTopicHeader {
+  id: string;
+  name: string;
+}
+
 export interface AzureServiceBusClient {
   listNamespaces(resourceGroup?: string): Promise<ServiceBusNamespaceSummary[]>;
+  /** Topic identifiers only — no subscription/rule fan-out. */
+  listTopicHeaders(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicHeader[]>;
   listTopics(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicSummary[]>;
   probeServiceBusReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
@@ -1722,26 +1729,35 @@ export class ServiceBusSdkClient implements AzureServiceBusClient {
     return summaries;
   }
 
-  public async listTopics(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicSummary[]> {
+  public async listTopicHeaders(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicHeader[]> {
     const topics = await collectBounded(
       this.client.topics.listByNamespace(resourceGroup, namespaceName),
       'Service Bus topic list'
     );
-    const summaries: ServiceBusTopicSummary[] = [];
+    const headers: ServiceBusTopicHeader[] = [];
     for (const topic of topics) {
       const id = topic.id ?? '';
       const name = topic.name ?? '';
       if (!id || !name) continue;
+      headers.push({ id, name });
+    }
+    return headers;
+  }
+
+  public async listTopics(resourceGroup: string, namespaceName: string): Promise<ServiceBusTopicSummary[]> {
+    const topics = await this.listTopicHeaders(resourceGroup, namespaceName);
+    const summaries: ServiceBusTopicSummary[] = [];
+    for (const topic of topics) {
       const subscriptions = await collectBounded(
-        this.client.subscriptions.listByTopic(resourceGroup, namespaceName, name),
-        `Service Bus topic ${name} subscription list`
+        this.client.subscriptions.listByTopic(resourceGroup, namespaceName, topic.name),
+        `Service Bus topic ${topic.name} subscription list`
       );
       const subscriptionSummaries: ServiceBusSubscriptionSummary[] = [];
       for (const subscription of subscriptions) {
         const subscriptionName = subscription.name ?? '';
         if (!subscriptionName) continue;
         const rules = await collectBounded(
-          this.client.rules.listBySubscriptions(resourceGroup, namespaceName, name, subscriptionName),
+          this.client.rules.listBySubscriptions(resourceGroup, namespaceName, topic.name, subscriptionName),
           `Service Bus subscription ${subscriptionName} rule list`
         );
         subscriptionSummaries.push({
@@ -1755,7 +1771,7 @@ export class ServiceBusSdkClient implements AzureServiceBusClient {
             }))
         });
       }
-      summaries.push({ id, name, subscriptions: subscriptionSummaries });
+      summaries.push({ id: topic.id, name: topic.name, subscriptions: subscriptionSummaries });
     }
     return summaries;
   }

@@ -1,7 +1,8 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureTemplateSpecsClient, DeploymentSummary } from '../azure/clients.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { listCandidatesViaHydration } from './types.js';
 
 export interface TemplateSpecsProviderOptions {
   resourceGroup?: string;
@@ -189,78 +190,106 @@ export class TemplateSpecsProvider implements SpecProvider {
     }
   }
 
-  public async listCandidates(): Promise<SpecCandidate[]> {
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
     const templateSpecs = await this.client.listTemplateSpecs(this.options.resourceGroup);
-    const deploymentsByGroup = new Map<string, DeploymentSummary[]>();
-    const candidates: SpecCandidate[] = [];
-
+    const headers: SpecCandidateHeader[] = [];
     for (const templateSpec of templateSpecs) {
       const versions = await this.client.listVersions(templateSpec.resourceGroup, templateSpec.name);
       for (const version of versions) {
-        const mainTemplate = await this.client.getVersionMainTemplate(
-          templateSpec.resourceGroup,
-          templateSpec.name,
-          version.name
-        );
-        const extraction = extractApimInlineSpecs(mainTemplate);
-        const deployedBy = await this.deploymentsReferencing(templateSpec.resourceGroup, version.id, deploymentsByGroup);
-        const deploymentEvidence = deployedBy.length > 0
-          ? [`Referenced by deployment(s): ${deployedBy.join(', ')}`]
-          : [];
-
-        const exportable = extraction.specs.filter((spec) => !spec.withheld);
-        const withheldCount = extraction.specs.length - exportable.length;
-
-        if (exportable.length === 0) {
-          candidates.push({
-            id: version.id,
-            name: `${templateSpec.name}@${version.name}`,
-            providerType: 'template-specs',
+        headers.push({
+          id: version.id,
+          name: `${templateSpec.name}@${version.name}`,
+          providerType: 'template-specs',
+          resourceGroup: templateSpec.resourceGroup,
+          tags: templateSpec.tags,
+          supported: true,
+          headerHydrated: false,
+          evidence: [
+            `Template spec ${templateSpec.name} version ${version.name} enumerated; mainTemplate detail deferred until selected`
+          ],
+          meta: {
+            templateSpecName: templateSpec.name,
+            versionName: version.name,
             resourceGroup: templateSpec.resourceGroup,
-            tags: templateSpec.tags,
-            supported: false,
-            evidence: [
-              withheldCount > 0
-                ? `Template spec ${templateSpec.name} version ${version.name} embeds ${withheldCount} APIM document(s) withheld for referencing secure parameter defaults`
-                : `Template spec ${templateSpec.name} version ${version.name} embeds no inline APIM OpenAPI document`,
-              ...deploymentEvidence
-            ],
-            meta: {
-              templateSpecName: templateSpec.name,
-              versionName: version.name,
-              resourceGroup: templateSpec.resourceGroup
-            }
-          });
-          continue;
-        }
+            hydrationPending: 'true'
+          }
+        });
+      }
+    }
+    return headers;
+  }
 
-        for (const spec of exportable) {
-          candidates.push({
-            id: `${version.id}#${spec.resourceName}`,
-            name: `${templateSpec.name}@${version.name}/${spec.resourceName}`,
-            providerType: 'template-specs',
-            resourceGroup: templateSpec.resourceGroup,
-            tags: templateSpec.tags,
-            supported: true,
-            evidence: [
-              `Template spec ${templateSpec.name} version ${version.name} embeds inline APIM OpenAPI document in resource ${spec.resourceName}`,
-              ...(withheldCount > 0
-                ? [`${withheldCount} sibling document(s) withheld for referencing secure parameter defaults`]
-                : []),
-              ...deploymentEvidence
-            ],
-            meta: {
-              templateSpecName: templateSpec.name,
-              versionName: version.name,
-              resourceGroup: templateSpec.resourceGroup,
-              resourceName: spec.resourceName,
-              inlineContent: spec.content
-            }
-          });
-        }
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    const deploymentsByGroup = new Map<string, DeploymentSummary[]>();
+    const candidates: SpecCandidate[] = [];
+    for (const header of headers) {
+      const templateSpecName = header.meta.templateSpecName ?? '';
+      const versionName = header.meta.versionName ?? '';
+      const resourceGroup = header.meta.resourceGroup ?? header.resourceGroup ?? '';
+      if (!templateSpecName || !versionName || !resourceGroup) {
+        throw new Error('Template spec header is missing resource coordinates');
+      }
+      const mainTemplate = await this.client.getVersionMainTemplate(resourceGroup, templateSpecName, versionName);
+      const extraction = extractApimInlineSpecs(mainTemplate);
+      const deployedBy = await this.deploymentsReferencing(resourceGroup, header.id, deploymentsByGroup);
+      const deploymentEvidence =
+        deployedBy.length > 0 ? [`Referenced by deployment(s): ${deployedBy.join(', ')}`] : [];
+      const exportable = extraction.specs.filter((spec) => !spec.withheld);
+      const withheldCount = extraction.specs.length - exportable.length;
+
+      if (exportable.length === 0) {
+        candidates.push({
+          id: header.id,
+          name: header.name,
+          providerType: 'template-specs',
+          resourceGroup,
+          tags: header.tags,
+          supported: false,
+          evidence: [
+            withheldCount > 0
+              ? `Template spec ${templateSpecName} version ${versionName} embeds ${withheldCount} APIM document(s) withheld for referencing secure parameter defaults`
+              : `Template spec ${templateSpecName} version ${versionName} embeds no inline APIM OpenAPI document`,
+            ...deploymentEvidence
+          ],
+          meta: {
+            templateSpecName,
+            versionName,
+            resourceGroup
+          }
+        });
+        continue;
+      }
+
+      for (const spec of exportable) {
+        candidates.push({
+          id: `${header.id}#${spec.resourceName}`,
+          name: `${templateSpecName}@${versionName}/${spec.resourceName}`,
+          providerType: 'template-specs',
+          resourceGroup,
+          tags: header.tags,
+          supported: true,
+          evidence: [
+            `Template spec ${templateSpecName} version ${versionName} embeds inline APIM OpenAPI document in resource ${spec.resourceName}`,
+            ...(withheldCount > 0
+              ? [`${withheldCount} sibling document(s) withheld for referencing secure parameter defaults`]
+              : []),
+            ...deploymentEvidence
+          ],
+          meta: {
+            templateSpecName,
+            versionName,
+            resourceGroup,
+            resourceName: spec.resourceName,
+            inlineContent: spec.content
+          }
+        });
       }
     }
     return candidates;
+  }
+
+  public listCandidates(): Promise<SpecCandidate[]> {
+    return listCandidatesViaHydration(this);
   }
 
   public async exportSpec(candidate: SpecCandidate): Promise<SpecExportResult> {

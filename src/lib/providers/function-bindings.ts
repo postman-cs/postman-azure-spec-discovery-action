@@ -3,7 +3,8 @@ import type { AzureFunctionsClient, FunctionBindingSummary, FunctionSummary } fr
 import { detectFunctionsOpenApiRoutes } from '../azure/functions-openapi.js';
 import { fetchSpecFromUrl, SpecFetchError } from '../fetch/spec-fetcher.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { listCandidatesViaHydration } from './types.js';
 
 export interface FunctionBindingsProviderOptions {
   resourceGroup?: string;
@@ -100,55 +101,91 @@ export class FunctionBindingsProvider implements SpecProvider {
     }
   }
 
-  public async listCandidates(): Promise<SpecCandidate[]> {
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
     const apps = await this.client.listFunctionApps(this.options.resourceGroup);
-    const candidates: SpecCandidate[] = [];
-    for (const app of apps) {
-      const functions = await this.client.listFunctions(app.resourceGroup, app.name);
-      // Never call key/secret surfaces — record the invariant for tests.
-      this.keyApiCallAttempts.length = 0;
-      const triggers = functions.map(triggerOf).filter((t): t is TriggerView => Boolean(t));
+    return apps.map((app) => {
       const id = `${app.id}/functions`;
-      this.functionsCache.set(id, functions);
-      const openApiRoutes =
-        this.options.enableOpenApiExtension === true
-          ? detectFunctionsOpenApiRoutes({
-              functions,
-              defaultHostName: app.defaultHostName,
-              explicitPath: this.options.explicitOpenApiPath
-            })
-          : [];
-      const supported = triggers.length > 0 || openApiRoutes.length > 0;
-      const httpCount = triggers.filter((t) => t.triggerType.toLowerCase() === 'httptrigger').length;
-      candidates.push({
+      return {
         id,
         name: app.name,
-        providerType: 'function-bindings',
+        providerType: 'function-bindings' as const,
         resourceGroup: app.resourceGroup,
         tags: app.tags,
-        supported,
+        supported: true,
+        headerHydrated: false,
         evidence: [
-          supported
-            ? `Function app ${app.name} declares ${triggers.length} trigger binding(s) (${httpCount} HTTP)`
-            : `Function app ${app.name} has no functions with trigger bindings`,
-          ...openApiRoutes.map((route) => route.evidence),
-          ...triggers
-            .filter((t) => t.triggerType.toLowerCase() !== 'httptrigger')
-            .map((t) => `Function ${t.functionName}: ${t.triggerType}${t.detail ? ` (${t.detail})` : ''}`),
+          `Function app ${app.name} enumerated; function binding detail deferred until selected`,
           'Function/host key and app-setting secret list operations were never called'
         ],
         meta: {
           resourceGroup: app.resourceGroup,
           appName: app.name,
-          triggerCount: String(triggers.length),
-          ...(app.defaultHostName ? { defaultHostName: app.defaultHostName } : {}),
-          ...(openApiRoutes[0]?.url ? { openApiUrl: openApiRoutes[0].url } : {}),
-          ...(openApiRoutes[0]?.path ? { openApiPath: openApiRoutes[0].path } : {}),
-          ...(openApiRoutes.length > 0 ? { openApiRouteCount: String(openApiRoutes.length) } : {})
+          hydrationPending: 'true',
+          ...(app.defaultHostName ? { defaultHostName: app.defaultHostName } : {})
         }
-      });
+      };
+    });
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    const out: SpecCandidate[] = [];
+    for (const header of headers) {
+      out.push(await this.hydrateCandidate(header));
     }
-    return candidates;
+    return out;
+  }
+
+  public async hydrateCandidate(header: SpecCandidateHeader): Promise<SpecCandidate> {
+    const resourceGroup = header.meta.resourceGroup ?? header.resourceGroup ?? '';
+    const appName = header.meta.appName ?? header.name;
+    if (!resourceGroup || !appName) {
+      throw new Error('Function app header is missing resource coordinates');
+    }
+    const functions = await this.client.listFunctions(resourceGroup, appName);
+    this.keyApiCallAttempts.length = 0;
+    const triggers = functions.map(triggerOf).filter((t): t is TriggerView => Boolean(t));
+    this.functionsCache.set(header.id, functions);
+    const openApiRoutes =
+      this.options.enableOpenApiExtension === true
+        ? detectFunctionsOpenApiRoutes({
+            functions,
+            defaultHostName: header.meta.defaultHostName,
+            explicitPath: this.options.explicitOpenApiPath
+          })
+        : [];
+    const supported = triggers.length > 0 || openApiRoutes.length > 0;
+    const httpCount = triggers.filter((t) => t.triggerType.toLowerCase() === 'httptrigger').length;
+    return {
+      id: header.id,
+      name: header.name,
+      providerType: 'function-bindings',
+      resourceGroup: header.resourceGroup,
+      tags: header.tags,
+      supported,
+      evidence: [
+        supported
+          ? `Function app ${appName} declares ${triggers.length} trigger binding(s) (${httpCount} HTTP)`
+          : `Function app ${appName} has no functions with trigger bindings`,
+        ...openApiRoutes.map((route) => route.evidence),
+        ...triggers
+          .filter((t) => t.triggerType.toLowerCase() !== 'httptrigger')
+          .map((t) => `Function ${t.functionName}: ${t.triggerType}${t.detail ? ` (${t.detail})` : ''}`),
+        'Function/host key and app-setting secret list operations were never called'
+      ],
+      meta: {
+        resourceGroup,
+        appName,
+        triggerCount: String(triggers.length),
+        ...(header.meta.defaultHostName ? { defaultHostName: header.meta.defaultHostName } : {}),
+        ...(openApiRoutes[0]?.url ? { openApiUrl: openApiRoutes[0].url } : {}),
+        ...(openApiRoutes[0]?.path ? { openApiPath: openApiRoutes[0].path } : {}),
+        ...(openApiRoutes.length > 0 ? { openApiRouteCount: String(openApiRoutes.length) } : {})
+      }
+    };
+  }
+
+  public listCandidates(): Promise<SpecCandidate[]> {
+    return listCandidatesViaHydration(this);
   }
 
   public async exportSpec(candidate: SpecCandidate): Promise<SpecExportResult> {

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AzureApimClient, ResourceGraphRow } from '../src/lib/azure/clients.js';
+import type { AzureApimClient, AzureFunctionsClient, ResourceGraphRow } from '../src/lib/azure/clients.js';
 import { ApimProvider } from '../src/lib/providers/apim.js';
 import {
   execute,
@@ -378,6 +378,47 @@ describe('R6 multi-scope discovery', () => {
     );
     expect(result.discovered).toHaveLength(1);
     expect(result.discovered[0]?.apiId?.toLowerCase()).toContain(SUB_B);
+  });
+
+  it('AZ-R7-018: deferred hydration routes each multi-subscription Functions header to its owning client', async () => {
+    const functionClients = new Map<string, AzureFunctionsClient>();
+    for (const subscriptionId of [SUB_A, SUB_B]) {
+      const appName = subscriptionId === SUB_A ? 'alpha-functions' : 'beta-functions';
+      functionClients.set(subscriptionId, {
+        probeFunctionsReadAccess: vi.fn(async () => undefined),
+        listFunctionApps: vi.fn(async () => [
+          {
+            id: `/subscriptions/${subscriptionId}/resourceGroups/rg/providers/Microsoft.Web/sites/${appName}`,
+            name: appName,
+            resourceGroup: 'rg',
+            tags: {},
+            defaultHostName: `${appName}.azurewebsites.net`
+          }
+        ]),
+        listFunctions: vi.fn(async (_resourceGroup, requestedAppName) => {
+          if (requestedAppName !== appName) throw new Error(`wrong subscription client for ${requestedAppName}`);
+          return [{ name: 'HttpTrigger', bindings: [{ type: 'httpTrigger', methods: ['get'] }] }];
+        })
+      });
+    }
+    const result = await execute(
+      {
+        ...resolveInputs({
+          INPUT_REPO_ROOT: repoRoot,
+          INPUT_MODE: 'discover-many',
+          INPUT_SUBSCRIPTION_IDS_JSON: JSON.stringify([SUB_A, SUB_B]),
+          INPUT_MAX_CANDIDATES: '10'
+        }),
+        repoRoot
+      },
+      baseDeps({
+        createFunctionsClient: (subscriptionId) => functionClients.get(subscriptionId)!
+      })
+    );
+    expect(result.discovered.map((service) => service.serviceName).sort()).toEqual(['alpha-functions', 'beta-functions']);
+    for (const client of functionClients.values()) {
+      expect(client.listFunctions).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('AZ-R6-011: scoped absence wording identifies counts and never claims global absence', async () => {

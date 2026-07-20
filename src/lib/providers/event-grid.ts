@@ -1,6 +1,7 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureEventGridClient, EventGridSourceSummary, EventGridSubscriptionSummary } from '../azure/clients.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { listCandidatesViaHydration } from './types.js';
 
 export interface EventGridProviderOptions {
   resourceGroup?: string;
@@ -119,42 +120,79 @@ export class EventGridProvider implements SpecProvider {
     }
   }
 
-  public async listCandidates(): Promise<SpecCandidate[]> {
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
     const sources = await this.client.listSources(this.options.resourceGroup);
-    const candidates: SpecCandidate[] = [];
-    for (const source of sources) {
-      const subscriptions = await this.client.listSubscriptions({
+    return sources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      providerType: 'event-grid' as const,
+      resourceGroup: source.resourceGroup,
+      tags: source.tags,
+      supported: true,
+      headerHydrated: false,
+      evidence: [
+        `Event Grid ${source.kind} ${source.name} enumerated; subscription detail deferred until selected`,
+        ...(source.topicType ? [`System topic type: ${source.topicType}`] : [])
+      ],
+      meta: {
         kind: source.kind,
         resourceGroup: source.resourceGroup,
-        name: source.name
-      });
-      this.subscriptionCache.set(source.id, subscriptions);
-      const webhookSubscriptions = subscriptions.filter((s) => sanitizeWebhookUrl(s.webhookBaseUrl));
-      const otherDestinations = subscriptions.filter((s) => !s.webhookBaseUrl && s.destinationKind);
-      const supported = webhookSubscriptions.length > 0;
-      candidates.push({
-        id: source.id,
-        name: source.name,
-        providerType: 'event-grid',
-        resourceGroup: source.resourceGroup,
-        tags: source.tags,
-        supported,
-        evidence: [
-          supported
-            ? `Event Grid ${source.kind} ${source.name} delivers to ${webhookSubscriptions.length} webhook subscription(s)`
-            : `Event Grid ${source.kind} ${source.name} has no webhook event subscription`,
-          ...(source.topicType ? [`System topic type: ${source.topicType}`] : []),
-          ...otherDestinations.map((s) => `Subscription ${s.name} delivers to ${s.destinationKind} (not a webhook contract)`)
-        ],
-        meta: {
-          kind: source.kind,
-          resourceGroup: source.resourceGroup,
-          sourceName: source.name,
-          webhookSubscriptionCount: String(webhookSubscriptions.length)
-        }
-      });
+        sourceName: source.name,
+        hydrationPending: 'true',
+        ...(source.topicType ? { topicType: source.topicType } : {})
+      }
+    }));
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    const out: SpecCandidate[] = [];
+    for (const header of headers) {
+      out.push(await this.hydrateCandidate(header));
     }
-    return candidates;
+    return out;
+  }
+
+  public async hydrateCandidate(header: SpecCandidateHeader): Promise<SpecCandidate> {
+    const kind = (header.meta.kind ?? 'topic') as EventGridSourceSummary['kind'];
+    const resourceGroup = header.meta.resourceGroup ?? header.resourceGroup ?? '';
+    const sourceName = header.meta.sourceName ?? header.name;
+    if (!resourceGroup || !sourceName) {
+      throw new Error('Event Grid header is missing resource coordinates');
+    }
+    const subscriptions = await this.client.listSubscriptions({ kind, resourceGroup, name: sourceName });
+    this.subscriptionCache.set(header.id, subscriptions);
+    const webhookSubscriptions = subscriptions.filter((s) => sanitizeWebhookUrl(s.webhookBaseUrl));
+    const otherDestinations = subscriptions.filter((s) => !s.webhookBaseUrl && s.destinationKind);
+    const supported = webhookSubscriptions.length > 0;
+    const topicType = header.meta.topicType;
+    return {
+      id: header.id,
+      name: header.name,
+      providerType: 'event-grid',
+      resourceGroup: header.resourceGroup,
+      tags: header.tags,
+      supported,
+      evidence: [
+        supported
+          ? `Event Grid ${kind} ${sourceName} delivers to ${webhookSubscriptions.length} webhook subscription(s)`
+          : `Event Grid ${kind} ${sourceName} has no webhook event subscription`,
+        ...(topicType ? [`System topic type: ${topicType}`] : []),
+        ...otherDestinations.map(
+          (s) => `Subscription ${s.name} delivers to ${s.destinationKind} (not a webhook contract)`
+        )
+      ],
+      meta: {
+        kind,
+        resourceGroup,
+        sourceName,
+        webhookSubscriptionCount: String(webhookSubscriptions.length),
+        ...(topicType ? { topicType } : {})
+      }
+    };
+  }
+
+  public listCandidates(): Promise<SpecCandidate[]> {
+    return listCandidatesViaHydration(this);
   }
 
   public async exportSpec(candidate: SpecCandidate): Promise<SpecExportResult> {

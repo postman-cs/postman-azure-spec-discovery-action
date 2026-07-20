@@ -1,4 +1,5 @@
 import type { ProviderType, ResolutionResult, SpecFormat } from '../../contracts.js';
+import { sourceTypeForProvider } from '../providers/registry.js';
 import type { RankedServiceCandidate } from './service-resolver.js';
 
 export interface SourceSelectionInput {
@@ -16,30 +17,7 @@ function isResolvedCandidate(candidate: RankedServiceCandidate | undefined): can
 }
 
 export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sourceType'] {
-  switch (providerType) {
-    case 'apim':
-      return 'apim-export';
-    case 'api-center':
-      return 'api-center-export';
-    case 'app-service':
-      return 'app-service-api-definition';
-    case 'iac-local':
-      return 'iac-embedded';
-    case 'custom-apis':
-      return 'custom-api-swagger';
-    case 'logic-apps':
-      return 'logic-apps-workflow';
-    case 'template-specs':
-      return 'template-spec-embedded';
-    case 'event-grid':
-      return 'event-grid-webhook';
-    case 'service-bus':
-      return 'service-bus-topic';
-    case 'function-bindings':
-      return 'function-bindings-trigger';
-    case 'runtime-declared':
-      return 'runtime-declared-spec';
-  }
+  return sourceTypeForProvider(providerType);
 }
 
 function manualReviewEvidence(input: SourceSelectionInput): string[] {

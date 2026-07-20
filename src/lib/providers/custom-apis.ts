@@ -2,7 +2,8 @@ import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureCustomApisClient } from '../azure/clients.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import { toSafePublicUrl } from './public-url.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { toSpecCandidate } from './types.js';
 
 export interface CustomApisProviderOptions {
   resourceGroup?: string;
@@ -46,6 +47,15 @@ export class CustomApisProvider implements SpecProvider {
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';
     }
+  }
+
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
+    const candidates = await this.listCandidates();
+    return candidates.map((candidate) => ({ ...candidate, headerHydrated: true }));
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    return headers.map((header) => toSpecCandidate(header));
   }
 
   public async listCandidates(): Promise<SpecCandidate[]> {

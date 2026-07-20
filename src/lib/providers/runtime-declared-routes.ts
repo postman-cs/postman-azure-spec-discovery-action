@@ -1,7 +1,8 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import { fetchSpecFromUrl, SpecFetchError } from '../fetch/spec-fetcher.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { toSpecCandidate } from './types.js';
 
 export type RuntimeDeclaredWorkloadKind =
   | 'app-service'
@@ -88,6 +89,15 @@ export class RuntimeDeclaredRoutesProvider implements SpecProvider {
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';
     }
+  }
+
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
+    const candidates = await this.listCandidates();
+    return candidates.map((candidate) => ({ ...candidate, headerHydrated: true }));
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    return headers.map((header) => toSpecCandidate(header));
   }
 
   public async listCandidates(): Promise<SpecCandidate[]> {
