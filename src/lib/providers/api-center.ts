@@ -1,7 +1,8 @@
 import type { ContractClass, ProviderProbeStatus, SpecFormat } from '../../contracts.js';
 import type { ApiCenterDefinitionSummary, AzureApiCenterClient } from '../azure/api-center-client.js';
 import { parseAndValidateNativeSpec } from '../spec/native-formats.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { toSpecCandidate } from './types.js';
 
 export interface ApiCenterProviderOptions {
   subscriptionId: string;
@@ -131,6 +132,19 @@ export class ApiCenterProvider implements SpecProvider {
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';
     }
+  }
+
+  /**
+   * Definition inventory supplies narrowing identifiers. ExportSpecification is
+   * the deferred expensive call; deployment association metadata is optional.
+   */
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
+    const candidates = await this.listCandidates();
+    return candidates.map((candidate) => ({ ...candidate, headerHydrated: true }));
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    return headers.map((header) => toSpecCandidate(header));
   }
 
   public async listCandidates(): Promise<SpecCandidate[]> {

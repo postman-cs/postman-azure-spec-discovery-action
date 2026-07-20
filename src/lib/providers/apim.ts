@@ -2,7 +2,8 @@ import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureApimClient, ApimApiSummary, ApimServiceSummary } from '../azure/clients.js';
 import { normalizeApiBasePath, normalizeHostname } from '../repo/signals.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { toSpecCandidate } from './types.js';
 
 const APIM_API_TYPES = new Set(['http', 'soap', 'graphql', 'websocket', 'grpc', 'odata']);
 const SELECT_GRADE_TAG_KEYS = new Set(['postman:repo', 'githuborg', 'githubrepo']);
@@ -100,6 +101,19 @@ export class ApimProvider implements SpecProvider {
     } catch (error) {
       return isAuthorizationError(error) ? 'skipped:iam' : 'skipped:error';
     }
+  }
+
+  /**
+   * APIM list surfaces already return API identity, tags, path, and type —
+   * treat headers as hydrated. Export remains the expensive selected call.
+   */
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
+    const candidates = await this.listCandidates();
+    return candidates.map((candidate) => ({ ...candidate, headerHydrated: true }));
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    return headers.map((header) => toSpecCandidate(header));
   }
 
   public async listCandidates(): Promise<SpecCandidate[]> {

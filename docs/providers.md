@@ -1,6 +1,14 @@
 # Provider contracts
 
-Azure spec discovery ships ten providers: `apim`, `api-center`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships ten providers: `apim`, `api-center`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, and `iac-local`. Each implements the shared `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) plus optional narrow-before-hydration methods (`listCandidateHeaders`, `hydrateCandidates`). Provider identity (source type, default contract class, native formats, required capability text, Resource Graph types, probe order, and unsupported-reason tokens) lives in one registration table (`src/lib/providers/registry.ts`). Probes are fail-soft and concurrent: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+
+## Enumeration cost and hydration
+
+- **Lightweight headers first:** Providers that previously performed N+1 detail GETs during list (Logic Apps workflow definitions, Functions bindings, Template Spec mainTemplate reads, Event Grid subscriptions, Service Bus subscription/rule fan-out, App Service runtime/SCM config) enumerate only identifiers/tags/paths needed for narrowing. Detail is deferred until a selected partition is hydrated.
+- **`resolve-one`:** Probes concurrently, enumerates headers with bounded concurrency, merges/dedupes/sorts deterministically (not by Promise completion order), runs binding/selector/repo/ARG narrowing over the full uncapped header set, then hydrates only the unique winner or the minimal same-rank tied set needed to decide. Selected hydration/export failures are fatal; unselected provider enumeration/hydration failures remain fail-soft. Evidence records enumerated/hydrated **counts per provider** (never resource IDs).
+- **`discover-many`:** Still estate-wide and explicitly bounded — headers are partitioned and capped first, then only that post-cap set is hydrated and exported.
+- **Already-complete list payloads** (APIM API list, custom connector list, IaC-local scan, runtime-declared targets, API Center definition inventory for identifier narrowing) mark headers hydrated so hydration is a no-op; export remains the expensive selected call.
+- Cost statements above describe unit-tested control-plane call shaping only; they make **no live estate cost claim**.
 
 ## Security and IAM
 

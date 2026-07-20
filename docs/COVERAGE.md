@@ -25,3 +25,5 @@ Live promotions require a new or refreshed passing case in the sanitized evidenc
 ## Verifier
 
 `npm run verify:coverage` runs `scripts/verify-coverage-manifest.mjs` (Node stdlib only). It rejects duplicate ids, missing implementation/test files, invalid class/state pairs, live rows without a passing evidence case, unsupported rows without a reason, local-only rows with remote implementation files, and advertised providers missing from the manifest.
+
+Provider registration parity: `verifyProviderRegistrationsAgainstManifest` (same script, exercised by `tests/provider-registry.test.ts`) compares `src/lib/providers/registry.ts` rows to coverage routes for default contract class, required capability text, and native-format intersection.

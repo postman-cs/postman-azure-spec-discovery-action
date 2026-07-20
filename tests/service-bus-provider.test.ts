@@ -36,12 +36,21 @@ function topicSummary(overrides: Partial<ServiceBusTopicSummary> = {}): ServiceB
 }
 
 function client(overrides: Partial<AzureServiceBusClient> = {}): AzureServiceBusClient {
-  return {
+  const defaultTopic = topicSummary();
+  const base: AzureServiceBusClient = {
     listNamespaces: vi.fn(async () => [namespaceSummary()]),
-    listTopics: vi.fn(async () => [topicSummary()]),
-    probeServiceBusReadAccess: vi.fn(async () => undefined),
-    ...overrides
+    listTopicHeaders: vi.fn(async () => [{ id: defaultTopic.id, name: defaultTopic.name }]),
+    listTopics: vi.fn(async () => [defaultTopic]),
+    probeServiceBusReadAccess: vi.fn(async () => undefined)
   };
+  const merged = { ...base, ...overrides };
+  if (overrides.listTopics && !overrides.listTopicHeaders) {
+    merged.listTopicHeaders = vi.fn(async () => {
+      const topics = await overrides.listTopics!('rg', 'orders-bus');
+      return topics.map((topic) => ({ id: topic.id, name: topic.name }));
+    });
+  }
+  return merged;
 }
 
 describe('ServiceBusProvider', () => {

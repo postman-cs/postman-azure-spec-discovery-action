@@ -1,6 +1,7 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureServiceBusClient, ServiceBusSubscriptionSummary, ServiceBusTopicSummary } from '../azure/clients.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { listCandidatesViaHydration } from './types.js';
 
 export interface ServiceBusProviderOptions {
   resourceGroup?: string;
@@ -69,42 +70,87 @@ export class ServiceBusProvider implements SpecProvider {
     }
   }
 
-  public async listCandidates(): Promise<SpecCandidate[]> {
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
     const namespaces = await this.client.listNamespaces(this.options.resourceGroup);
-    const candidates: SpecCandidate[] = [];
+    const headers: SpecCandidateHeader[] = [];
     for (const namespace of namespaces) {
-      const topics = await this.client.listTopics(namespace.resourceGroup, namespace.name);
+      const topics = await this.client.listTopicHeaders(namespace.resourceGroup, namespace.name);
       for (const topic of topics) {
-        this.topicCache.set(topic.id, topic);
-        const supported = topic.subscriptions.length > 0;
-        candidates.push({
+        headers.push({
           id: topic.id,
           name: `${namespace.name}/${topic.name}`,
           providerType: 'service-bus',
           resourceGroup: namespace.resourceGroup,
           tags: namespace.tags,
-          supported,
+          supported: true,
+          headerHydrated: false,
           evidence: [
-            supported
-              ? `Service Bus topic ${topic.name} in namespace ${namespace.name} has ${topic.subscriptions.length} subscription(s)`
-              : `Service Bus topic ${topic.name} in namespace ${namespace.name} has no subscriptions`,
-            ...topic.subscriptions.flatMap((subscription) =>
-              subscription.rules
-                .filter((rule) => rule.sqlExpression || rule.correlationSummary)
-                .map((rule) => `Subscription ${subscription.name} rule ${rule.name} filters deliveries`)
-            )
+            `Service Bus topic ${topic.name} in namespace ${namespace.name} enumerated; subscription/rule detail deferred until selected`
           ],
           meta: {
             namespaceName: namespace.name,
             topicName: topic.name,
             resourceGroup: namespace.resourceGroup,
-            subscriptionCount: String(topic.subscriptions.length),
+            hydrationPending: 'true',
             ...(namespace.serviceBusEndpoint ? { serviceBusEndpoint: namespace.serviceBusEndpoint } : {})
           }
         });
       }
     }
-    return candidates;
+    return headers;
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    const out: SpecCandidate[] = [];
+    for (const header of headers) {
+      out.push(await this.hydrateCandidate(header));
+    }
+    return out;
+  }
+
+  public async hydrateCandidate(header: SpecCandidateHeader): Promise<SpecCandidate> {
+    const namespaceName = header.meta.namespaceName ?? '';
+    const topicName = header.meta.topicName ?? '';
+    const resourceGroup = header.meta.resourceGroup ?? header.resourceGroup ?? '';
+    if (!namespaceName || !topicName || !resourceGroup) {
+      throw new Error('Service Bus header is missing resource coordinates');
+    }
+    const topics = await this.client.listTopics(resourceGroup, namespaceName);
+    const topic = topics.find((entry) => entry.id === header.id || entry.name === topicName);
+    if (!topic) {
+      throw new Error(`Service Bus topic ${topicName} was not found during hydration`);
+    }
+    this.topicCache.set(topic.id, topic);
+    const supported = topic.subscriptions.length > 0;
+    return {
+      id: header.id,
+      name: header.name,
+      providerType: 'service-bus',
+      resourceGroup,
+      tags: header.tags,
+      supported,
+      evidence: [
+        supported
+          ? `Service Bus topic ${topic.name} in namespace ${namespaceName} has ${topic.subscriptions.length} subscription(s)`
+          : `Service Bus topic ${topic.name} in namespace ${namespaceName} has no subscriptions`,
+        ...topic.subscriptions.flatMap((subscription) =>
+          subscription.rules
+            .filter((rule) => rule.sqlExpression || rule.correlationSummary)
+            .map((rule) => `Subscription ${subscription.name} rule ${rule.name} filters deliveries`)
+        )
+      ],
+      meta: {
+        namespaceName,
+        topicName,
+        resourceGroup,
+        subscriptionCount: String(topic.subscriptions.length),
+        ...(header.meta.serviceBusEndpoint ? { serviceBusEndpoint: header.meta.serviceBusEndpoint } : {})
+      }
+    };
+  }
+
+  public listCandidates(): Promise<SpecCandidate[]> {
+    return listCandidatesViaHydration(this);
   }
 
   public async exportSpec(candidate: SpecCandidate): Promise<SpecExportResult> {

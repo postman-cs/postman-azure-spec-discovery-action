@@ -172,7 +172,7 @@ APIM SOAP and GraphQL APIs are exportable; WebSocket, gRPC, and OData remain vis
 1. Resolve inputs, repository context, and the selected subscription scope(s) (explicit `subscription-id` and/or `subscription-ids-json`, or the single enabled subscription).
 2. Short-circuit to a committed repo spec when one exists.
 3. Probe providers fail-soft: an unauthorized provider is skipped (`skipped:iam`), an erroring one is skipped (`skipped:error`), and discovery continues with the rest.
-4. Enumerate candidates, narrow with the four-tier pipeline, and score against repository signals.
+4. Enumerate lightweight candidate headers (bounded concurrency), narrow with the four-tier pipeline across the full header set, then hydrate only the selected partition in `resolve-one` (or the post-cap set in `discover-many`). See [Enumeration cost and hydration](docs/providers.md#enumeration-cost-and-hydration).
 5. Export the winner (APIM ARM export, guarded HTTPS fetch, or IaC extraction), validate it is real OpenAPI/Swagger with at least one path, and write it under `output-dir` confined to the repository root.
 6. Emit all 24 outputs; ambiguous resolutions additionally render a ranked Step Summary table.
 

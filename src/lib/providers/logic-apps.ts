@@ -7,7 +7,8 @@ import type {
 } from '../azure/logic-apps-native-client.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import { toSafePublicUrl } from './public-url.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { listCandidatesViaHydration } from './types.js';
 
 export interface LogicAppsProviderOptions {
   resourceGroup?: string;
@@ -159,36 +160,33 @@ export class LogicAppsProvider implements SpecProvider {
     }
   }
 
-  public async listCandidates(): Promise<SpecCandidate[]> {
-    const candidates: SpecCandidate[] = [];
+  /**
+   * Lightweight workflow headers only — no per-workflow definition GET.
+   * Candidates are retained for narrowing even though support is provisional.
+   */
+  public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
+    const headers: SpecCandidateHeader[] = [];
 
     const workflows = await this.client.listWorkflows(this.options.resourceGroup);
     for (const workflow of workflows) {
       if ((workflow.state ?? '').toLowerCase() === 'disabled') continue;
-      const detail = await this.client.getWorkflow(workflow.resourceGroup, workflow.name);
-      this.detailCache.set(detail.id || workflow.id, detail);
-      const triggers = requestTriggers(detail);
-      const supported = triggers.length > 0;
-      const accessEndpoint = toSafePublicUrl(detail.accessEndpoint);
-      candidates.push({
+      headers.push({
         id: workflow.id,
         name: workflow.name,
         providerType: 'logic-apps',
         resourceGroup: workflow.resourceGroup,
         tags: workflow.tags,
-        supported,
+        supported: true,
+        headerHydrated: false,
         evidence: [
-          supported
-            ? `Logic App workflow ${workflow.name} exposes ${triggers.length} HTTP Request trigger(s)`
-            : `Logic App workflow ${workflow.name} has no HTTP Request trigger`,
-          ...(accessEndpoint ? [`Access endpoint: ${accessEndpoint}`] : []),
+          `Logic App workflow ${workflow.name} enumerated; definition detail deferred until selected`,
           ...(this.options.enableListSwagger ? ['Native listSwagger opt-in enabled for export'] : [])
         ],
         meta: {
           resourceGroup: workflow.resourceGroup,
           workflowName: workflow.name,
           logicHosting: 'consumption',
-          triggerCount: String(triggers.length)
+          hydrationPending: 'true'
         }
       });
     }
@@ -197,43 +195,115 @@ export class LogicAppsProvider implements SpecProvider {
       const standard = await this.options.nativeClient.listStandardWorkflows(this.options.resourceGroup);
       for (const workflow of standard) {
         if ((workflow.state ?? '').toLowerCase() === 'disabled') continue;
-        const detail = await this.options.nativeClient.getStandardWorkflow(
-          workflow.resourceGroup,
-          workflow.siteName,
-          workflow.name
-        );
-        this.standardDetailCache.set(detail.id || workflow.id, detail);
-        const triggers = requestTriggers(detail);
-        const supported = detail.hasDefinition && triggers.length > 0;
-        const accessEndpoint = toSafePublicUrl(detail.accessEndpoint);
-        candidates.push({
+        headers.push({
           id: workflow.id,
           name: `${workflow.siteName}/${workflow.name}`,
           providerType: 'logic-apps',
           resourceGroup: workflow.resourceGroup,
           tags: workflow.tags,
-          supported,
+          supported: true,
+          headerHydrated: false,
           evidence: [
-            supported
-              ? `Standard Logic App workflow ${workflow.siteName}/${workflow.name} exposes ${triggers.length} HTTP Request trigger(s) via documented definition route`
-              : detail.hasDefinition
-                ? `Standard Logic App workflow ${workflow.siteName}/${workflow.name} definition has no HTTP Request trigger`
-                : `Standard Logic App workflow ${workflow.siteName}/${workflow.name} has no documented definition/spec route; association-only`,
-            ...(accessEndpoint ? [`Access endpoint: ${accessEndpoint}`] : [])
+            `Standard Logic App workflow ${workflow.siteName}/${workflow.name} enumerated; definition detail deferred until selected`
           ],
           meta: {
             resourceGroup: workflow.resourceGroup,
             siteName: workflow.siteName,
             workflowName: workflow.name,
             logicHosting: 'standard',
-            triggerCount: String(triggers.length),
-            ...(supported ? {} : { contractClass: 'association-only' })
+            hydrationPending: 'true'
           }
         });
       }
     }
 
-    return candidates;
+    return headers;
+  }
+
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    const out: SpecCandidate[] = [];
+    for (const header of headers) {
+      out.push(await this.hydrateCandidate(header));
+    }
+    return out;
+  }
+
+  public async hydrateCandidate(header: SpecCandidateHeader): Promise<SpecCandidate> {
+    const resourceGroup = header.meta.resourceGroup ?? header.resourceGroup ?? '';
+    const workflowName = header.meta.workflowName ?? '';
+    if (!resourceGroup || !workflowName) {
+      throw new Error('Logic App header is missing resource coordinates');
+    }
+
+    if (header.meta.logicHosting === 'standard') {
+      if (!this.options.nativeClient) {
+        throw new Error('Standard Logic App hydration requires a native client');
+      }
+      const siteName = header.meta.siteName ?? '';
+      if (!siteName) {
+        throw new Error('Standard Logic App header is missing siteName');
+      }
+      const detail = await this.options.nativeClient.getStandardWorkflow(resourceGroup, siteName, workflowName);
+      this.standardDetailCache.set(detail.id || header.id, detail);
+      const triggers = requestTriggers(detail);
+      const supported = detail.hasDefinition && triggers.length > 0;
+      const accessEndpoint = toSafePublicUrl(detail.accessEndpoint);
+      return {
+        id: header.id,
+        name: header.name,
+        providerType: 'logic-apps',
+        resourceGroup: header.resourceGroup,
+        tags: header.tags,
+        supported,
+        evidence: [
+          supported
+            ? `Standard Logic App workflow ${siteName}/${workflowName} exposes ${triggers.length} HTTP Request trigger(s) via documented definition route`
+            : detail.hasDefinition
+              ? `Standard Logic App workflow ${siteName}/${workflowName} definition has no HTTP Request trigger`
+              : `Standard Logic App workflow ${siteName}/${workflowName} has no documented definition/spec route; association-only`,
+          ...(accessEndpoint ? [`Access endpoint: ${accessEndpoint}`] : [])
+        ],
+        meta: {
+          resourceGroup,
+          siteName,
+          workflowName,
+          logicHosting: 'standard',
+          triggerCount: String(triggers.length),
+          ...(supported ? {} : { contractClass: 'association-only' })
+        }
+      };
+    }
+
+    const detail = await this.client.getWorkflow(resourceGroup, workflowName);
+    this.detailCache.set(detail.id || header.id, detail);
+    const triggers = requestTriggers(detail);
+    const supported = triggers.length > 0;
+    const accessEndpoint = toSafePublicUrl(detail.accessEndpoint);
+    return {
+      id: header.id,
+      name: header.name,
+      providerType: 'logic-apps',
+      resourceGroup: header.resourceGroup,
+      tags: header.tags,
+      supported,
+      evidence: [
+        supported
+          ? `Logic App workflow ${workflowName} exposes ${triggers.length} HTTP Request trigger(s)`
+          : `Logic App workflow ${workflowName} has no HTTP Request trigger`,
+        ...(accessEndpoint ? [`Access endpoint: ${accessEndpoint}`] : []),
+        ...(this.options.enableListSwagger ? ['Native listSwagger opt-in enabled for export'] : [])
+      ],
+      meta: {
+        resourceGroup,
+        workflowName,
+        logicHosting: 'consumption',
+        triggerCount: String(triggers.length)
+      }
+    };
+  }
+
+  public listCandidates(): Promise<SpecCandidate[]> {
+    return listCandidatesViaHydration(this);
   }
 
   public async exportSpec(candidate: SpecCandidate): Promise<SpecExportResult> {

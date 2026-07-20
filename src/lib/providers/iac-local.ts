@@ -1,6 +1,7 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { IacScanResult } from '../repo/azure-iac-scanner.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
+import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
+import { toSpecCandidate } from './types.js';
 
 /**
  * IaC-local provider: exposes inline APIM OpenAPI documents already extracted by the
@@ -18,6 +19,14 @@ export class IacLocalProvider implements SpecProvider {
 
   public probe(): Promise<ProviderProbeStatus> {
     return Promise.resolve('available');
+  }
+
+  public listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
+    return Promise.resolve(this.scan.candidates.map((candidate) => ({ ...candidate, headerHydrated: true })));
+  }
+
+  public hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    return Promise.resolve(headers.map((header) => toSpecCandidate(header)));
   }
 
   public listCandidates(): Promise<SpecCandidate[]> {

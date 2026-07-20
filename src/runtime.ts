@@ -60,7 +60,14 @@ import { ServiceBusProvider } from './lib/providers/service-bus.js';
 import { FunctionBindingsProvider } from './lib/providers/function-bindings.js';
 import { IacLocalProvider } from './lib/providers/iac-local.js';
 import { resolvePathWithinRoot, writeFileWithinRoot } from './lib/utils/resolve-path-within-root.js';
-import type { SpecCandidate, SpecExportResult, SpecProvider } from './lib/providers/types.js';
+import type {
+  HydratingSpecProvider,
+  SpecCandidate,
+  SpecCandidateHeader,
+  SpecExportResult,
+  SpecProvider
+} from './lib/providers/types.js';
+import { adaptLegacyProvider, toSpecCandidate } from './lib/providers/types.js';
 
 export interface InputReaderLike {
   getInput(name: string, options?: { required?: boolean }): string;
@@ -1041,21 +1048,165 @@ export function partitionCandidates(candidates: SpecCandidate[], narrowing: Narr
   return [...matched, ...unmatched];
 }
 
+/** Bounded concurrency for lightweight header enumeration across providers. */
+const HEADER_ENUMERATION_CONCURRENCY = 4;
+
+export interface ProviderHydrationMetrics {
+  /** Header counts per provider type (no resource IDs). */
+  enumeratedByProvider: Record<string, number>;
+  /** Hydrated candidate counts per provider type (no resource IDs). */
+  hydratedByProvider: Record<string, number>;
+}
+
+function emptyHydrationMetrics(): ProviderHydrationMetrics {
+  return { enumeratedByProvider: {}, hydratedByProvider: {} };
+}
+
+function metricsEvidence(metrics: ProviderHydrationMetrics): string[] {
+  const enumerated = Object.entries(metrics.enumeratedByProvider)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([provider, count]) => `${provider}=${count}`)
+    .join(', ');
+  const hydrated = Object.entries(metrics.hydratedByProvider)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([provider, count]) => `${provider}=${count}`)
+    .join(', ');
+  return [
+    `Enumerated headers by provider: ${enumerated || 'none'}`,
+    `Hydrated candidates by provider: ${hydrated || 'none'}`
+  ];
+}
+
+async function mapWithBoundedConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const runWorker = async (): Promise<void> => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!, index);
+    }
+  };
+  const width = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: width }, () => runWorker()));
+  return results;
+}
+
+function stripHeaderFlag(header: SpecCandidateHeader): SpecCandidate {
+  return toSpecCandidate(header);
+}
+
+interface HeaderEnumerationResult {
+  adapted: HydratingSpecProvider[];
+  headers: SpecCandidateHeader[];
+  metrics: ProviderHydrationMetrics;
+}
+
+/**
+ * Enumerate lightweight headers with bounded concurrency. Provider order in the
+ * returned header list follows the input provider order (not Promise settle order).
+ * Per-provider failures are fail-soft.
+ */
+async function collectCandidateHeaders(
+  providers: SpecProvider[],
+  core: ReporterLike
+): Promise<HeaderEnumerationResult> {
+  const adapted = providers.map((provider) => adaptLegacyProvider(provider));
+  const metrics = emptyHydrationMetrics();
+  const settled = await mapWithBoundedConcurrency(
+    adapted,
+    HEADER_ENUMERATION_CONCURRENCY,
+    async (provider) => {
+      try {
+        const headers = await provider.listCandidateHeaders();
+        metrics.enumeratedByProvider[provider.type] =
+          (metrics.enumeratedByProvider[provider.type] ?? 0) + headers.length;
+        return headers;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        core.warning(sanitizeLogMessage(`Provider ${provider.type} candidate enumeration failed: ${detail}`));
+        return [] as SpecCandidateHeader[];
+      }
+    }
+  );
+  return { adapted, headers: settled.flat(), metrics };
+}
+
+async function hydrateHeadersForProviders(
+  adapted: HydratingSpecProvider[],
+  headers: SpecCandidateHeader[],
+  metrics: ProviderHydrationMetrics,
+  options: {
+    fatal: boolean;
+    core: ReporterLike;
+    /**
+     * Select the exact provider instance for a header. This is required when
+     * the same provider type is bound to multiple subscription-scoped clients.
+     */
+    providerForHeader?: (header: SpecCandidateHeader) => HydratingSpecProvider | undefined;
+  }
+): Promise<SpecCandidate[]> {
+  if (headers.length === 0) return [];
+  const already = headers.filter((header) => header.headerHydrated === true).map(stripHeaderFlag);
+  const pending = headers.filter((header) => header.headerHydrated !== true);
+  if (pending.length === 0) return already;
+
+  const byProvider = new Map<HydratingSpecProvider, SpecCandidateHeader[]>();
+  for (const header of pending) {
+    const provider =
+      options.providerForHeader?.(header) ?? adapted.find((entry) => entry.type === header.providerType);
+    if (!provider) {
+      if (options.fatal) {
+        throw new Error(`No provider is bound for selected ${header.providerType} candidate ${header.id}`);
+      }
+      options.core.warning(sanitizeLogMessage(`No provider is bound for ${header.providerType} candidate; skipping hydration`));
+      continue;
+    }
+    const list = byProvider.get(provider) ?? [];
+    list.push(header);
+    byProvider.set(provider, list);
+  }
+
+  const hydrated: SpecCandidate[] = [...already];
+  for (const [provider, group] of [...byProvider.entries()].sort(([a, aGroup], [b, bGroup]) => {
+    const aKey = `${a.type}:${aGroup[0]?.id ?? ''}`;
+    const bKey = `${b.type}:${bGroup[0]?.id ?? ''}`;
+    return aKey.localeCompare(bKey);
+  })) {
+    const providerType = provider.type;
+    try {
+      const batch = await provider.hydrateCandidates(group);
+      metrics.hydratedByProvider[providerType] =
+        (metrics.hydratedByProvider[providerType] ?? 0) + batch.length;
+      hydrated.push(...batch);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (options.fatal) {
+        throw new Error(sanitizeLogMessage(`Hydration failed for selected ${providerType} candidate(s): ${detail}`), {
+          cause: error
+        });
+      }
+      options.core.warning(
+        sanitizeLogMessage(`Provider ${providerType} hydration failed (unselected/fail-soft): ${detail}`)
+      );
+    }
+  }
+  return hydrated;
+}
+
+/** @deprecated Prefer collectCandidateHeaders; retained for exact-id injected fallbacks. */
 async function collectCandidates(
   providers: SpecProvider[],
   core: ReporterLike
 ): Promise<SpecCandidate[]> {
-  const all: SpecCandidate[] = [];
-  for (const provider of providers) {
-    try {
-      const candidates = await provider.listCandidates();
-      all.push(...candidates);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      core.warning(sanitizeLogMessage(`Provider ${provider.type} candidate enumeration failed: ${detail}`));
-    }
-  }
-  return all;
+  const { adapted, headers, metrics } = await collectCandidateHeaders(providers, core);
+  return hydrateHeadersForProviders(adapted, headers, metrics, { fatal: false, core });
 }
 
 async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependencies): Promise<ExecutionResult> {
@@ -1281,40 +1432,68 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     };
   }
 
-  const enumerated = applyApiFilter(
+  const {
+    adapted: adaptedProviders,
+    headers: rawHeaders,
+    metrics: hydrationMetrics
+  } = await collectCandidateHeaders(availableProviders, core);
+  const adaptedByInstance = new Map(
+    availableProviders.map((provider, index) => [provider, adaptedProviders[index]!])
+  );
+  const adaptedProviderForHeader = (header: SpecCandidateHeader): HydratingSpecProvider | undefined => {
+    const provider = findBoundProvider(availableBound, stripHeaderFlag(header));
+    return provider ? adaptedByInstance.get(provider) : undefined;
+  };
+  const headerList = applyApiFilter(
     mergeCandidatesByArmId(
-      enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows)
-    ),
+      enrichCandidatesFromGraph(rawHeaders.map(stripHeaderFlag), graphRows)
+    ).map((candidate) => {
+      const original = rawHeaders.find((header) => header.id === candidate.id);
+      return {
+        ...candidate,
+        headerHydrated: original?.headerHydrated === true
+      } satisfies SpecCandidateHeader;
+    }),
     inputs.apiFilter
   );
+  // Ranking/narrowing operate over the full uncapped header set.
+  const enumerated = headerList.map(stripHeaderFlag);
+
+  const hydrateSelected = async (selectedHeaders: SpecCandidateHeader[]): Promise<SpecCandidate[]> =>
+    hydrateHeadersForProviders(adaptedProviders, selectedHeaders, hydrationMetrics, {
+      fatal: true,
+      core,
+      providerForHeader: adaptedProviderForHeader
+    });
 
   // 3a. Explicit api-id / exact binding is a caller selection with confidence 100.
   if (selectors.apiId) {
     const requestedApiId = selectors.apiId;
     const isFullArmId = /^\/subscriptions\//i.test(requestedApiId);
-    let target: SpecCandidate | undefined;
+    let targetHeader: SpecCandidateHeader | undefined;
     if (isFullArmId) {
-      target = enumerated.find(
+      targetHeader = headerList.find(
         (candidate) =>
           candidate.apiId?.toLowerCase() === requestedApiId.toLowerCase() ||
           candidate.id.toLowerCase() === requestedApiId.toLowerCase()
       );
       // Historical ;rev=N may be absent from current-revision enumeration.
-      if (!target && /;rev=\d+/i.test(requestedApiId) && parseApimApiArmId(requestedApiId)) {
+      if (!targetHeader && /;rev=\d+/i.test(requestedApiId) && parseApimApiArmId(requestedApiId)) {
         const apim = findApimProviderForArmId(availableBound, requestedApiId);
         if (apim) {
-          target = await apim.resolveExplicitApi(requestedApiId);
+          const explicit = await apim.resolveExplicitApi(requestedApiId);
+          if (explicit) targetHeader = { ...explicit, headerHydrated: true };
         }
       }
     } else {
       const requestedShort = requestedApiId.split('/').pop();
-      const shortMatches = enumerated.filter(
+      const shortMatches = headerList.filter(
         (candidate) =>
           (candidate.apiId ?? '').split('/').pop() === requestedShort ||
           candidate.id.split('/').pop() === requestedShort
       );
       if (shortMatches.length === 1) {
-        target = shortMatches[0];
+        targetHeader = shortMatches[0];
       } else if (shortMatches.length > 1) {
         const ambiguousRanked = rankServiceCandidates(shortMatches.map(toCandidateInput), signals);
         const ambiguousResolution: ResolutionResult = {
@@ -1324,7 +1503,10 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           confidence: ambiguousRanked[0]?.confidence ?? 0,
           providerProbes: probes,
           rankedCandidates: toAmbiguousViews(ambiguousRanked),
-          evidence: [`Requested api-id matched ${shortMatches.length} APIs by short name; refusing to guess between them`]
+          evidence: [
+            `Requested api-id matched ${shortMatches.length} APIs by short name; refusing to guess between them`,
+            ...metricsEvidence(hydrationMetrics)
+          ]
         };
         return {
           mode: inputs.mode,
@@ -1334,6 +1516,15 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         };
       }
     }
+    let target = targetHeader ? stripHeaderFlag(targetHeader) : undefined;
+    if (targetHeader && targetHeader.headerHydrated !== true) {
+      const hydrated = await hydrateSelected([targetHeader]);
+      target = hydrated.find(
+        (candidate) =>
+          candidate.id === targetHeader!.id ||
+          candidate.apiId?.toLowerCase() === requestedApiId.toLowerCase()
+      );
+    }
     if (target && !target.supported) {
       const resolution: ResolutionResult = {
         status: 'unresolved',
@@ -1342,7 +1533,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         confidence: 100,
         providerProbes: probes,
         rankedCandidates: toAmbiguousViews(rankServiceCandidates([toCandidateInput(target)], signals)),
-        evidence: [...selectors.bindingEvidence, ...target.evidence]
+        evidence: [...selectors.bindingEvidence, ...target.evidence, ...metricsEvidence(hydrationMetrics)]
       };
       return {
         mode: inputs.mode,
@@ -1369,7 +1560,8 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         rankedCandidates: toAmbiguousViews(rankServiceCandidates([toCandidateInput(target)], signals)),
         evidence: [
           ...selectors.bindingEvidence,
-          `Caller-selected API does not match requested ${requested}; refusing to export a different version or revision`
+          `Caller-selected API does not match requested ${requested}; refusing to export a different version or revision`,
+          ...metricsEvidence(hydrationMetrics)
         ]
       };
       return {
@@ -1410,7 +1602,12 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
               }
             : {}),
           providerProbes: probes,
-          evidence: [...selectionEvidence, ...target.evidence, ...exportResult.evidence]
+          evidence: [
+            ...selectionEvidence,
+            ...target.evidence,
+            ...exportResult.evidence,
+            ...metricsEvidence(hydrationMetrics)
+          ]
         };
         return {
           mode: inputs.mode,
@@ -1428,7 +1625,8 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       providerProbes: probes,
       evidence: [
         ...selectors.bindingEvidence,
-        `Requested api-id was not found among ${enumerated.length} enumerated candidate(s)`
+        `Requested api-id was not found among ${enumerated.length} enumerated candidate(s)`,
+        ...metricsEvidence(hydrationMetrics)
       ]
     };
     return {
@@ -1439,7 +1637,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     };
   }
 
-  // 3b. Narrow, partition, cap, rank, choose.
+  // 3b. Narrow and rank over all headers before any selected hydration.
   const narrowing = await runNarrowingPipeline(
     {
       repoSlug: inputs.repoContext.repoSlug,
@@ -1458,10 +1656,10 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     enumerated.map(toNarrowingCandidate)
   );
 
-  const partitioned = partitionCandidates(enumerated, narrowing);
+  const partitionedHeaders = partitionCandidates(headerList, narrowing) as SpecCandidateHeader[];
+  const partitioned = partitionedHeaders.map(stripHeaderFlag);
   // Correctness decision (ranking + ambiguity) runs across every partitioned
-  // candidate; the cap only bounds the serialized rankedCandidates view. Capping
-  // before ranking could drop a tied candidate and fabricate a unique winner.
+  // header; the cap only bounds the serialized rankedCandidates view.
   const cappedCount = Math.max(0, partitioned.length - inputs.maxCandidates);
 
   const ranked = rankServiceCandidates(partitioned.map(toCandidateInput), signals);
@@ -1487,11 +1685,105 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     ? { tier: narrowing.tier, mode: narrowing.mode, droppedCount: narrowing.droppedCount }
     : undefined;
 
+  const topConfidence = ranked[0]?.confidence;
+  const tiedTop =
+    topConfidence === undefined
+      ? []
+      : ranked.filter((candidate) => candidate.confidence === topConfidence && candidate.supported);
+  const selectedHeaderIds = new Set<string>();
   if (best && !best.ambiguous && best.supported && best.confidence >= MINIMUM_RESOLVED_CONFIDENCE) {
-    const target = partitioned.find((candidate) => candidate.id === best?.resourceId);
+    selectedHeaderIds.add(best.resourceId);
+  } else if (tiedTop.length > 1) {
+    for (const entry of tiedTop) selectedHeaderIds.add(entry.resourceId);
+  }
+
+  let workingCandidates = partitioned;
+  let workingRanked = ranked;
+  let workingBest = best;
+
+  if (selectedHeaderIds.size > 0) {
+    const selectedHeaders = partitionedHeaders.filter((header) => selectedHeaderIds.has(header.id));
+    const hydratedSelected = await hydrateSelected(selectedHeaders);
+    // Replace selected headers with hydrated rows (may expand, e.g. template specs).
+    const selectedIdSet = selectedHeaderIds;
+    const untouched = partitioned.filter((candidate) => !selectedIdSet.has(candidate.id));
+    workingCandidates = [...hydratedSelected, ...untouched];
+    workingRanked = rankServiceCandidates(workingCandidates.map(toCandidateInput), signals);
+    if (narrowing?.mode === 'select' && narrowing.apiIds.length === 1) {
+      workingBest = workingRanked.find((candidate) => candidate.resourceId === narrowing.apiIds[0]);
+      if (workingBest) {
+        workingBest.confidence = 100;
+        workingBest.ambiguous = false;
+        workingBest.evidence = [...workingBest.evidence, ...narrowing.evidence];
+      }
+    }
+    if (!workingBest) {
+      workingBest = resolveServiceCandidate(workingCandidates.map(toCandidateInput), signals);
+      if (workingBest && narrowing) {
+        workingBest.evidence = [...workingBest.evidence, ...narrowing.evidence];
+      }
+    }
+    // Hydration changed support/identity or preserved same-rank ambiguity → fail closed.
+    const hydratedTopConfidence = workingRanked[0]?.confidence;
+    const hydratedTies =
+      hydratedTopConfidence === undefined
+        ? []
+        : workingRanked.filter(
+            (candidate) => candidate.confidence === hydratedTopConfidence && candidate.supported
+          );
+    if (
+      !workingBest ||
+      workingBest.ambiguous ||
+      !workingBest.supported ||
+      workingBest.confidence < MINIMUM_RESOLVED_CONFIDENCE ||
+      hydratedTies.length > 1
+    ) {
+      const resolution: ResolutionResult = {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName: inputs.expectedServiceName ?? workingBest?.serviceName ?? 'unknown-service',
+        confidence: workingBest?.confidence ?? 0,
+        ...(narrowingMetadata ? { narrowing: narrowingMetadata } : {}),
+        providerProbes: probes,
+        rankedCandidates: toAmbiguousViews(workingRanked.slice(0, inputs.maxCandidates)),
+        evidence: [
+          ...(workingBest?.evidence ?? [scopedAbsenceEvidence(subscriptionIds.length, inputs.resourceGroup)]),
+          'Selected hydration did not yield a unique supported winner; refusing to guess',
+          ...metricsEvidence(hydrationMetrics),
+          ...(cappedCount > 0
+            ? [
+                `Candidate cap hid ${cappedCount} lower-ranked candidate(s) from the serialized view (ranking used all candidates)`
+              ]
+            : [])
+        ]
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+  }
+
+  if (
+    workingBest &&
+    !workingBest.ambiguous &&
+    workingBest.supported &&
+    workingBest.confidence >= MINIMUM_RESOLVED_CONFIDENCE
+  ) {
+    const target = workingCandidates.find((candidate) => candidate.id === workingBest?.resourceId);
     const provider = target ? findBoundProvider(availableBound, target) : undefined;
     if (target && provider) {
       try {
+        // Ensure the export target was hydrated when detail was deferred.
+        const adapted = adaptedByInstance.get(provider);
+        if (adapted && target.meta.hydrationPending === 'true') {
+          const [hydratedTarget] = await hydrateSelected([{ ...target, headerHydrated: false }]);
+          if (hydratedTarget) {
+            Object.assign(target, hydratedTarget);
+          }
+        }
         const exportResult = await provider.exportSpec(target);
         const serviceName = resolveServiceName(target, inputs.serviceMapping);
         const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
@@ -1499,7 +1791,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           status: 'resolved',
           sourceType: sourceTypeFor(target.providerType),
           serviceName,
-          confidence: best.confidence,
+          confidence: workingBest.confidence,
           specPath: written.specPath,
           ...(target.apiId ? { apiId: target.apiId } : {}),
           providerType: target.providerType,
@@ -1515,7 +1807,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
             : {}),
           ...(narrowingMetadata ? { narrowing: narrowingMetadata } : {}),
           providerProbes: probes,
-          evidence: best.evidence
+          evidence: [...workingBest.evidence, ...metricsEvidence(hydrationMetrics)]
         };
         return {
           mode: inputs.mode,
@@ -1528,7 +1820,10 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         // failure, not "nothing to onboard". Fail the step instead of silently
         // degrading to unresolved (which the composite pipeline treats as skip).
         const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(sanitizeLogMessage(`Export failed for resolved candidate ${best.serviceName}: ${detail}`), { cause: error });
+        throw new Error(
+          sanitizeLogMessage(`Export failed for resolved candidate ${workingBest.serviceName}: ${detail}`),
+          { cause: error }
+        );
       }
     }
   }
@@ -1537,14 +1832,19 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   const resolution: ResolutionResult = {
     status: 'unresolved',
     sourceType: 'manual-review',
-    serviceName: inputs.expectedServiceName ?? best?.serviceName ?? 'unknown-service',
-    confidence: best?.confidence ?? 0,
+    serviceName: inputs.expectedServiceName ?? workingBest?.serviceName ?? 'unknown-service',
+    confidence: workingBest?.confidence ?? 0,
     ...(narrowingMetadata ? { narrowing: narrowingMetadata } : {}),
     providerProbes: probes,
-    rankedCandidates: toAmbiguousViews(ranked.slice(0, inputs.maxCandidates)),
+    rankedCandidates: toAmbiguousViews(workingRanked.slice(0, inputs.maxCandidates)),
     evidence: [
-      ...(best?.evidence ?? [scopedAbsenceEvidence(subscriptionIds.length, inputs.resourceGroup)]),
-      ...(cappedCount > 0 ? [`Candidate cap hid ${cappedCount} lower-ranked candidate(s) from the serialized view (ranking used all candidates)`] : [])
+      ...(workingBest?.evidence ?? [scopedAbsenceEvidence(subscriptionIds.length, inputs.resourceGroup)]),
+      ...metricsEvidence(hydrationMetrics),
+      ...(cappedCount > 0
+        ? [
+            `Candidate cap hid ${cappedCount} lower-ranked candidate(s) from the serialized view (ranking used all candidates)`
+          ]
+        : [])
     ]
   };
   return {
@@ -1575,12 +1875,31 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
     availableProviders.some((provider) => provider === entry.provider)
   );
 
-  const enumerated = applyApiFilter(
+  const {
+    adapted: adaptedProviders,
+    headers: rawHeaders,
+    metrics: hydrationMetrics
+  } = await collectCandidateHeaders(availableProviders, core);
+  const adaptedByInstance = new Map(
+    availableProviders.map((provider, index) => [provider, adaptedProviders[index]!])
+  );
+  const adaptedProviderForHeader = (header: SpecCandidateHeader): HydratingSpecProvider | undefined => {
+    const provider = findBoundProvider(availableBound, stripHeaderFlag(header));
+    return provider ? adaptedByInstance.get(provider) : undefined;
+  };
+  const headerList = applyApiFilter(
     mergeCandidatesByArmId(
-      enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows)
-    ),
+      enrichCandidatesFromGraph(rawHeaders.map(stripHeaderFlag), graphRows)
+    ).map((candidate) => {
+      const original = rawHeaders.find((header) => header.id === candidate.id);
+      return {
+        ...candidate,
+        headerHydrated: original?.headerHydrated === true
+      } satisfies SpecCandidateHeader;
+    }),
     inputs.apiFilter
   );
+  const enumerated = headerList.map(stripHeaderFlag);
   // R5.AC6: partition by repo narrowing BEFORE the cap so canonical-tag matches
   // survive max-candidates in discover-many exactly as they do in resolve-one.
   const signals = await collectRepoSignals({
@@ -1606,9 +1925,21 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
     },
     enumerated.map(toNarrowingCandidate)
   );
-  const partitioned = partitionCandidates(enumerated, narrowing);
-  const capped = partitioned.slice(0, inputs.maxCandidates);
-  const summary: ExportSummary = { attempted: 0, exported: 0, failed: 0, skipped: enumerated.length - capped.length };
+  const partitionedHeaders = partitionCandidates(headerList, narrowing) as SpecCandidateHeader[];
+  const cappedHeaders = partitionedHeaders.slice(0, inputs.maxCandidates);
+  // discover-many explicitly hydrates only the post-partition/cap set.
+  const capped = await hydrateHeadersForProviders(adaptedProviders, cappedHeaders, hydrationMetrics, {
+    fatal: false,
+    core,
+    providerForHeader: adaptedProviderForHeader
+  });
+  core.info(sanitizeLogMessage(metricsEvidence(hydrationMetrics).join('; ')));
+  const summary: ExportSummary = {
+    attempted: 0,
+    exported: 0,
+    failed: 0,
+    skipped: enumerated.length - cappedHeaders.length
+  };
   const discovered: DiscoveredService[] = [];
   const writtenPaths = new Map<string, string>();
 

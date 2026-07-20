@@ -13,3 +13,13 @@ export function verifyCoverageManifest(input: {
   manifest?: unknown;
   evidence?: unknown;
 }): CoverageVerificationResult;
+
+export function verifyProviderRegistrationsAgainstManifest(input: {
+  registrations: Array<{
+    providerType: string;
+    defaultContractClass: string;
+    nativeFormats: string[];
+    requiredCapability: string;
+  }>;
+  manifest: { routes?: unknown };
+}): CoverageVerificationResult;
