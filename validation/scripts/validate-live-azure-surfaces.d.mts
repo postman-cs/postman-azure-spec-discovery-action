@@ -8,6 +8,8 @@ export const PIPELINE_NAME: string;
 export const STUB_HEALTH_TIMEOUT_MS: 120000;
 export const STUB_HEALTH_POLL_INTERVAL_MS: 5000;
 export const CASE_MATRIX_CONCURRENCY: 4;
+export const CUSTOM_CONNECTOR_TIMEOUT_MS: 30000;
+export const EXTENDED_DEPLOYMENT_TIMEOUT_MS: 120000;
 
 export interface LiveFlags {
   provision: boolean;
@@ -143,7 +145,6 @@ export function waitForStubHealth(input?: {
   sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
 }): Promise<boolean>;
-export function stubWebsocketServiceUrl(siteHostname: string): string;
 export function provisionOptionalApimApis(input: {
   runner: (command: string, args: string[], options?: Record<string, unknown>) => string | Promise<string>;
   log: (line: string) => void;
@@ -151,7 +152,21 @@ export function provisionOptionalApimApis(input: {
   subscriptionId: string;
   provisionFlags: Record<string, boolean>;
   capabilities: Record<string, { ok: boolean; reasonCode?: string }>;
-  siteHostname?: string;
+}): Promise<void>;
+export function provisionCustomConnectorBounded(input: {
+  asyncRunner: (command: string, args: string[], options?: Record<string, unknown>) => Promise<string>;
+  log: (line: string) => void;
+  manifest: Record<string, unknown> & {
+    resourceGroup: string;
+    customConnectorName: string;
+    runMarker: string;
+    resources: Array<Record<string, unknown>>;
+  };
+  subscriptionId: string;
+  location: string;
+  provisionFlags: Record<string, boolean>;
+  capabilities: Record<string, { ok: boolean; reasonCode?: string }>;
+  siteHostname: string;
 }): Promise<void>;
 export function passingLiveCaseIds(evidence: { results?: Array<{ name?: string; id?: string; status?: string }> }): Set<string>;
 export function renderExecutionPlan(input?: {
