@@ -160,12 +160,20 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
     'Discover Azure-hosted API specs and expose a spec path for Postman onboarding. Part of the Postman API Onboarding suite.',
   inputs: {
     mode: {
-      description: 'Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate; discover-estate enumerates repo-associated Azure resources across the subscription without exporting specs.',
+      description:
+        'Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate; discover-estate enumerates repo-associated Azure resources across the selected subscription scope(s) without exporting specs.',
       required: false,
       default: 'resolve-one'
     },
     'subscription-id': {
-      description: 'Optional Azure subscription ID used as the discovery enumeration root. When omitted, the single enabled subscription visible to the credential is used; multiple enabled subscriptions require this input.',
+      description:
+        'Optional Azure subscription ID used as the discovery enumeration root. When omitted, the single enabled subscription visible to the credential is used; multiple enabled subscriptions require this input or subscription-ids-json.',
+      required: false,
+      default: ''
+    },
+    'subscription-ids-json': {
+      description:
+        'Optional JSON array of Azure subscription IDs for explicit multi-subscription discovery. Conflicts with subscription-id unless both identify exactly the same one ID. Empty keeps single-enabled-subscription behavior. Never auto-enumerates all visible subscriptions.',
       required: false,
       default: ''
     },
@@ -331,7 +339,8 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Narrowing tier that produced the candidate ordering: gateway-host-path, tag-prefilter, gateway-assignment, iac-fingerprint, rg-correlation, naming-heuristic, or none.'
     },
     'repos-json': {
-      description: 'discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the subscription; empty otherwise.'
+      description:
+        'discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the selected subscription scope(s); empty otherwise.'
     },
     'repo-count': {
       description: 'discover-estate output: number of deduped org/repo associations; empty otherwise.'

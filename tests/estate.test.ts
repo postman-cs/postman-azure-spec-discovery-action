@@ -101,10 +101,10 @@ describe('estate dedupe', () => {
 
 describe('enumerateEstate', () => {
   it('AZ-EST-010: issues exactly one ARG query and returns the deduped roster', async () => {
-    const calls: Array<[string, string]> = [];
+    const calls: Array<[string | readonly string[], string]> = [];
     const client: AzureResourceGraphClient = {
-      queryResources: async (subscriptionId, kql) => {
-        calls.push([subscriptionId, kql]);
+      queryResources: async (subscriptionIds, kql) => {
+        calls.push([subscriptionIds, kql]);
         return [row()];
       }
     };
@@ -121,6 +121,21 @@ describe('enumerateEstate', () => {
         resourceIds: ['/subscriptions/s/resourceGroups/rg-a/providers/Microsoft.ApiManagement/service/svc']
       }
     ]);
+  });
+
+  it('AZ-EST-010b: falls back per scope after one failed multi-scope request and retains visible associations', async () => {
+    const calls: Array<string | readonly string[]> = [];
+    const client: AzureResourceGraphClient = {
+      queryResources: async (subscriptionIds) => {
+        calls.push(subscriptionIds);
+        if (Array.isArray(subscriptionIds)) throw new Error('aggregate scope denied');
+        if (subscriptionIds === 'sub-a') throw new Error('scope denied');
+        return [row({ id: '/subscriptions/sub-b/resourceGroups/rg-a/providers/Microsoft.Web/sites/payments' })];
+      }
+    };
+
+    await expect(enumerateEstate(client, ['sub-a', 'sub-b'])).resolves.toHaveLength(1);
+    expect(calls).toEqual([['sub-a', 'sub-b'], 'sub-a', 'sub-b']);
   });
 });
 

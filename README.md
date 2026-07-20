@@ -64,7 +64,7 @@ The rolling `@v1` action reference is convenient and receives compatible v1 upda
 
 ### discover-estate mode
 
-Enumerates repo-associated Azure resources across the whole subscription — one Resource Graph sweep over `Resources` and `ResourceContainers` for repo tags (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`), deduped to an org/repo roster written as `repos.json` and emitted on `repos-json`/`repo-count`. Association only: no spec export, no PRs, no GitHub writes.
+Enumerates repo-associated Azure resources across the selected subscription scope(s) — one Resource Graph sweep over `Resources` and `ResourceContainers` for repo tags (`postman:repo`, `github:repository`, `GithubOrg`/`GithubRepo`, `repo`, `repository`), deduped to an org/repo roster written as `repos.json` and emitted on `repos-json`/`repo-count`. Association only: no spec export, no PRs, no GitHub writes.
 
 ```yaml
 - uses: postman-cs/postman-azure-spec-discovery-action@v1
@@ -99,8 +99,9 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 <!-- inputs-table:start -->
 | Name | Description | Required | Default |
 | --- | --- | --- | --- |
-| `mode` | Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate; discover-estate enumerates repo-associated Azure resources across the subscription without exporting specs. | no | `resolve-one` |
-| `subscription-id` | Optional Azure subscription ID used as the discovery enumeration root. When omitted, the single enabled subscription visible to the credential is used; multiple enabled subscriptions require this input. | no | n/a |
+| `mode` | Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate; discover-estate enumerates repo-associated Azure resources across the selected subscription scope(s) without exporting specs. | no | `resolve-one` |
+| `subscription-id` | Optional Azure subscription ID used as the discovery enumeration root. When omitted, the single enabled subscription visible to the credential is used; multiple enabled subscriptions require this input or subscription-ids-json. | no | n/a |
+| `subscription-ids-json` | Optional JSON array of Azure subscription IDs for explicit multi-subscription discovery. Conflicts with subscription-id unless both identify exactly the same one ID. Empty keeps single-enabled-subscription behavior. Never auto-enumerates all visible subscriptions. | no | n/a |
 | `resource-group` | Optional resource group that scopes discovery to one group instead of the whole subscription. | no | n/a |
 | `api-id` | Optional full APIM API ARM resource ID for this service. Use this to bypass broader subscription discovery. Supports historical revisions via ;rev=N. | no | n/a |
 | `environment` | Optional deployment environment selector used to disambiguate APIs that share a repository association across environments. | no | n/a |
@@ -146,7 +147,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `derived-openapi-format` | Serialization format of the derived OpenAPI document: openapi-json. |
 | `derived-openapi-evidence-json` | JSON array of evidence strings describing how the derived OpenAPI document was produced. |
 | `narrowing-strategy` | Narrowing tier that produced the candidate ordering: gateway-host-path, tag-prefilter, gateway-assignment, iac-fingerprint, rg-correlation, naming-heuristic, or none. |
-| `repos-json` | discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the subscription; empty otherwise. |
+| `repos-json` | discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the selected subscription scope(s); empty otherwise. |
 | `repo-count` | discover-estate output: number of deduped org/repo associations; empty otherwise. |
 <!-- outputs-table:end -->
 
@@ -168,7 +169,7 @@ APIM SOAP and GraphQL APIs are exportable; WebSocket, gRPC, and OData remain vis
 
 ## How it works
 
-1. Resolve inputs, repository context, and the target subscription (explicit `subscription-id`, or the single enabled subscription).
+1. Resolve inputs, repository context, and the selected subscription scope(s) (explicit `subscription-id` and/or `subscription-ids-json`, or the single enabled subscription).
 2. Short-circuit to a committed repo spec when one exists.
 3. Probe providers fail-soft: an unauthorized provider is skipped (`skipped:iam`), an erroring one is skipped (`skipped:error`), and discovery continues with the rest.
 4. Enumerate candidates, narrow with the four-tier pipeline, and score against repository signals.

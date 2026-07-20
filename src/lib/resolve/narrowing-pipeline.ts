@@ -17,6 +17,8 @@ export interface NarrowingResult {
 export interface NarrowingContext {
   repoSlug?: string;
   subscriptionId?: string;
+  /** Explicit multi-subscription scopes for Resource Graph fallbacks. */
+  subscriptionIds?: string[];
   resourceGroup?: string;
   /** Extra select-grade repo tag keys beside postman:repo, matched case-insensitively. */
   repoTagKeys?: string[];
@@ -335,11 +337,17 @@ async function tierTagGraphFallback(
   candidates: NarrowingCandidate[],
   ctx: NarrowingContext
 ): Promise<TierHit | undefined> {
-  if (!ctx.resourceGraphClient || !ctx.subscriptionId || !ctx.repoSlug) return undefined;
+  const scopes =
+    ctx.subscriptionIds && ctx.subscriptionIds.length > 0
+      ? ctx.subscriptionIds
+      : ctx.subscriptionId
+        ? [ctx.subscriptionId]
+        : [];
+  if (!ctx.resourceGraphClient || scopes.length === 0 || !ctx.repoSlug) return undefined;
   let rows;
   try {
     rows = await ctx.resourceGraphClient.queryResources(
-      ctx.subscriptionId,
+      scopes,
       buildRepoTagLookupQuery(ctx.repoSlug, ctx.repoTagKeys ?? [], ctx.resourceGroup)
     );
   } catch {

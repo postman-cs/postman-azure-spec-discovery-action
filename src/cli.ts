@@ -60,6 +60,7 @@ class ConsoleReporter implements ReporterLike {
 const CLI_INPUT_NAMES = [
   'mode',
   'subscription-id',
+  'subscription-ids-json',
   'resource-group',
   'api-id',
   'environment',

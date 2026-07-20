@@ -42,6 +42,7 @@ const LOCKED_OUTPUT_ORDER = [
 const LOCKED_INPUT_ORDER = [
   'mode',
   'subscription-id',
+  'subscription-ids-json',
   'resource-group',
   'api-id',
   'environment',
