@@ -89,31 +89,97 @@ describe('APIM unsupported API types', () => {
   );
 });
 
+const REALISTIC_WSDL = `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://postman.example/payments"
+             name="PaymentsSoap"
+             targetNamespace="http://postman.example/payments">
+  <types/>
+  <message name="GetHealthRequest"/>
+  <message name="GetHealthResponse"/>
+  <portType name="PaymentsPortType">
+    <operation name="GetHealth">
+      <input message="tns:GetHealthRequest"/>
+      <output message="tns:GetHealthResponse"/>
+    </operation>
+  </portType>
+  <binding name="PaymentsBinding" type="tns:PaymentsPortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+  </binding>
+  <service name="PaymentsService">
+    <port name="PaymentsPort" binding="tns:PaymentsBinding"/>
+  </service>
+</definitions>`;
+
+const REALISTIC_GRAPHQL = `type Query {
+  ping: String!
+  health: Health!
+}
+
+type Health {
+  status: String!
+}
+`;
+
 describe('APIM SOAP and GraphQL exports', () => {
-  it('exports SOAP as native WSDL', async () => {
+  it('exports SOAP as native WSDL after validation', async () => {
     const client = clientForApiType('soap');
-    vi.mocked(client.exportApi).mockResolvedValue('<definitions/>');
+    vi.mocked(client.exportApi).mockResolvedValue(REALISTIC_WSDL);
     const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
     const candidate = (await provider.listCandidates())[0]!;
 
     expect(candidate.supported).toBe(true);
     await expect(provider.exportSpec(candidate)).resolves.toMatchObject({
-      content: '<definitions/>', format: 'wsdl', filename: 'service.wsdl'
+      content: REALISTIC_WSDL,
+      format: 'wsdl',
+      filename: 'service.wsdl',
+      contractClass: 'authoritative'
     });
     expect(client.exportApi).toHaveBeenCalledWith('rg', 'svc', 'payments', undefined, 'wsdl-link');
   });
 
-  it('exports GraphQL SDL for partial OpenAPI derivation', async () => {
+  it('exports GraphQL SDL after validation and preserves native bytes', async () => {
     const client = clientForApiType('graphql');
-    vi.mocked(client.getGraphqlSchema).mockResolvedValue('type Query { ping: String! }');
+    vi.mocked(client.getGraphqlSchema).mockResolvedValue(REALISTIC_GRAPHQL);
     const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
     const candidate = (await provider.listCandidates())[0]!;
 
     expect(candidate.supported).toBe(true);
     await expect(provider.exportSpec(candidate)).resolves.toMatchObject({
-      format: 'graphql-sdl', filename: 'schema.graphql'
+      content: REALISTIC_GRAPHQL,
+      format: 'graphql-sdl',
+      filename: 'schema.graphql',
+      contractClass: 'authoritative'
     });
     expect(client.getGraphqlSchema).toHaveBeenCalledWith('rg', 'svc', 'payments', undefined);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['HTML', '<!DOCTYPE html><html><body>not a spec</body></html>'],
+    ['malformed non-XML', 'not a wsdl document {{{'],
+    ['wrong-kind OpenAPI', '{"openapi":"3.0.3","info":{"title":"x","version":"1"},"paths":{}}'],
+    ['wrong-kind GraphQL SDL', REALISTIC_GRAPHQL]
+  ])('rejects %s SOAP native bytes before returning SpecExportResult', async (_label, content) => {
+    const client = clientForApiType('soap');
+    vi.mocked(client.exportApi).mockResolvedValue(content);
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+    await expect(provider.exportSpec(candidate)).rejects.toThrow(/native validation|wrong kind|empty|XML|wsdl|GraphQL|parseable/i);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['HTML', '<html><body>schema</body></html>'],
+    ['comment-only', '# just a comment\n'],
+    ['wrong-kind WSDL', REALISTIC_WSDL]
+  ])('rejects %s GraphQL native bytes before returning SpecExportResult', async (_label, content) => {
+    const client = clientForApiType('graphql');
+    vi.mocked(client.getGraphqlSchema).mockResolvedValue(content);
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+    await expect(provider.exportSpec(candidate)).rejects.toThrow(/native validation|wrong kind|empty|GraphQL|wsdl/i);
   });
 });
 

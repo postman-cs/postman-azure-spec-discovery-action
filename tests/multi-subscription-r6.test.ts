@@ -501,4 +501,59 @@ describe('R6 multi-scope discovery', () => {
     const other = `/subscriptions/${SUB_B}/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments`;
     await expect(provider.resolveExplicitApi(other)).resolves.toBeUndefined();
   });
+
+  it('AZ-IDENTITY-010: wrong-subscription exact ID stays scoped; insufficient RBAC is fail-soft; selected export remains fatal', async () => {
+    const providerA = new ApimProvider(stubApimClient(), { subscriptionId: SUB_A });
+    const foreign = `/subscriptions/${SUB_B}/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments`;
+    await expect(providerA.resolveExplicitApi(foreign)).resolves.toBeUndefined();
+
+    const result = await execute(
+      {
+        ...resolveInputs({
+          INPUT_REPO_ROOT: repoRoot,
+          INPUT_MODE: 'discover-many',
+          INPUT_SUBSCRIPTION_IDS_JSON: JSON.stringify([SUB_A, SUB_B])
+        }),
+        repoRoot
+      },
+      baseDeps({
+        createApimClient: (subscriptionId: string) => {
+          if (subscriptionId === SUB_A) {
+            return {
+              ...stubApimClient(),
+              probeApimReadAccess: vi.fn(async () => {
+                throw new Error('AuthorizationFailed: insufficient RBAC on SUB_A');
+              }),
+              listServices: vi.fn(async () => {
+                throw new Error('AuthorizationFailed: insufficient RBAC on SUB_A');
+              })
+            };
+          }
+          return apimClientWithApis(['payments']);
+        }
+      })
+    );
+    expect(result.discovered).toHaveLength(1);
+    expect(result.discovered[0]?.apiId?.toLowerCase()).toContain(SUB_B);
+
+    const selectedDenied = apimClientWithApis(['payments']);
+    selectedDenied.exportApi = vi.fn(async () => {
+      throw new Error('AuthorizationFailed: selected export denied');
+    });
+    await expect(
+      execute(
+        {
+          ...resolveInputs({
+            INPUT_REPO_ROOT: repoRoot,
+            INPUT_SUBSCRIPTION_IDS_JSON: JSON.stringify([SUB_B]),
+            INPUT_API_ID: `/subscriptions/${SUB_B}/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments`
+          }),
+          repoRoot
+        },
+        baseDeps({
+          createApimClient: () => selectedDenied
+        })
+      )
+    ).rejects.toThrow(/AuthorizationFailed|Export failed|selected export denied/i);
+  });
 });

@@ -10,6 +10,10 @@ import {
 } from '../arm-ids.js';
 import { isSecretKey, isSecretValue, sanitizeEvidenceValue } from '../secret-hygiene.js';
 
+/** Deterministic ceilings for recursive CI workflow object walks. */
+export const CI_WALK_MAX_DEPTH = 32;
+export const CI_WALK_MAX_NODES = 4000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -18,8 +22,37 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function flattenEnv(value: unknown, into: Record<string, string>): void {
+interface WalkBudget {
+  nodes: number;
+  seen: WeakSet<object>;
+  truncated: boolean;
+}
+
+function createWalkBudget(): WalkBudget {
+  return { nodes: 0, seen: new WeakSet<object>(), truncated: false };
+}
+
+function enterWalkNode(value: object, budget: WalkBudget, depth: number): boolean {
+  if (budget.truncated || depth > CI_WALK_MAX_DEPTH) {
+    budget.truncated = true;
+    return false;
+  }
+  if (budget.seen.has(value)) {
+    budget.truncated = true;
+    return false;
+  }
+  budget.seen.add(value);
+  budget.nodes += 1;
+  if (budget.nodes > CI_WALK_MAX_NODES) {
+    budget.truncated = true;
+    return false;
+  }
+  return true;
+}
+
+function flattenEnv(value: unknown, into: Record<string, string>, budget = createWalkBudget(), depth = 0): void {
   if (!isRecord(value)) return;
+  if (!enterWalkNode(value, budget, depth)) return;
   for (const [key, child] of Object.entries(value)) {
     if (isSecretKey(key)) continue;
     const text = asString(child);
@@ -32,34 +65,47 @@ function flattenEnv(value: unknown, into: Record<string, string>): void {
 
 function walkSteps(
   node: unknown,
-  visit: (step: Record<string, unknown>) => void
+  visit: (step: Record<string, unknown>) => void,
+  budget = createWalkBudget(),
+  depth = 0
 ): void {
+  if (budget.truncated) return;
   if (Array.isArray(node)) {
-    for (const entry of node) walkSteps(entry, visit);
+    if (!enterWalkNode(node, budget, depth)) return;
+    for (const entry of node) walkSteps(entry, visit, budget, depth + 1);
     return;
   }
   if (!isRecord(node)) return;
+  if (!enterWalkNode(node, budget, depth)) return;
   if (node.uses !== undefined || node.task !== undefined || node.script !== undefined || node.run !== undefined) {
     visit(node);
   }
   for (const child of Object.values(node)) {
-    if (child && typeof child === 'object') walkSteps(child, visit);
+    if (child && typeof child === 'object') walkSteps(child, visit, budget, depth + 1);
   }
 }
 
-function collectStringLeaves(value: unknown, into: string[]): void {
+function collectStringLeaves(
+  value: unknown,
+  into: string[],
+  budget = createWalkBudget(),
+  depth = 0
+): void {
+  if (budget.truncated) return;
   if (typeof value === 'string') {
     into.push(value);
     return;
   }
   if (Array.isArray(value)) {
-    for (const entry of value) collectStringLeaves(entry, into);
+    if (!enterWalkNode(value, budget, depth)) return;
+    for (const entry of value) collectStringLeaves(entry, into, budget, depth + 1);
     return;
   }
   if (!isRecord(value)) return;
+  if (!enterWalkNode(value, budget, depth)) return;
   for (const [key, child] of Object.entries(value)) {
     if (isSecretKey(key)) continue;
-    collectStringLeaves(child, into);
+    collectStringLeaves(child, into, budget, depth + 1);
   }
 }
 

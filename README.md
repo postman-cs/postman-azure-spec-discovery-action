@@ -4,13 +4,32 @@
 
 Zero-config discovery and export of API specs from Azure services using only your existing Azure credentials. Use it when a service already runs on Azure and you need a source-of-truth [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/) specification that Postman onboarding can turn into deterministic collections, OpenAPI-backed contract checks, smoke tests, mocks, monitors, repo artifacts, and CI runs.
 
-A valid repo-local OpenAPI/Swagger specification short-circuits discovery, so Azure is never called. Otherwise, all available supported Azure candidates enter the same narrowing and ranking flow: authored or exported sources from API Management (APIM), App Service, custom connectors, and local IaC; and synthesized or embedded sources from Logic Apps, Template Specs, Event Grid, Service Bus, and Function bindings. No fixed cascade applies among Azure providers. See [Supported providers](#supported-providers) and [provider contracts](docs/providers.md) for exact behavior.
+Exactly one repo-local native specification (OpenAPI, AsyncAPI, WSDL, WADL, XSD, protobuf, or GraphQL SDL) resolves without calling Azure. Multiple valid local specs fail closed unless an exact committed `.postman` binding selects one. Otherwise, all available supported Azure candidates enter the same narrowing and ranking flow: authored or exported sources from API Management (APIM), App Service, custom connectors, API Center, and local IaC; and synthesized or embedded sources from Logic Apps, Template Specs, Event Grid, Service Bus, and Function bindings. Container Apps contribute association-only source-control correlation (normalized repo URL + branch), not specification export. No fixed cascade applies among Azure providers. See [Supported providers](#supported-providers) and [provider contracts](docs/providers.md) for exact behavior.
 
 When several Azure candidates match, a four-tier narrowing pipeline (IaC fingerprint, resource-group correlation, repo-tag prefilter, naming heuristic) orders them, and genuinely ambiguous results surface as a ranked GitHub Step Summary table instead of a guess. The tag prefilter selects outright when exactly one candidate carries a select-grade repo tag for the calling repository: canonical `postman:repo=<org>/<repo>`, the Fox-style `GithubOrg`/`GithubRepo` pair, or any extra keys supplied via the CLI-only `--repo-tag-keys-json` flag. Tag names and values compare case-insensitively (a trailing `.git` is tolerated), and when enumerated candidates carry no matching tags a single targeted Resource Graph tag lookup runs as a fallback — so a gateway tagged with its owning repo resolves automatically, per service repo, with zero further configuration.
 
 ## Auth and Postman handoff
 
-The action authenticates with `DefaultAzureCredential` — GitHub OIDC via `azure/login`, environment credentials, or Azure CLI login all work with no extra configuration. Grant only the provider-specific read access described in [Security and IAM](docs/providers.md#security-and-iam). It never creates, modifies, or deletes Azure resources.
+The action authenticates with `DefaultAzureCredential` and adds no secret inputs of its own. Grant only the provider-specific read access described in [Security and IAM](docs/providers.md#security-and-iam). It never creates, modifies, or deletes Azure resources.
+
+Supported identity forms (ambient credential chain only):
+
+| Mode | How it reaches the action | Notes |
+| --- | --- | --- |
+| GitHub OIDC (immutable repository ID) | `azure/login` with federated credential subject `repo:<ORG_ID>/<REPO_ID>:...` | Prefer repository-ID subjects so renames cannot retarget the trust. Requires workflow `id-token: write`. |
+| GitHub OIDC (legacy name subject) | `azure/login` with subject `repo:<org>/<repo>:...` | Still accepted by Entra app federated credentials; treat as legacy and migrate to repository-ID subjects when possible. |
+| Azure DevOps workload identity federation | Pipeline service connection / `AzureCLI@2` (or equivalent) that federates into Entra | Used by this repo's live-validation pipeline; no personal `az login` and no committed tenant/subscription secrets. |
+| Azure-hosted managed identity | Runner or compute MSI visible to `DefaultAzureCredential` | Scope the MSI to the selected subscription or resource group with least-privilege Reader (plus APIM/API Center roles when those providers are used). |
+| Service-principal environment credentials | Standard `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_CLIENT_SECRET` (or certificate) env vars | No action inputs accept these secrets; configure them on the runner/OIDC login step only. |
+
+Least-privilege / scoped failure behavior:
+
+- Missing or expired tokens, wrong tenant, and invisible subscriptions fail closed before discovery mutates anything.
+- Insufficient RBAC on an unselected provider is fail-soft (`skipped:iam`); discovery continues with providers the credential can read.
+- A selected exact export that is denied remains fatal for the run.
+- Absence evidence is always scoped to the selected subscription(s); the action never claims that no APIs exist globally.
+
+Cloud endpoint profiles (Public, US Government, China) are constructed and unit-tested locally. They are **not** live-validated unless committed live evidence says otherwise. API Center sovereign-cloud parity remains unsupported pending live proof. See [docs/providers.md](docs/providers.md#cloud-subscription-scope-and-absence).
 
 The optional `postman-api-key` / `postman-access-token` inputs exist only to enrich anonymous telemetry with the session account type. They are never used for Azure calls or Postman asset operations.
 
@@ -117,7 +136,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `enable-app-service-scm-spec-fetch` | Opt-in retrieval of App Service aiIntegration.ApiSpecPath bytes through the site SCM/VFS endpoint. Default false. Metadata is still surfaced when the path is present. | no | `false` |
 | `enable-functions-openapi-extension` | Opt-in detection/export of Azure Functions OpenAPI extension endpoints evidenced by function metadata or an explicit declared path. Default false. Never lists host/function keys. | no | `false` |
 | `enable-runtime-declared-spec-routes` | Opt-in provider for explicitly declared HTTPS specification URLs on App Service, Functions, Container Apps, Static Web Apps, ACI, and AKS workloads. Default false. No blind common-path probing. | no | `false` |
-| `runtime-declared-spec-targets-json` | JSON array of explicit runtime-declared specification targets when enable-runtime-declared-spec-routes is true. Each entry requires id, name, workloadKind, and https url. | no | `[]` |
+| `runtime-declared-spec-targets-json` | Requested subset of runtime-declared HTTPS specification targets when enable-runtime-declared-spec-routes is true. Each entry requires id, name, workloadKind, and https url. Caller JSON alone is rejected; every target must match a committed .postman/repository binding or authorized ARM association evidence. | no | `[]` |
 <!-- inputs-table:end -->
 
 ## Outputs
@@ -153,27 +172,58 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 
 ## Supported providers
 
-| Provider | Source | Exported format |
-| --- | --- | --- |
-| `apim` | Azure API Management current HTTP, SOAP, or GraphQL API revision | OpenAPI JSON; native WSDL; native GraphQL SDL + partial OpenAPI 3.0.3 derivation |
-| `app-service` | App Service `siteConfig.apiDefinition.url` document | OpenAPI JSON or YAML |
-| `custom-apis` | Logic Apps custom connector inline swagger (`Microsoft.Web/customApis`) | Swagger/OpenAPI JSON |
-| `logic-apps` | Consumption Logic App HTTP Request triggers (`Microsoft.Logic/workflows`) | Partial OpenAPI 3.0 JSON (synthesized) |
-| `template-specs` | Template Spec version embedded APIM inline documents (`Microsoft.Resources/templateSpecs/versions`) | OpenAPI/Swagger JSON (partial) |
-| `event-grid` | Event Grid topic/domain/system-topic webhook subscriptions (synthesized delivery contract) | OpenAPI 3.0 JSON (partial) |
-| `service-bus` | Service Bus topic/subscription/rule metadata (synthesized publish contract) | OpenAPI 3.0 JSON (partial) |
-| `function-bindings` | Azure Functions trigger bindings (`sites/functions` config.bindings) | OpenAPI 3.0 JSON (partial) |
-| `iac-local` | OpenAPI embedded in repo ARM/Bicep templates or referenced by `azure.yaml` | OpenAPI JSON or YAML |
+Provider and route support/validation labels are generated from [`coverage/route-claims.json`](coverage/route-claims.json). `live` requires a matching passing case in committed evidence; `unit-only` and `local-only` never promote a route; `planned:` mappings are harness case ids awaiting sanitized passes. See [docs/COVERAGE.md](docs/COVERAGE.md).
 
-APIM SOAP and GraphQL APIs are exportable; WebSocket, gRPC, and OData remain visible-unsupported candidates routed to manual review. Service- and workspace-scoped APIM APIs are both enumerated. Azure API Center definitions are discovered and exported as authoritative native contracts; exact definition ARM IDs export directly without broad inventory. Custom connectors without an inline swagger document stay visible as manual-review candidates. Container Apps and management-group enumeration are out of scope for now.
+<!-- coverage-table:start -->
+| Route | Provider | Contract | Validation | Evidence mapping |
+| --- | --- | --- | --- | --- |
+| `repo.spec.named-file` | `repo` | authoritative | local-only | local-only rationale |
+| `iac-local.arm-embedded` | `iac-local` | authoritative | live | live:`iac-single` |
+| `apim.http.explicit-api-id` | `apim` | authoritative | live | live:`apim-explicit-api-id` |
+| `apim.http.service-discovery` | `apim` | authoritative | live | live:`apim-discovery` |
+| `apim.http.workspace` | `apim` | authoritative | unit-only | local-only rationale |
+| `apim.revision.current-filter` | `apim` | authoritative | unit-only | planned:`apim-version-set` |
+| `apim.soap.wsdl-export` | `apim` | authoritative | unit-only | planned:`apim-soap-wsdl` |
+| `apim.graphql.sdl` | `apim` | authoritative | unit-only | planned:`apim-graphql-sdl` |
+| `apim.websocket` | `apim` | unsupported | unsupported | planned:`apim-unsupported-websocket` |
+| `apim.grpc` | `apim` | unsupported | unsupported | planned:`apim-unsupported-grpc` |
+| `apim.odata` | `apim` | unsupported | unsupported | planned:`apim-unsupported-odata` |
+| `app-service.api-definition-url` | `app-service` | authoritative | live | live:`app-service-api-definition` |
+| `custom-apis.inline-swagger` | `custom-apis` | authoritative | unit-only | planned:`custom-apis-inline-swagger` |
+| `logic-apps.request-trigger-synthesis` | `logic-apps` | partial | unit-only | planned:`logic-apps-reader-synthesis` |
+| `template-specs.embedded-apim` | `template-specs` | partial | unit-only | planned:`template-specs-embedded-apim` |
+| `event-grid.webhook-synthesis` | `event-grid` | partial | unit-only | planned:`event-grid-webhook-partial` |
+| `service-bus.topic-publish-synthesis` | `service-bus` | partial | unit-only | planned:`service-bus-topic-partial` |
+| `function-bindings.trigger-synthesis` | `function-bindings` | partial | unit-only | local-only rationale |
+| `association.postman-repo-tag` | `association` | association-only | unit-only | planned:`apim-clean-repo-tag` |
+| `association.fox-github-org-repo` | `association` | association-only | unit-only | planned:`apim-clean-repo-fox-pair` |
+| `association.gateway-hostname-hint` | `association` | association-only | unit-only | planned:`apim-gateway-host-path` |
+| `association.gateway-api-assignment` | `association` | association-only | unit-only | local-only rationale |
+| `association.exact-binding` | `association` | association-only | unit-only | local-only rationale |
+| `association.clean-repo-host-path` | `association` | association-only | unit-only | planned:`apim-gateway-host-path` |
+| `association.app-service-container-apps-source-control` | `association` | association-only | unit-only | local-only rationale |
+| `mode.discover-many` | `runtime` | authoritative | live | live:`discover-many` |
+| `mode.discover-estate` | `runtime` | association-only | unit-only | local-only rationale |
+| `resolver.ambiguity` | `runtime` | association-only | live | live:`ambiguity` |
+| `api-center.definition-export` | `api-center` | authoritative | unit-only | planned:`api-center-openapi-export` |
+| `repo.spec.native-formats-r3` | `repo` | authoritative | local-only | planned:`local-r3-format-parser-matrix` |
+| `logic-apps.native-list-swagger-r4` | `logic-apps` | reconstructed | unit-only | planned:`logic-apps-list-swagger` |
+| `app-service.documented-scm-spec-r4` | `app-service` | authoritative | unit-only | planned:`app-service-apispecpath-runtime` |
+| `function-bindings.openapi-extension-r4` | `function-bindings` | authoritative | unit-only | planned:`function-bindings-openapi-extension` |
+| `runtime-declared.explicit-https-r4` | `runtime-declared` | authoritative | unit-only | local-only rationale |
+| `platform.sovereign-cloud` | `platform` | authoritative | unit-only | local-only rationale |
+| `platform.multi-subscription-scope` | `platform` | authoritative | unit-only | local-only rationale |
+<!-- coverage-table:end -->
+
+APIM SOAP and GraphQL APIs are exportable; WebSocket, gRPC, and OData remain visible-unsupported candidates routed to manual review. Service- and workspace-scoped APIM APIs are both enumerated. Azure API Center definitions are discovered and exported as authoritative native contracts; exact definition ARM IDs export directly without broad inventory. Custom connectors without an inline swagger document stay visible as manual-review candidates. App Service and Container Apps source-control records are association-only correlation evidence (not a spec provider). Management-group enumeration remains out of scope.
 
 ## How it works
 
 1. Resolve inputs, repository context, and the selected subscription scope(s) (explicit `subscription-id` and/or `subscription-ids-json`, or the single enabled subscription).
-2. Short-circuit to a committed repo spec when one exists.
+2. Resolve exactly one local native specification when present; when more than one valid local native spec remains, fail closed unless an exact committed binding selects one.
 3. Probe providers fail-soft: an unauthorized provider is skipped (`skipped:iam`), an erroring one is skipped (`skipped:error`), and discovery continues with the rest.
-4. Enumerate lightweight candidate headers (bounded concurrency), narrow with the four-tier pipeline across the full header set, then hydrate only the selected partition in `resolve-one` (or the post-cap set in `discover-many`). See [Enumeration cost and hydration](docs/providers.md#enumeration-cost-and-hydration).
-5. Export the winner (APIM ARM export, guarded HTTPS fetch, or IaC extraction), validate it is real OpenAPI/Swagger with at least one path, and write it under `output-dir` confined to the repository root.
+4. Enumerate lightweight candidate headers (bounded concurrency), narrow with the four-tier pipeline across the full header set (including association-only App Service / Container Apps source-control correlation when available), then hydrate only the selected partition in `resolve-one` (or the post-cap set in `discover-many`). See [Enumeration cost and hydration](docs/providers.md#enumeration-cost-and-hydration).
+5. Export the winner (APIM ARM export, API Center definition export, guarded HTTPS fetch, or IaC extraction). Repository and API Center native formats are preserved and validated for their detected kind (not OpenAPI-only); OpenAPI/Swagger exports still require at least one path. Write under `output-dir` confined to the repository root.
 6. Emit all 24 outputs; ambiguous resolutions additionally render a ranked Step Summary table.
 
 ## Resources

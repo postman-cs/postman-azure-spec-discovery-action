@@ -26,16 +26,22 @@ import type {
 } from './lib/azure/clients.js';
 import type { AzureApiCenterClient } from './lib/azure/api-center-client.js';
 import {
+  sourceControlAssociationEvidence,
+  sourceControlMatchesRepoContext,
+  type AzureSourceControlClient,
+  type SourceControlAssociation
+} from './lib/azure/source-control-client.js';
+import {
   RuntimeDeclaredRoutesProvider,
   type RuntimeDeclaredSpecTarget,
   type RuntimeDeclaredWorkloadKind
 } from './lib/providers/runtime-declared-routes.js';
 import { sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
-import { findExistingRepoSpecTyped } from './lib/repo/specs.js';
 import { collectRepoSignals, type RepoSignals } from './lib/repo/signals.js';
 import { loadAzureResolverBinding, type AzureResolverBinding } from './lib/repo/azure-bindings.js';
 import { scanAzureIac, type IacScanResult } from './lib/repo/azure-iac-scanner.js';
+import type { LocalSpecCandidate, RepositoryDiscoveryResult } from './lib/repo/discovery-types.js';
 import { chooseSource, sourceTypeFor } from './lib/resolve/source-selector.js';
 import {
   rankServiceCandidates,
@@ -46,9 +52,9 @@ import {
 } from './lib/resolve/service-resolver.js';
 import { runNarrowingPipeline, type NarrowingCandidate, type NarrowingResult } from './lib/resolve/narrowing-pipeline.js';
 import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
-import { enumerateEstate, type EstateRepo } from './lib/estate/enumerate.js';
+import { enumerateEstate, parseRepoSlug, type EstateRepo } from './lib/estate/enumerate.js';
 import { deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
-import { parseAndValidateOpenApi } from './lib/spec/validate-openapi.js';
+import { parseAndValidateNativeSpec } from './lib/spec/native-formats.js';
 import { ApimProvider, parseApimApiArmId } from './lib/providers/apim.js';
 import { ApiCenterProvider } from './lib/providers/api-center.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
@@ -137,6 +143,7 @@ export interface AzureDependencies {
   createEventGridClient?: (subscriptionId: string) => AzureEventGridClient;
   createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
   createFunctionsClient?: (subscriptionId: string) => AzureFunctionsClient;
+  createSourceControlClient?: (subscriptionId: string) => AzureSourceControlClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile: (outputPath: string, content: string, rootPath: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -491,9 +498,27 @@ function toNarrowingCandidate(candidate: SpecCandidate): NarrowingCandidate {
   };
 }
 
+function normalizeRepoRelativePath(value: string): string {
+  return value.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function uniqueExactIds(
+  values: Array<string | undefined>,
+  label: string
+): string | undefined {
+  const unique = [...new Set(values.filter((value): value is string => Boolean(value)))];
+  if (unique.length > 1) {
+    throw new Error(
+      sanitizeLogMessage(`Conflicting exact ${label} bindings in repository discovery; refusing to choose`)
+    );
+  }
+  return unique[0];
+}
+
 function mergeBindingSelectors(
   inputs: ResolvedInputs,
-  binding: AzureResolverBinding | undefined
+  binding: AzureResolverBinding | undefined,
+  discovery?: RepositoryDiscoveryResult
 ): {
   apiId?: string;
   apiCenterDefinitionId?: string;
@@ -503,67 +528,240 @@ function mergeBindingSelectors(
   apiRevision?: string;
   bindingEvidence: string[];
 } {
-  if (!binding) {
-    return {
-      apiId: inputs.apiId,
-      apiCenterDefinitionId: inputs.apiCenterDefinitionId,
-      environment: inputs.environment,
-      gatewayId: inputs.gatewayId,
-      apiVersion: inputs.apiVersion,
-      apiRevision: inputs.apiRevision,
-      bindingEvidence: []
-    };
-  }
-  if (inputs.apiId && binding.apimApiId && inputs.apiId !== binding.apimApiId) {
+  const discoveryApim = uniqueExactIds(
+    (discovery?.exactBindings ?? []).map((entry) => entry.apimApiId),
+    'APIM API ID'
+  );
+  const discoveryCenter = uniqueExactIds(
+    (discovery?.exactBindings ?? []).map((entry) => entry.apiCenterDefinitionId),
+    'API Center definition ID'
+  );
+  const bindingEvidence = [
+    ...(binding?.evidence ?? []),
+    ...(discoveryApim ? [`Folded unique exact parser APIM API ID`] : []),
+    ...(discoveryCenter ? [`Folded unique exact parser API Center definition ID`] : [])
+  ];
+
+  if (inputs.apiId && binding?.apimApiId && inputs.apiId !== binding.apimApiId) {
     throw new Error('Conflicting api-id input and .postman Azure resolver binding; refusing to choose');
   }
   if (
     inputs.apiCenterDefinitionId &&
-    binding.apiCenterDefinitionId &&
+    binding?.apiCenterDefinitionId &&
     inputs.apiCenterDefinitionId !== binding.apiCenterDefinitionId
   ) {
     throw new Error(
       'Conflicting api-center-definition-id input and .postman Azure resolver binding; refusing to choose'
     );
   }
-  if (inputs.gatewayId && binding.gatewayId && inputs.gatewayId !== binding.gatewayId) {
+  if (inputs.gatewayId && binding?.gatewayId && inputs.gatewayId !== binding.gatewayId) {
     throw new Error('Conflicting gateway-id input and .postman Azure resolver binding; refusing to choose');
   }
+  if (discoveryApim && binding?.apimApiId && discoveryApim !== binding.apimApiId) {
+    throw new Error(
+      'Conflicting exact APIM API ID between .postman binding and repository discovery; refusing to choose'
+    );
+  }
+  if (
+    discoveryCenter &&
+    binding?.apiCenterDefinitionId &&
+    discoveryCenter !== binding.apiCenterDefinitionId
+  ) {
+    throw new Error(
+      'Conflicting exact API Center definition ID between .postman binding and repository discovery; refusing to choose'
+    );
+  }
+  if (discoveryApim && inputs.apiId && discoveryApim !== inputs.apiId) {
+    throw new Error('Conflicting api-id input and exact repository discovery binding; refusing to choose');
+  }
+  if (discoveryCenter && inputs.apiCenterDefinitionId && discoveryCenter !== inputs.apiCenterDefinitionId) {
+    throw new Error(
+      'Conflicting api-center-definition-id input and exact repository discovery binding; refusing to choose'
+    );
+  }
+
+  const apiId = uniqueExactIds([inputs.apiId, binding?.apimApiId, discoveryApim], 'api-id');
+  const apiCenterDefinitionId = uniqueExactIds(
+    [inputs.apiCenterDefinitionId, binding?.apiCenterDefinitionId, discoveryCenter],
+    'api-center-definition-id'
+  );
+  const gatewayId = uniqueExactIds([inputs.gatewayId, binding?.gatewayId], 'gateway-id');
+
   return {
-    apiId: inputs.apiId ?? binding.apimApiId,
-    apiCenterDefinitionId: inputs.apiCenterDefinitionId ?? binding.apiCenterDefinitionId,
-    environment: inputs.environment ?? binding.environment,
-    gatewayId: inputs.gatewayId ?? binding.gatewayId,
-    apiVersion: inputs.apiVersion ?? binding.apiVersion,
-    apiRevision: inputs.apiRevision ?? binding.apiRevision,
-    bindingEvidence: binding.evidence
+    apiId,
+    apiCenterDefinitionId,
+    environment: inputs.environment ?? binding?.environment,
+    gatewayId,
+    apiVersion: inputs.apiVersion ?? binding?.apiVersion,
+    apiRevision: inputs.apiRevision ?? binding?.apiRevision,
+    bindingEvidence
+  };
+}
+
+function sanitizeTargetUrlForEvidence(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.search = '';
+    parsed.hash = '';
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString();
+  } catch {
+    return '[invalid-url]';
+  }
+}
+
+function normalizeTargetUrlKey(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return undefined;
+    if (parsed.username || parsed.password) return undefined;
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Runtime-declared targets must be corroborated by the committed .postman
+ * binding or an authorized ARM association URL. Caller JSON alone is rejected.
+ */
+export function corroborateRuntimeDeclaredTargets(
+  inputs: ResolvedInputs,
+  binding: AzureResolverBinding | undefined,
+  discovery?: RepositoryDiscoveryResult
+): RuntimeDeclaredSpecTarget[] {
+  if (!inputs.enableRuntimeDeclaredSpecRoutes) {
+    return [];
+  }
+
+  const authorizedByUrl = new Map<string, RuntimeDeclaredSpecTarget>();
+  for (const target of binding?.runtimeDeclaredSpecTargets ?? []) {
+    const key = normalizeTargetUrlKey(target.url);
+    if (key) authorizedByUrl.set(key, target);
+  }
+  for (const entry of [...(discovery?.exactBindings ?? []), ...(discovery?.associations ?? [])]) {
+    if (!entry.nativeSpecUrl) continue;
+    const key = normalizeTargetUrlKey(entry.nativeSpecUrl);
+    if (!key || authorizedByUrl.has(key)) continue;
+    authorizedByUrl.set(key, {
+      id: entry.serviceName ?? key,
+      name: entry.serviceName ?? 'runtime-declared',
+      url: entry.nativeSpecUrl,
+      workloadKind: 'app-service',
+      evidence: [
+        `Authorized ARM/repository association URL ${sanitizeTargetUrlForEvidence(entry.nativeSpecUrl)}`
+      ]
+    });
+  }
+
+  const callerTargets = inputs.runtimeDeclaredSpecTargets;
+  if (callerTargets.length === 0) {
+    return [...authorizedByUrl.values()].sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  const corroborated: RuntimeDeclaredSpecTarget[] = [];
+  for (const target of callerTargets) {
+    const key = normalizeTargetUrlKey(target.url);
+    if (!key || !authorizedByUrl.has(key)) {
+      throw new Error(
+        sanitizeLogMessage(
+          'Uncorroborated runtime-declared-spec-targets-json entry rejected; targets must match a committed .postman binding or authorized ARM association URL'
+        )
+      );
+    }
+    const authorized = authorizedByUrl.get(key)!;
+    corroborated.push({
+      ...target,
+      evidence: [
+        ...(authorized.evidence ?? []),
+        `Corroborated runtime-declared target ${sanitizeTargetUrlForEvidence(target.url)}`
+      ]
+    });
+  }
+  return corroborated;
+}
+
+function selectUniqueDiscoveryNativeSpecPath(
+  discovery: RepositoryDiscoveryResult
+): { path: string; evidence: string[] } | undefined {
+  const pathBindings = [...discovery.exactBindings, ...discovery.associations]
+    .map((entry) => entry.nativeSpecPath)
+    .filter((value): value is string => Boolean(value))
+    .map(normalizeRepoRelativePath);
+  const uniquePaths = [...new Set(pathBindings)];
+  if (uniquePaths.length !== 1) return undefined;
+  const onlyPath = uniquePaths[0]!;
+  const matches = discovery.localSpecs.filter(
+    (spec) => normalizeRepoRelativePath(spec.path) === onlyPath
+  );
+  if (matches.length !== 1 || !matches[0]) return undefined;
+  return {
+    path: matches[0].path,
+    evidence: [
+      `Selected unique exact manifest/pipeline/IaC nativeSpecPath binding ${matches[0].path}`,
+      ...matches[0].evidence
+    ]
   };
 }
 
 async function resolveBoundNativeSpec(
   inputs: ResolvedInputs,
-  binding: AzureResolverBinding | undefined
+  binding: AzureResolverBinding | undefined,
+  discovery?: RepositoryDiscoveryResult
 ): Promise<ResolutionResult | undefined> {
-  if (!binding?.nativeSpecPath) return undefined;
-  const relativePath = binding.nativeSpecPath.replace(/\\/g, '/');
+  const discoverySelection = discovery ? selectUniqueDiscoveryNativeSpecPath(discovery) : undefined;
+  const relativePath = binding?.nativeSpecPath
+    ? normalizeRepoRelativePath(binding.nativeSpecPath)
+    : discoverySelection?.path;
+  if (!relativePath) return undefined;
+
   const absolutePath = resolvePathWithinRoot(inputs.repoRoot, relativePath, 'nativeSpecPath');
   let content: string;
+  let format: SpecFormat;
   try {
     content = await readFile(absolutePath, 'utf8');
-    parseAndValidateOpenApi(content);
+    const validated = parseAndValidateNativeSpec(content);
+    format = validated.format;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(sanitizeLogMessage(`Exact .postman nativeSpecPath could not be read as an OpenAPI document: ${detail}`));
+    throw new Error(
+      sanitizeLogMessage(
+        `Exact nativeSpecPath could not be read as a supported native specification: ${detail}`
+      )
+    );
   }
+  const matchedLocal = discovery?.localSpecs.find(
+    (spec) => normalizeRepoRelativePath(spec.path) === relativePath
+  );
   return {
     status: 'resolved',
     sourceType: 'repo-spec',
     serviceName: inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop() ?? 'repository-spec',
     confidence: 100,
     specPath: relativePath,
-    specFormat: relativePath.toLowerCase().endsWith('.json') ? 'openapi-json' : 'openapi-yaml',
-    evidence: [...binding.evidence, `Resolved exact native repository specification ${relativePath}`]
+    specFormat: format,
+    evidence: [
+      ...(binding?.evidence ?? []),
+      ...(discoverySelection?.evidence ?? []),
+      ...(matchedLocal?.evidence ?? []),
+      `Resolved exact native repository specification ${relativePath} as ${format}`
+    ]
   };
+}
+
+function localSpecsToRankedViews(localSpecs: LocalSpecCandidate[]): RankedServiceCandidate[] {
+  return localSpecs.map((spec, index) => ({
+    serviceName: path.posix.basename(spec.path),
+    resourceId: spec.path,
+    providerType: 'iac-local' as const,
+    confidence: Math.max(0, 100 - index),
+    supported: true,
+    ambiguous: localSpecs.length > 1,
+    evidence: [...spec.evidence, `Local specification rank score ${spec.rankScore}`]
+  }));
 }
 
 /**
@@ -835,7 +1033,8 @@ async function probeProviders(providers: SpecProvider[], core: ReporterLike): Pr
 function buildCloudProvidersForSubscription(
   inputs: ResolvedInputs,
   subscriptionId: string,
-  dependencies: AzureDependencies
+  dependencies: AzureDependencies,
+  functionsOpenApiPath?: string
 ): BoundProvider[] {
   const bound: BoundProvider[] = [
     {
@@ -930,6 +1129,9 @@ function buildCloudProvidersForSubscription(
             provider: new FunctionBindingsProvider(dependencies.createFunctionsClient(subscriptionId), {
               resourceGroup: inputs.resourceGroup,
               enableOpenApiExtension: inputs.enableFunctionsOpenApiExtension,
+              ...(inputs.enableFunctionsOpenApiExtension && functionsOpenApiPath
+                ? { explicitOpenApiPath: functionsOpenApiPath }
+                : {}),
               requestTimeoutMs: inputs.requestTimeoutMs
             })
           }
@@ -943,24 +1145,213 @@ function buildBoundProviders(
   inputs: ResolvedInputs,
   subscriptionIds: string[],
   dependencies: AzureDependencies,
-  iacScan: IacScanResult
+  iacScan: IacScanResult,
+  runtimeDeclaredTargets: RuntimeDeclaredSpecTarget[] = [],
+  functionsOpenApiPath?: string
 ): BoundProvider[] {
   if (dependencies.providers) {
     return dependencies.providers.map((provider) => ({ provider }));
   }
   const bound: BoundProvider[] = [];
   for (const subscriptionId of subscriptionIds) {
-    bound.push(...buildCloudProvidersForSubscription(inputs, subscriptionId, dependencies));
+    bound.push(
+      ...buildCloudProvidersForSubscription(inputs, subscriptionId, dependencies, functionsOpenApiPath)
+    );
   }
   bound.push({
     provider: new RuntimeDeclaredRoutesProvider({
       enabled: inputs.enableRuntimeDeclaredSpecRoutes,
-      targets: inputs.runtimeDeclaredSpecTargets,
+      targets: runtimeDeclaredTargets,
       requestTimeoutMs: inputs.requestTimeoutMs
     })
   });
   bound.push({ provider: new IacLocalProvider(iacScan) });
   return bound;
+}
+
+/** Bounded concurrency for ARM source-control association enrichment. */
+const SOURCE_CONTROL_ENRICHMENT_CONCURRENCY = 4;
+
+interface VisibleSourceControlTarget {
+  subscriptionId: string;
+  resourceGroup: string;
+  name: string;
+  kind: 'app-service' | 'container-apps';
+  resourceId: string;
+}
+
+function parseVisibleWebOrContainerApp(resourceId: string): VisibleSourceControlTarget | undefined {
+  const site = /^\/subscriptions\/([^/]+)\/resourceGroups\/([^/]+)\/providers\/Microsoft\.Web\/sites\/([^/]+)/i.exec(
+    resourceId
+  );
+  if (site) {
+    return {
+      subscriptionId: site[1]!,
+      resourceGroup: site[2]!,
+      name: site[3]!,
+      kind: 'app-service',
+      resourceId: `/subscriptions/${site[1]}/resourceGroups/${site[2]}/providers/Microsoft.Web/sites/${site[3]}`
+    };
+  }
+  const ca =
+    /^\/subscriptions\/([^/]+)\/resourceGroups\/([^/]+)\/providers\/Microsoft\.App\/containerApps\/([^/]+)/i.exec(
+      resourceId
+    );
+  if (ca) {
+    return {
+      subscriptionId: ca[1]!,
+      resourceGroup: ca[2]!,
+      name: ca[3]!,
+      kind: 'container-apps',
+      resourceId: `/subscriptions/${ca[1]}/resourceGroups/${ca[2]}/providers/Microsoft.App/containerApps/${ca[3]}`
+    };
+  }
+  return undefined;
+}
+
+async function mapPool<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+async function querySourceControlAssociations(
+  targets: VisibleSourceControlTarget[],
+  dependencies: AzureDependencies,
+  signal?: AbortSignal
+): Promise<SourceControlAssociation[]> {
+  if (!dependencies.createSourceControlClient || targets.length === 0) return [];
+  const byKey = new Map<string, VisibleSourceControlTarget>();
+  for (const target of targets) {
+    byKey.set(target.resourceId.toLowerCase(), target);
+  }
+  const unique = [...byKey.values()];
+  const associations: SourceControlAssociation[] = [];
+  await mapPool(unique, SOURCE_CONTROL_ENRICHMENT_CONCURRENCY, async (target) => {
+    signal?.throwIfAborted();
+    const client = dependencies.createSourceControlClient!(target.subscriptionId);
+    if (target.kind === 'app-service') {
+      const result = await client.getAppServiceSourceControl(target.resourceGroup, target.name, signal);
+      if (result.status === 'ok') associations.push(result.association);
+      return;
+    }
+    const results = await client.listContainerAppSourceControls(target.resourceGroup, target.name, signal);
+    for (const result of results) {
+      if (result.status === 'ok') associations.push(result.association);
+    }
+  });
+  return associations;
+}
+
+/**
+ * Attach matching Azure source-control repo URL/branch as association-only
+ * narrowing tags/evidence. Never resolves from source-control alone.
+ */
+function applySourceControlAssociationsToCandidates(
+  candidates: SpecCandidate[],
+  associations: SourceControlAssociation[],
+  inputs: ResolvedInputs
+): SpecCandidate[] {
+  if (associations.length === 0) return candidates;
+  const byResource = new Map<string, SourceControlAssociation[]>();
+  for (const association of associations) {
+    const key = association.resourceId.toLowerCase();
+    const list = byResource.get(key) ?? [];
+    list.push(association);
+    byResource.set(key, list);
+  }
+  return candidates.map((candidate) => {
+    const coords = parseVisibleWebOrContainerApp(candidate.id);
+    if (!coords) return candidate;
+    const matches = (byResource.get(coords.resourceId.toLowerCase()) ?? []).filter((association) =>
+      sourceControlMatchesRepoContext(association, inputs.repoContext.repoSlug, inputs.repoContext.ref)
+    );
+    if (matches.length === 0) return candidate;
+    // Multiple matching associations remain association-only narrowing evidence.
+    const slug = parseRepoSlug(inputs.repoContext.repoSlug ?? '');
+    const evidence = [
+      ...candidate.evidence,
+      ...matches.map((association) => sourceControlAssociationEvidence(association)),
+      ...(matches.length > 1
+        ? [`Multiple Azure source-control associations matched ${slug ? `${slug.org}/${slug.repo}` : 'repository'}; association-only`]
+        : [])
+    ];
+    const tags = { ...candidate.tags };
+    if (slug) {
+      // github:repository is generic-tier narrowing (never select-grade alone).
+      tags['github:repository'] = `${slug.org}/${slug.repo}`;
+    }
+    return {
+      ...candidate,
+      tags,
+      evidence,
+      meta: {
+        ...candidate.meta,
+        sourceControlBranch: matches[0]!.branch,
+        sourceControlRepoUrl: matches[0]!.repoUrl,
+        sourceControlAssociationCount: String(matches.length)
+      }
+    };
+  });
+}
+
+async function enrichCandidatesWithSourceControl(
+  candidates: SpecCandidate[],
+  inputs: ResolvedInputs,
+  subscriptionIds: string[],
+  dependencies: AzureDependencies,
+  graphRows: Map<string, { resourceGroup: string; tags: Record<string, string> }>,
+  core: ReporterLike
+): Promise<SpecCandidate[]> {
+  if (!dependencies.createSourceControlClient) return candidates;
+  const selected = new Set(subscriptionIds.map((id) => id.toLowerCase()));
+  const targets: VisibleSourceControlTarget[] = [];
+  for (const candidate of candidates) {
+    if (candidate.providerType !== 'app-service' && candidate.providerType !== 'function-bindings') {
+      const ca = parseVisibleWebOrContainerApp(candidate.id);
+      if (ca?.kind === 'container-apps' && selected.has(ca.subscriptionId.toLowerCase())) {
+        if (!inputs.resourceGroup || ca.resourceGroup.toLowerCase() === inputs.resourceGroup.toLowerCase()) {
+          targets.push(ca);
+        }
+      }
+      continue;
+    }
+    const coords = parseVisibleWebOrContainerApp(candidate.id);
+    if (!coords || !selected.has(coords.subscriptionId.toLowerCase())) continue;
+    if (inputs.resourceGroup && coords.resourceGroup.toLowerCase() !== inputs.resourceGroup.toLowerCase()) {
+      continue;
+    }
+    targets.push(coords);
+  }
+  for (const [id] of graphRows) {
+    const coords = parseVisibleWebOrContainerApp(id);
+    if (!coords || !selected.has(coords.subscriptionId.toLowerCase())) continue;
+    if (inputs.resourceGroup && coords.resourceGroup.toLowerCase() !== inputs.resourceGroup.toLowerCase()) {
+      continue;
+    }
+    if (coords.kind === 'container-apps' || coords.kind === 'app-service') {
+      targets.push(coords);
+    }
+  }
+  try {
+    const controller = new AbortController();
+    const associations = await querySourceControlAssociations(targets, dependencies, controller.signal);
+    return applySourceControlAssociationsToCandidates(candidates, associations, inputs);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    core.warning(sanitizeLogMessage(`Azure source-control association enrichment failed (fail-soft): ${detail}`));
+    return candidates;
+  }
 }
 
 async function queryResourceGraph(
@@ -1050,6 +1441,13 @@ export function partitionCandidates(candidates: SpecCandidate[], narrowing: Narr
 
 /** Bounded concurrency for lightweight header enumeration across providers. */
 const HEADER_ENUMERATION_CONCURRENCY = 4;
+/** Per-provider deadline for candidate-header enumeration (abort on timeout). */
+export const HEADER_ENUMERATION_DEADLINE_MS = 30000;
+
+/** Test-only override seam for header-enumeration deadline. */
+export const headerEnumerationDeadline = {
+  ms: HEADER_ENUMERATION_DEADLINE_MS
+};
 
 export interface ProviderHydrationMetrics {
   /** Header counts per provider type (no resource IDs). */
@@ -1111,7 +1509,7 @@ interface HeaderEnumerationResult {
 /**
  * Enumerate lightweight headers with bounded concurrency. Provider order in the
  * returned header list follows the input provider order (not Promise settle order).
- * Per-provider failures are fail-soft.
+ * Per-provider failures and timeouts are fail-soft; hung work is aborted.
  */
 async function collectCandidateHeaders(
   providers: SpecProvider[],
@@ -1123,15 +1521,32 @@ async function collectCandidateHeaders(
     adapted,
     HEADER_ENUMERATION_CONCURRENCY,
     async (provider) => {
+      let timer: NodeJS.Timeout | undefined;
+      const controller = new AbortController();
       try {
-        const headers = await provider.listCandidateHeaders();
+        const deadlineMs = headerEnumerationDeadline.ms;
+        const headers = await Promise.race([
+          provider.listCandidateHeaders(controller.signal),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              controller.abort();
+              reject(new Error(`candidate header enumeration exceeded ${deadlineMs}ms`));
+            }, deadlineMs);
+          })
+        ]);
         metrics.enumeratedByProvider[provider.type] =
           (metrics.enumeratedByProvider[provider.type] ?? 0) + headers.length;
         return headers;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        core.warning(sanitizeLogMessage(`Provider ${provider.type} candidate enumeration failed: ${detail}`));
+        core.warning(
+          sanitizeLogMessage(`Provider ${provider.type} candidate enumeration failed: ${detail}`)
+        );
+        metrics.enumeratedByProvider[provider.type] =
+          metrics.enumeratedByProvider[provider.type] ?? 0;
         return [] as SpecCandidateHeader[];
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
   );
@@ -1212,24 +1627,7 @@ async function collectCandidates(
 async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependencies): Promise<ExecutionResult> {
   const core = dependencies.core;
 
-  // 1. Existing repo spec always wins.
-  const existingSpec = await findExistingRepoSpecTyped(inputs.repoRoot);
-  if (existingSpec) {
-    const resolution = chooseSource({
-      existingSpecPath: existingSpec.path,
-      existingSpecFormat: existingSpec.format,
-      existingSpecEvidence: existingSpec.evidence,
-      fallbackServiceName: inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop()
-    });
-    return {
-      mode: inputs.mode,
-      discovered: [],
-      resolution,
-      outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
-    };
-  }
-
-  // Exact repository state is loaded before any broad local or cloud discovery.
+  // Exact repository state is loaded before any local-spec winner decision.
   // A malformed, conflicting, or escaping binding is a configuration error, not
   // evidence to silently ignore.
   const bindingResult = await loadAzureResolverBinding(inputs.repoRoot);
@@ -1237,8 +1635,28 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     throw new Error(sanitizeLogMessage(bindingResult.reason));
   }
   const binding = bindingResult.status === 'ok' ? bindingResult.binding : undefined;
-  const selectors = mergeBindingSelectors(inputs, binding);
-  const boundNativeSpec = await resolveBoundNativeSpec(inputs, binding);
+
+  // Aggregate discovery (localSpecs + exact bindings) replaces first-match
+  // findExistingRepoSpecTyped selection.
+  const iacScan = await scanAzureIac(inputs.repoRoot, inputs.outputDir);
+  const discovery = iacScan.discovery ?? {
+    localSpecs: [],
+    exactBindings: [],
+    associations: [],
+    diagnostics: {
+      scannedFiles: 0,
+      truncatedByFileCap: false,
+      truncatedByDepth: false,
+      skippedSecretFiles: [],
+      messages: []
+    }
+  };
+  const selectors = mergeBindingSelectors(inputs, binding, discovery);
+  const runtimeDeclaredTargets = corroborateRuntimeDeclaredTargets(inputs, binding, discovery);
+
+  // Exact .postman / unique manifest-pipeline-IaC nativeSpecPath resolves with
+  // no Azure/network calls for all supported native formats.
+  const boundNativeSpec = await resolveBoundNativeSpec(inputs, binding, discovery);
   if (boundNativeSpec) {
     return {
       mode: inputs.mode,
@@ -1248,8 +1666,44 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     };
   }
 
-  // 2. Repo-local IaC scan (fingerprint + inline candidates).
-  const iacScan = await scanAzureIac(inputs.repoRoot, inputs.outputDir);
+  const localSpecs = discovery.localSpecs;
+  if (localSpecs.length === 1 && localSpecs[0]) {
+    const only = localSpecs[0];
+    const resolution = chooseSource({
+      existingSpecPath: only.path,
+      existingSpecFormat: only.format,
+      existingSpecEvidence: only.evidence,
+      fallbackServiceName: inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop()
+    });
+    return {
+      mode: inputs.mode,
+      discovered: [],
+      resolution,
+      outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+    };
+  }
+  if (localSpecs.length > 1) {
+    const ranked = localSpecsToRankedViews(localSpecs);
+    const resolution: ResolutionResult = {
+      status: 'unresolved',
+      sourceType: 'manual-review',
+      serviceName: inputs.expectedServiceName ?? 'unknown-service',
+      confidence: ranked[0]?.confidence ?? 0,
+      rankedCandidates: toAmbiguousViews(ranked),
+      evidence: [
+        `Repository contains ${localSpecs.length} valid local specifications; refusing to guess without a unique exact nativeSpecPath binding`,
+        ...localSpecs.map((spec) => spec.path)
+      ]
+    };
+    return {
+      mode: inputs.mode,
+      discovered: [],
+      resolution,
+      outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+    };
+  }
+
+  // Repo-local IaC scan (fingerprint + inline candidates).
   const iacCandidates = iacScan.candidates;
   if (iacCandidates.length === 1 && iacCandidates[0]) {
     const only = iacCandidates[0];
@@ -1308,13 +1762,25 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   }
 
   // 3. Cloud discovery across selected subscription scope(s).
+  if (selectors.apiId && selectors.apiCenterDefinitionId) {
+    throw new Error(
+      'Conflicting api-id and api-center-definition-id selectors; refuse to choose between APIM and API Center exact sources'
+    );
+  }
   const subscriptionIds = await resolveSubscriptionIds(
     { subscriptionId: inputs.subscriptionId, subscriptionIds: inputs.subscriptionIds },
     dependencies.subscriptions
   );
   const subscriptionId = subscriptionIds[0]!;
   const graphRows = await queryResourceGraph(inputs, subscriptionIds, dependencies);
-  const boundProviders = buildBoundProviders(inputs, subscriptionIds, dependencies, iacScan);
+  const boundProviders = buildBoundProviders(
+    inputs,
+    subscriptionIds,
+    dependencies,
+    iacScan,
+    runtimeDeclaredTargets,
+    binding?.functionsOpenApiPath
+  );
   const { providers: availableProviders, probes } = await core.group('Probe available providers', () =>
     probeProviders(
       boundProviders.map((entry) => entry.provider),
@@ -1331,12 +1797,6 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     expectedApiIds: selectors.apiId ? [...inputs.expectedApiIds, selectors.apiId] : inputs.expectedApiIds,
     repoSlug: inputs.repoContext.repoSlug
   });
-
-  if (selectors.apiId && selectors.apiCenterDefinitionId) {
-    throw new Error(
-      'Conflicting api-id and api-center-definition-id selectors; refuse to choose between APIM and API Center exact sources'
-    );
-  }
 
   // 3a0. Exact API Center definition ID / binding wins over cloud ranking.
   if (selectors.apiCenterDefinitionId) {
@@ -1444,7 +1904,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     const provider = findBoundProvider(availableBound, stripHeaderFlag(header));
     return provider ? adaptedByInstance.get(provider) : undefined;
   };
-  const headerList = applyApiFilter(
+  const graphEnrichedHeaders: SpecCandidateHeader[] = applyApiFilter(
     mergeCandidatesByArmId(
       enrichCandidatesFromGraph(rawHeaders.map(stripHeaderFlag), graphRows)
     ).map((candidate) => {
@@ -1455,6 +1915,32 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       } satisfies SpecCandidateHeader;
     }),
     inputs.apiFilter
+  ).map((candidate) => {
+    const original = rawHeaders.find((header) => header.id === candidate.id);
+    return {
+      ...candidate,
+      headerHydrated: original?.headerHydrated === true
+    } satisfies SpecCandidateHeader;
+  });
+  const sourceControlEnriched = await core.group('Enrich Azure source-control associations', () =>
+    enrichCandidatesWithSourceControl(
+      graphEnrichedHeaders.map(stripHeaderFlag),
+      inputs,
+      subscriptionIds,
+      dependencies,
+      graphRows,
+      core
+    )
+  );
+  const hydratedFlags = new Map(
+    graphEnrichedHeaders.map((header) => [header.id, header.headerHydrated === true] as const)
+  );
+  const headerList = sourceControlEnriched.map(
+    (candidate) =>
+      ({
+        ...candidate,
+        headerHydrated: hydratedFlags.get(candidate.id) === true
+      }) satisfies SpecCandidateHeader
   );
   // Ranking/narrowing operate over the full uncapped header set.
   const enumerated = headerList.map(stripHeaderFlag);
@@ -1857,14 +2343,27 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
 
 async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDependencies): Promise<ExecutionResult> {
   const core = dependencies.core;
+  const bindingResult = await loadAzureResolverBinding(inputs.repoRoot);
+  if (bindingResult.status === 'error') {
+    throw new Error(sanitizeLogMessage(bindingResult.reason));
+  }
+  const binding = bindingResult.status === 'ok' ? bindingResult.binding : undefined;
   const iacScan = await scanAzureIac(inputs.repoRoot, inputs.outputDir);
+  const runtimeDeclaredTargets = corroborateRuntimeDeclaredTargets(inputs, binding, iacScan.discovery);
   const subscriptionIds = await resolveSubscriptionIds(
     { subscriptionId: inputs.subscriptionId, subscriptionIds: inputs.subscriptionIds },
     dependencies.subscriptions
   );
   const subscriptionId = subscriptionIds[0]!;
   const graphRows = await queryResourceGraph(inputs, subscriptionIds, dependencies);
-  const boundProviders = buildBoundProviders(inputs, subscriptionIds, dependencies, iacScan);
+  const boundProviders = buildBoundProviders(
+    inputs,
+    subscriptionIds,
+    dependencies,
+    iacScan,
+    runtimeDeclaredTargets,
+    binding?.functionsOpenApiPath
+  );
   const { providers: availableProviders, probes } = await core.group('Probe available providers', () =>
     probeProviders(
       boundProviders.map((entry) => entry.provider),
@@ -1887,7 +2386,7 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
     const provider = findBoundProvider(availableBound, stripHeaderFlag(header));
     return provider ? adaptedByInstance.get(provider) : undefined;
   };
-  const headerList = applyApiFilter(
+  const graphEnrichedHeaders: SpecCandidateHeader[] = applyApiFilter(
     mergeCandidatesByArmId(
       enrichCandidatesFromGraph(rawHeaders.map(stripHeaderFlag), graphRows)
     ).map((candidate) => {
@@ -1898,6 +2397,32 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
       } satisfies SpecCandidateHeader;
     }),
     inputs.apiFilter
+  ).map((candidate) => {
+    const original = rawHeaders.find((header) => header.id === candidate.id);
+    return {
+      ...candidate,
+      headerHydrated: original?.headerHydrated === true
+    } satisfies SpecCandidateHeader;
+  });
+  const sourceControlEnriched = await core.group('Enrich Azure source-control associations', () =>
+    enrichCandidatesWithSourceControl(
+      graphEnrichedHeaders.map(stripHeaderFlag),
+      inputs,
+      subscriptionIds,
+      dependencies,
+      graphRows,
+      core
+    )
+  );
+  const hydratedFlags = new Map(
+    graphEnrichedHeaders.map((header) => [header.id, header.headerHydrated === true] as const)
+  );
+  const headerList = sourceControlEnriched.map(
+    (candidate) =>
+      ({
+        ...candidate,
+        headerHydrated: hydratedFlags.get(candidate.id) === true
+      }) satisfies SpecCandidateHeader
   );
   const enumerated = headerList.map(stripHeaderFlag);
   // R5.AC6: partition by repo narrowing BEFORE the cap so canonical-tag matches
@@ -2003,6 +2528,122 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
   };
 }
 
+async function enrichEstateWithSourceControl(
+  estate: EstateRepo[],
+  inputs: ResolvedInputs,
+  subscriptionIds: string[],
+  dependencies: AzureDependencies,
+  core: ReporterLike
+): Promise<EstateRepo[]> {
+  if (!dependencies.createSourceControlClient) return estate;
+  const selected = new Set(subscriptionIds.map((id) => id.toLowerCase()));
+  const targets: VisibleSourceControlTarget[] = [];
+
+  // Already-visible estate resources that are App Service / Container Apps.
+  for (const entry of estate) {
+    for (const resourceId of entry.resourceIds) {
+      const coords = parseVisibleWebOrContainerApp(resourceId);
+      if (!coords || !selected.has(coords.subscriptionId.toLowerCase())) continue;
+      if (inputs.resourceGroup && coords.resourceGroup.toLowerCase() !== inputs.resourceGroup.toLowerCase()) {
+        continue;
+      }
+      targets.push(coords);
+    }
+  }
+
+  // Visible inventory within selected subscription / resource-group only (no all-sub walk).
+  for (const subscriptionId of subscriptionIds) {
+    try {
+      if (dependencies.createAppServiceClient) {
+        const sites = await dependencies.createAppServiceClient(subscriptionId).listSites(inputs.resourceGroup);
+        for (const site of sites) {
+          targets.push({
+            subscriptionId,
+            resourceGroup: site.resourceGroup,
+            name: site.name,
+            kind: 'app-service',
+            resourceId: `/subscriptions/${subscriptionId}/resourceGroups/${site.resourceGroup}/providers/Microsoft.Web/sites/${site.name}`
+          });
+        }
+      }
+      const sourceControl = dependencies.createSourceControlClient(subscriptionId);
+      const containerApps = await sourceControl.listContainerApps(inputs.resourceGroup);
+      for (const app of containerApps) {
+        targets.push({
+          subscriptionId,
+          resourceGroup: app.resourceGroup,
+          name: app.name,
+          kind: 'container-apps',
+          resourceId: app.id
+        });
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      core.warning(
+        sanitizeLogMessage(
+          `Azure source-control inventory for subscription scope failed (fail-soft): ${detail}`
+        )
+      );
+    }
+  }
+
+  let associations: SourceControlAssociation[] = [];
+  try {
+    associations = await querySourceControlAssociations(targets, dependencies);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    core.warning(sanitizeLogMessage(`Azure source-control estate enrichment failed (fail-soft): ${detail}`));
+    return estate;
+  }
+
+  const merged = new Map<string, EstateRepo>();
+  for (const entry of estate) {
+    merged.set(`${entry.org.toLowerCase()}/${entry.repo.toLowerCase()}`, {
+      ...entry,
+      tagSources: [...entry.tagSources],
+      resourceTypes: [...entry.resourceTypes],
+      resourceIds: [...entry.resourceIds]
+    });
+  }
+  for (const association of associations) {
+    if (!association.org || !association.repo) continue;
+    const key = `${association.org.toLowerCase()}/${association.repo.toLowerCase()}`;
+    const existing = merged.get(key);
+    const resourceType =
+      association.kind === 'app-service' ? 'microsoft.web/sites' : 'microsoft.app/containerapps';
+    if (existing) {
+      if (!existing.tagSources.includes('source-control')) {
+        existing.tagSources = [...existing.tagSources, 'source-control'].sort((a, b) =>
+          a.localeCompare(b)
+        );
+      }
+      if (!existing.resourceTypes.includes(resourceType)) {
+        existing.resourceTypes = [...existing.resourceTypes, resourceType].sort((a, b) =>
+          a.localeCompare(b)
+        );
+      }
+      if (!existing.resourceIds.some((id) => id.toLowerCase() === association.resourceId.toLowerCase())) {
+        existing.resourceIds = [...existing.resourceIds, association.resourceId].sort((a, b) =>
+          a.localeCompare(b)
+        );
+      }
+    } else {
+      merged.set(key, {
+        org: association.org,
+        repo: association.repo,
+        tagSources: ['source-control'],
+        resourceTypes: [resourceType],
+        resourceIds: [association.resourceId]
+      });
+    }
+  }
+  return [...merged.values()].sort((a, b) => {
+    const left = `${a.org}/${a.repo}`.toLowerCase();
+    const right = `${b.org}/${b.repo}`.toLowerCase();
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+}
+
 async function runDiscoverEstate(inputs: ResolvedInputs, dependencies: AzureDependencies): Promise<ExecutionResult> {
   const core = dependencies.core;
   if (!dependencies.createResourceGraphClient) {
@@ -2012,8 +2653,11 @@ async function runDiscoverEstate(inputs: ResolvedInputs, dependencies: AzureDepe
     { subscriptionId: inputs.subscriptionId, subscriptionIds: inputs.subscriptionIds },
     dependencies.subscriptions
   );
-  const estate = await core.group('Enumerate estate repo associations', () =>
+  const taggedEstate = await core.group('Enumerate estate repo associations', () =>
     enumerateEstate(dependencies.createResourceGraphClient!(), subscriptionIds, inputs.resourceGroup)
+  );
+  const estate = await core.group('Enrich Azure source-control associations', () =>
+    enrichEstateWithSourceControl(taggedEstate, inputs, subscriptionIds, dependencies, core)
   );
   core.info(sanitizeLogMessage(`discover-estate found ${estate.length} repo association(s)`));
 

@@ -3,6 +3,12 @@
 // Optional multi-API HTTP siblings and version-set/revision are gated.
 // SOAP/GraphQL/unsupported inventory APIs are applied post-deploy by the harness
 // so Azure rejection becomes requires-capability instead of a failed deployment.
+//
+// Clean-repo isolation:
+// - Service-level postman:repo + Fox GithubOrg/GithubRepo tags are inherited across
+//   multiple APIs and must NOT select alone (narrow/unresolved without path evidence).
+// - Canonical harness case path-selects payments-live; Fox case path-selects orders-live.
+// - Harness derives repository context from GITHUB_REPOSITORY (no --repo-slug / --api-id).
 param location string = resourceGroup().location
 param runMarker string
 param apimName string
@@ -27,7 +33,9 @@ resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
   tags: {
     'postman:run-marker': runMarker
     'postman:project-name': 'payments-live'
+    // Canonical association tag (service-inherited under multi-API).
     'postman:repo': repoSlug
+    // Fox association pair (service-inherited under multi-API).
     GithubOrg: foxOrg
     GithubRepo: foxRepo
   }

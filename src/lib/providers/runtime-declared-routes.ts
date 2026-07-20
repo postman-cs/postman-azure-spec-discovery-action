@@ -1,4 +1,5 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
+import { safeUrlForEvidence } from '../azure/app-service-runtime-client.js';
 import { fetchSpecFromUrl, SpecFetchError } from '../fetch/spec-fetcher.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
@@ -107,6 +108,7 @@ export class RuntimeDeclaredRoutesProvider implements SpecProvider {
     const candidates: SpecCandidate[] = [];
     for (const target of this.options.targets ?? []) {
       assertExactHttpsTarget(target.url);
+      const safeUrl = safeUrlForEvidence(target.url);
       candidates.push({
         id: target.id,
         name: target.name,
@@ -115,7 +117,7 @@ export class RuntimeDeclaredRoutesProvider implements SpecProvider {
         tags: target.tags ?? {},
         supported: true,
         evidence: [
-          `Runtime-declared ${target.workloadKind} specification URL ${target.url}`,
+          `Runtime-declared ${target.workloadKind} specification URL ${safeUrl}`,
           ...(target.evidence ?? []),
           'No blind common-path probing was performed'
         ],
@@ -136,19 +138,21 @@ export class RuntimeDeclaredRoutesProvider implements SpecProvider {
       throw new Error(`Runtime-declared candidate ${candidate.name} has no specification URL`);
     }
     assertExactHttpsTarget(specUrl);
+    const safeUrl = safeUrlForEvidence(specUrl);
 
     let fetched;
     try {
+      // Guarded public fetch — never Authorization/Cookie/Azure/GitHub credentials.
       fetched = await fetchSpecFromUrl(specUrl, { timeoutMs: this.options.requestTimeoutMs });
     } catch (error) {
       if (error instanceof SpecFetchError && error.code === 'private-network-unreachable') {
         throw new Error(
-          `Runtime-declared specification at ${specUrl} is private-network-unreachable from this runner`,
+          `Runtime-declared specification at ${safeUrl} is private-network-unreachable from this runner`,
           { cause: error }
         );
       }
       if (error instanceof SpecFetchError && error.code === 'blocked-ssrf') {
-        throw new Error(`Runtime-declared specification URL blocked by SSRF defenses: ${specUrl}`, {
+        throw new Error(`Runtime-declared specification URL blocked by SSRF defenses: ${safeUrl}`, {
           cause: error
         });
       }
@@ -165,7 +169,7 @@ export class RuntimeDeclaredRoutesProvider implements SpecProvider {
         completeness: 'full',
         contractClass: 'authoritative',
         evidence: [
-          `Fetched runtime-declared specification for ${candidate.name} over guarded HTTPS`,
+          `Fetched runtime-declared specification for ${candidate.name} over guarded HTTPS from ${safeUrl}`,
           `Workload kind: ${candidate.meta.workloadKind ?? 'unknown'}`,
           'Document validated; treated as authoritative runtime bytes',
           'No Authorization/Cookie/Azure/GitHub credentials were forwarded'

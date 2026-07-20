@@ -10,9 +10,11 @@ import {
   CASE_CATALOG,
   CLEANUP_RESOURCE_ORDER,
   EVIDENCE_SCHEMA_VERSION,
+  EXPECTED_CASE_CATALOG_SIZE,
   PIPELINE_ID,
   PROVISION_FLAGS,
   SUITE_VERSION,
+  assertExpectedResult,
   buildEvidence,
   classifyProbeError,
   isResourceNotFoundError,
@@ -23,6 +25,7 @@ import {
   requiredEnv,
   resolveSubscriptionId,
   hasExactResourceIdentity,
+  teardownDedicatedResourceGroup,
   teardownSharedGroupResources,
   shouldDeleteGroup,
   shouldDeleteResource,
@@ -259,8 +262,10 @@ describe('live validation control flow', () => {
 });
 
 describe('R8 harness matrix contract', () => {
-  it('AZ-LIVE-010: case catalog retains the baseline six and expands the safe matrix', () => {
+  it('AZ-LIVE-010: case catalog is exactly 31 unique ids covering the safe matrix', () => {
     const ids = CASE_CATALOG.map((row) => row.id);
+    expect(CASE_CATALOG.length).toBe(EXPECTED_CASE_CATALOG_SIZE);
+    expect(new Set(ids).size).toBe(EXPECTED_CASE_CATALOG_SIZE);
     for (const baseline of [
       'apim-explicit-api-id',
       'apim-discovery',
@@ -272,15 +277,119 @@ describe('R8 harness matrix contract', () => {
       expect(ids).toContain(baseline);
     }
     expect(ids).toContain('apim-clean-repo-tag');
+    expect(ids).toContain('apim-clean-repo-fox-pair');
     expect(ids).toContain('apim-gateway-host-path');
+    expect(ids).toContain('apim-version-revision-ambiguity');
     expect(ids).toContain('api-center-openapi-export');
+    expect(ids).toContain('api-center-native-non-openapi');
     expect(ids).toContain('logic-apps-list-swagger');
+    expect(ids).toContain('function-bindings-openapi-extension');
+    expect(ids).toContain('app-service-apispecpath-runtime');
     expect(ids).toContain('event-grid-webhook-partial');
     expect(ids).toContain('service-bus-topic-partial');
     expect(ids).toContain('local-r3-format-parser-matrix');
-    expect(CASE_CATALOG.length).toBeGreaterThanOrEqual(30);
+    const gateway = CASE_CATALOG.find((row) => row.id === 'apim-gateway-host-path');
+    expect(gateway?.claimFacets).toEqual([
+      'association.gateway-hostname-hint',
+      'association.clean-repo-host-path'
+    ]);
     expect(PROVISION_FLAGS['service-bus-standard']).toBe(false);
     expect(CLEANUP_RESOURCE_ORDER[0]?.type).toMatch(/EventGrid|ServiceBus|ApiCenter|Web|Logic|Resources|ApiManagement/);
+  });
+
+  it('AZ-LIVE-013: assertExpectedResult rejects catalog metadata mismatch and placeholder fallbacks', () => {
+    expect(() =>
+      assertExpectedResult('apim-soap-wsdl', {
+        status: 'resolved',
+        sourceType: 'apim-export',
+        providerType: 'apim',
+        specFormat: 'openapi-json',
+        contractClass: 'authoritative'
+      })
+    ).toThrow(/specFormat/);
+
+    expect(() =>
+      assertExpectedResult('logic-apps-list-swagger', {
+        status: 'resolved',
+        sourceType: 'logic-apps-workflow',
+        providerType: 'logic-apps',
+        specFormat: 'openapi-json',
+        contractClass: 'partial',
+        evidence: ['Synthesized partial OpenAPI']
+      }, { forbiddenEvidence: 'Synthesized partial' })
+    ).toThrow(/forbidden evidence/i);
+
+    const ok = assertExpectedResult('apim-explicit-api-id', {
+      status: 'resolved',
+      sourceType: 'apim-export',
+      providerType: 'apim',
+      specFormat: 'openapi-json',
+      contractClass: 'authoritative',
+      apiId: '/subscriptions/x/resourceGroups/rg/providers/Microsoft.ApiManagement/service/s/apis/payments-live'
+    }, { expectedApiIdSuffix: '/apis/payments-live' });
+    expect(ok.contractClass).toBe('authoritative');
+  });
+
+  it('AZ-LIVE-014: dedicated resource-group teardown awaits absence and fails on residue', async () => {
+    const calls: string[][] = [];
+    let showCount = 0;
+    const runner = (_command: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'group' && args[1] === 'show') {
+        showCount += 1;
+        if (showCount === 1) {
+          return JSON.stringify({
+            name: 'postman-azure-spec-live-abcd',
+            id: '/subscriptions/sub-1/resourceGroups/postman-azure-spec-live-abcd',
+            tags: { 'postman-azure-spec-discovery-live-run': 'run-1' }
+          });
+        }
+        throw new Error('ResourceGroupNotFound: could not be found');
+      }
+      if (args[0] === 'group' && args[1] === 'delete') return '';
+      if (args[0] === 'graph') return JSON.stringify({ data: [] });
+      throw new Error(`unexpected ${args.join(' ')}`);
+    };
+    await teardownDedicatedResourceGroup({
+      runner,
+      log: () => undefined,
+      manifest: { resourceGroup: 'postman-azure-spec-live-abcd', runMarker: 'run-1' },
+      subscriptionId: 'sub-1',
+      now: () => 0,
+      sleep: async () => undefined
+    });
+    expect(calls.some((args) => args[0] === 'group' && args[1] === 'delete')).toBe(true);
+    expect(calls.some((args) => args[0] === 'group' && args[1] === 'delete' && args.includes('--no-wait'))).toBe(
+      false
+    );
+
+    await expect(
+      teardownDedicatedResourceGroup({
+        runner: (_c, args) => {
+          if (args[0] === 'group' && args[1] === 'show') {
+            return JSON.stringify({
+              name: 'postman-azure-spec-live-abcd',
+              id: '/subscriptions/sub-1/resourceGroups/postman-azure-spec-live-abcd',
+              tags: { 'postman-azure-spec-discovery-live-run': 'run-1' }
+            });
+          }
+          if (args[0] === 'group' && args[1] === 'delete') return '';
+          if (args[0] === 'graph') return JSON.stringify({ data: [{ id: '/x' }] });
+          return '';
+        },
+        log: () => undefined,
+        manifest: { resourceGroup: 'postman-azure-spec-live-abcd', runMarker: 'run-1' },
+        subscriptionId: 'sub-1',
+        now: (() => {
+          let t = 0;
+          return () => {
+            t += 10 * 60 * 1000;
+            return t;
+          };
+        })(),
+        sleep: async () => undefined
+      })
+    ).rejects.toThrow(/timed out|residual/i);
   });
 
   it('AZ-LIVE-011: dry-run/render-plan proves commands/cases/cleanup without Azure credentials', async () => {
@@ -346,10 +455,14 @@ describe('R8 harness matrix contract', () => {
     expect(liveStack).toContain('provisionMultiApi');
     expect(liveStack).toContain('postman:repo');
     expect(liveStack).toContain('GithubOrg');
+    expect(liveStack).toMatch(/service-inherited|path-selects payments-live|Clean-repo isolation/i);
     const extended = readFileSync(join(repoRoot, 'validation/fixtures/azure/extended-stack.bicep'), 'utf8');
     expect(extended).toContain('Microsoft.Logic/workflows');
     expect(extended).toContain('Microsoft.EventGrid/topics');
     expect(extended).toContain('templateSpecs');
+    const runbook = readFileSync(join(repoRoot, 'docs/LIVE_TESTING_RUNBOOK.md'), 'utf8');
+    expect(runbook).toMatch(/GITHUB_REPOSITORY/);
+    expect(runbook).toMatch(/terminal absence|awaits group deletion/i);
   });
 });
 

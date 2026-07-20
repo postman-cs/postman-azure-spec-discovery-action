@@ -41,8 +41,12 @@ export interface AzureResourceBinding {
   apiRevision?: string;
   nativeSpecPath?: string;
   nativeSpecUrl?: string;
+  /** Azure-side or IaC source-control association URL (normalized when from ARM). */
   sourceControlRepoUrl?: string;
+  /** Azure-side or IaC source-control association branch. */
   sourceControlBranch?: string;
+  /** Owning App Service / Container Apps ARM ID when association came from ARM. */
+  sourceControlResourceId?: string;
   templateSpecId?: string;
   deploymentStackId?: string;
   evidence: BindingEvidence[];

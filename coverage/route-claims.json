@@ -45,7 +45,8 @@
       "validationState": "local-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Local filesystem OpenAPI/Swagger short-circuit; no Azure network path. Covered by unit/integration tests and local CLI fixtures."
     },
     {
       "id": "iac-local.arm-embedded",
@@ -75,7 +76,8 @@
       "paginationTests": [],
       "validationState": "live",
       "liveEvidenceCase": "iac-single",
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "localOnlyRationale": null
     },
     {
       "id": "apim.http.explicit-api-id",
@@ -110,7 +112,8 @@
       ],
       "validationState": "live",
       "liveEvidenceCase": "apim-explicit-api-id",
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "localOnlyRationale": null
     },
     {
       "id": "apim.http.service-discovery",
@@ -143,7 +146,8 @@
       ],
       "validationState": "live",
       "liveEvidenceCase": "apim-discovery",
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "localOnlyRationale": null
     },
     {
       "id": "apim.http.workspace",
@@ -174,7 +178,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Workspace-scoped APIM enumeration is unit-tested; public-Azure live matrix does not provision workspace APIs. Planned live case deferred until workspace inventory is disposable-safe."
     },
     {
       "id": "apim.revision.current-filter",
@@ -202,7 +207,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-version-set"
+      "plannedLiveEvidenceCase": "apim-version-set",
+      "localOnlyRationale": null
     },
     {
       "id": "apim.soap.wsdl-export",
@@ -231,7 +237,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-soap-wsdl"
+      "plannedLiveEvidenceCase": "apim-soap-wsdl",
+      "localOnlyRationale": null
     },
     {
       "id": "apim.graphql.sdl",
@@ -260,7 +267,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-graphql-sdl"
+      "plannedLiveEvidenceCase": "apim-graphql-sdl",
+      "localOnlyRationale": null
     },
     {
       "id": "apim.websocket",
@@ -283,7 +291,8 @@
       "validationState": "unsupported",
       "liveEvidenceCase": null,
       "unsupportedReason": "APIM WebSocket APIs have no documented definition-byte export route; they remain visible as manual-review candidates only.",
-      "plannedLiveEvidenceCase": "apim-unsupported-websocket"
+      "plannedLiveEvidenceCase": "apim-unsupported-websocket",
+      "localOnlyRationale": null
     },
     {
       "id": "apim.grpc",
@@ -306,7 +315,8 @@
       "validationState": "unsupported",
       "liveEvidenceCase": null,
       "unsupportedReason": "APIM gRPC APIs have no documented .proto export route; use a repository artifact or API Center when available.",
-      "plannedLiveEvidenceCase": "apim-unsupported-grpc"
+      "plannedLiveEvidenceCase": "apim-unsupported-grpc",
+      "localOnlyRationale": null
     },
     {
       "id": "apim.odata",
@@ -329,7 +339,8 @@
       "validationState": "unsupported",
       "liveEvidenceCase": null,
       "unsupportedReason": "APIM OData APIs have no documented safe definition-byte export route; they remain visible as manual-review candidates only.",
-      "plannedLiveEvidenceCase": "apim-unsupported-odata"
+      "plannedLiveEvidenceCase": "apim-unsupported-odata",
+      "localOnlyRationale": null
     },
     {
       "id": "app-service.api-definition-url",
@@ -362,7 +373,8 @@
       ],
       "validationState": "live",
       "liveEvidenceCase": "app-service-api-definition",
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "localOnlyRationale": null
     },
     {
       "id": "custom-apis.inline-swagger",
@@ -395,7 +407,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "custom-apis-inline-swagger"
+      "plannedLiveEvidenceCase": "custom-apis-inline-swagger",
+      "localOnlyRationale": null
     },
     {
       "id": "logic-apps.request-trigger-synthesis",
@@ -425,7 +438,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "logic-apps-reader-synthesis"
+      "plannedLiveEvidenceCase": "logic-apps-reader-synthesis",
+      "localOnlyRationale": null
     },
     {
       "id": "template-specs.embedded-apim",
@@ -455,7 +469,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "template-specs-embedded-apim"
+      "plannedLiveEvidenceCase": "template-specs-embedded-apim",
+      "localOnlyRationale": null
     },
     {
       "id": "event-grid.webhook-synthesis",
@@ -485,7 +500,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "event-grid-webhook-partial"
+      "plannedLiveEvidenceCase": "event-grid-webhook-partial",
+      "localOnlyRationale": null
     },
     {
       "id": "service-bus.topic-publish-synthesis",
@@ -515,7 +531,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "service-bus-topic-partial"
+      "plannedLiveEvidenceCase": "service-bus-topic-partial",
+      "localOnlyRationale": null
     },
     {
       "id": "function-bindings.trigger-synthesis",
@@ -545,7 +562,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "function-bindings-openapi-extension"
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Partial trigger-binding synthesis is unit-proven; must not share the authoritative OpenAPI-extension live case. Dedicated partial live case is not yet in the matrix."
     },
     {
       "id": "association.postman-repo-tag",
@@ -572,7 +590,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-clean-repo-tag"
+      "plannedLiveEvidenceCase": "apim-clean-repo-tag",
+      "localOnlyRationale": null
     },
     {
       "id": "association.fox-github-org-repo",
@@ -600,7 +619,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-clean-repo-fox-pair"
+      "plannedLiveEvidenceCase": "apim-clean-repo-fox-pair",
+      "localOnlyRationale": null
     },
     {
       "id": "association.gateway-hostname-hint",
@@ -627,7 +647,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-gateway-host-path"
+      "plannedLiveEvidenceCase": "apim-gateway-host-path",
+      "localOnlyRationale": null
     },
     {
       "id": "association.gateway-api-assignment",
@@ -652,7 +673,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Gateway API assignment narrowing is unit-proven in gateway-resolution tests; no distinct disposable live facet beyond host/path selection."
     },
     {
       "id": "association.exact-binding",
@@ -679,7 +701,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Exact .postman Azure binding resolution is local filesystem association; covered by azure-bindings unit tests without Azure calls."
     },
     {
       "id": "association.clean-repo-host-path",
@@ -704,7 +727,36 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-gateway-host-path"
+      "plannedLiveEvidenceCase": "apim-gateway-host-path",
+      "localOnlyRationale": null
+    },
+    {
+      "id": "association.app-service-container-apps-source-control",
+      "provider": "association",
+      "route": "app-service-container-apps-source-control-correlation",
+      "implementationFiles": [
+        "src/lib/azure/source-control-client.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "Reader (Microsoft.Web/sites/sourcecontrols read; Microsoft.App/containerApps/sourcecontrols read)",
+      "positiveTests": [
+        "tests/source-control-client.test.ts"
+      ],
+      "negativeTests": [
+        "tests/source-control-client.test.ts"
+      ],
+      "securityTests": [
+        "tests/source-control-client.test.ts"
+      ],
+      "paginationTests": [
+        "tests/source-control-client.test.ts"
+      ],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "App Service and Container Apps source-control correlation is association-only (normalized repo URL + branch); unit-proven with bounded body reads, IAM fail-soft, and pagination ceilings. Not a specification provider and must not share App Service apiDefinition live evidence. Disposable live facet is not yet in the matrix."
     },
     {
       "id": "mode.discover-many",
@@ -730,7 +782,8 @@
       "paginationTests": [],
       "validationState": "live",
       "liveEvidenceCase": "discover-many",
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "localOnlyRationale": null
     },
     {
       "id": "mode.discover-estate",
@@ -759,7 +812,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "discover-estate repo-association roster is unit-tested; estate live proof is out of the current disposable matrix and must not reuse discover-many evidence."
     },
     {
       "id": "resolver.ambiguity",
@@ -787,7 +841,8 @@
       "paginationTests": [],
       "validationState": "live",
       "liveEvidenceCase": "ambiguity",
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "localOnlyRationale": null
     },
     {
       "id": "api-center.definition-export",
@@ -828,7 +883,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "api-center-openapi-export"
+      "plannedLiveEvidenceCase": "api-center-openapi-export",
+      "localOnlyRationale": null
     },
     {
       "id": "repo.spec.native-formats-r3",
@@ -865,7 +921,8 @@
       "validationState": "local-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "local-r3-format-parser-matrix"
+      "plannedLiveEvidenceCase": "local-r3-format-parser-matrix",
+      "localOnlyRationale": "Local-only compiled CLI native format/parser matrix; planned harness id local-r3-format-parser-matrix never promotes remote routes."
     },
     {
       "id": "logic-apps.native-list-swagger-r4",
@@ -894,7 +951,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "logic-apps-list-swagger"
+      "plannedLiveEvidenceCase": "logic-apps-list-swagger",
+      "localOnlyRationale": null
     },
     {
       "id": "app-service.documented-scm-spec-r4",
@@ -923,7 +981,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "app-service-apispecpath-runtime"
+      "plannedLiveEvidenceCase": "app-service-apispecpath-runtime",
+      "localOnlyRationale": null
     },
     {
       "id": "function-bindings.openapi-extension-r4",
@@ -952,7 +1011,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "function-bindings-openapi-extension"
+      "plannedLiveEvidenceCase": "function-bindings-openapi-extension",
+      "localOnlyRationale": null
     },
     {
       "id": "runtime-declared.explicit-https-r4",
@@ -981,7 +1041,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Explicit HTTPS runtime-declared routes are unit-tested under R4; live proof requires a dedicated disposable target distinct from App Service apiDefinition/SCM cases."
     },
     {
       "id": "platform.sovereign-cloud",
@@ -1009,7 +1070,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Sovereign cloud profile wiring is unit-tested; live promotion requires per-cloud pipeline evidence not present in the public-Azure matrix."
     },
     {
       "id": "platform.multi-subscription-scope",
@@ -1041,7 +1103,8 @@
       "validationState": "unit-only",
       "liveEvidenceCase": null,
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": null
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "Multi-subscription scope resolution is unit-tested; live proof requires authorized multi-sub disposable inventory outside the single-RG matrix."
     }
   ]
 }

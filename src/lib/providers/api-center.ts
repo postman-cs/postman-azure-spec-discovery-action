@@ -2,7 +2,7 @@ import type { ContractClass, ProviderProbeStatus, SpecFormat } from '../../contr
 import type { ApiCenterDefinitionSummary, AzureApiCenterClient } from '../azure/api-center-client.js';
 import { parseAndValidateNativeSpec } from '../spec/native-formats.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
-import { toSpecCandidate } from './types.js';
+import { listCandidatesViaHydration, toSpecCandidate } from './types.js';
 
 export interface ApiCenterProviderOptions {
   subscriptionId: string;
@@ -78,6 +78,41 @@ function associationEvidence(definition: ApiCenterDefinitionSummary): string[] {
   return evidence;
 }
 
+function toHeader(definition: ApiCenterDefinitionSummary): SpecCandidateHeader {
+  const display =
+    definition.title ||
+    definition.apiTitle ||
+    `${definition.apiName}/${definition.versionName}/${definition.name}`;
+  return {
+    id: definition.id,
+    name: display,
+    providerType: 'api-center',
+    apiId: definition.id,
+    resourceGroup: definition.resourceGroup,
+    tags: definition.tags,
+    supported: true,
+    headerHydrated: false,
+    evidence: [
+      `API Center service ${definition.serviceName} workspace ${definition.workspaceName} exposes definition ${definition.name} for API ${definition.apiName} version ${definition.versionName}; deployment association deferred until selected`
+    ],
+    meta: {
+      serviceName: definition.serviceName,
+      resourceGroup: definition.resourceGroup,
+      workspaceName: definition.workspaceName,
+      apiName: definition.apiName,
+      versionName: definition.versionName,
+      definitionName: definition.name,
+      hydrationPending: 'true',
+      ...(definition.title ? { title: definition.title } : {}),
+      ...(definition.apiTitle ? { apiTitle: definition.apiTitle } : {}),
+      ...(definition.specificationName ? { specificationName: definition.specificationName } : {}),
+      ...(definition.specificationVersion ? { specificationVersion: definition.specificationVersion } : {}),
+      ...(definition.lifecycleStage ? { lifecycleStage: definition.lifecycleStage } : {}),
+      contractClass: 'authoritative' satisfies ContractClass
+    }
+  };
+}
+
 function toCandidate(definition: ApiCenterDefinitionSummary): SpecCandidate {
   const display =
     definition.title ||
@@ -135,23 +170,74 @@ export class ApiCenterProvider implements SpecProvider {
   }
 
   /**
-   * Definition inventory supplies narrowing identifiers. ExportSpecification is
-   * the deferred expensive call; deployment association metadata is optional.
+   * Lightweight definition headers for narrowing. Deployment/environment
+   * association enrichment is deferred until hydrateCandidates.
    */
   public async listCandidateHeaders(): Promise<SpecCandidateHeader[]> {
-    const candidates = await this.listCandidates();
-    return candidates.map((candidate) => ({ ...candidate, headerHydrated: true }));
-  }
-
-  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
-    return headers.map((header) => toSpecCandidate(header));
-  }
-
-  public async listCandidates(): Promise<SpecCandidate[]> {
     const definitions = await this.client.listDefinitions(this.options.resourceGroup);
     return definitions
-      .map(toCandidate)
+      .map(toHeader)
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  /**
+   * Fetches optional deployment association details only for the supplied
+   * selected headers. Preserves input order; deployment enrichment is fail-soft.
+   */
+  public async hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> {
+    const out: SpecCandidate[] = [];
+    for (const header of headers) {
+      if (header.headerHydrated === true) {
+        out.push(toSpecCandidate(header));
+        continue;
+      }
+      out.push(await this.hydrateCandidate(header));
+    }
+    return out;
+  }
+
+  public async hydrateCandidate(header: SpecCandidateHeader): Promise<SpecCandidate> {
+    if (header.headerHydrated === true) {
+      return toSpecCandidate(header);
+    }
+    const resourceGroup = header.meta.resourceGroup ?? header.resourceGroup ?? '';
+    const serviceName = header.meta.serviceName ?? '';
+    const workspaceName = header.meta.workspaceName ?? '';
+    const apiName = header.meta.apiName ?? '';
+    const versionName = header.meta.versionName ?? '';
+    const definitionName = header.meta.definitionName ?? '';
+    if (!resourceGroup || !serviceName || !workspaceName || !apiName || !versionName || !definitionName) {
+      throw new Error('API Center header is missing definition coordinates');
+    }
+
+    const deployments = await this.client.listDeployments({
+      resourceGroup,
+      serviceName,
+      workspaceName,
+      apiName,
+      versionName
+    });
+
+    return toCandidate({
+      id: header.id,
+      name: definitionName,
+      title: header.meta.title || header.name,
+      resourceGroup,
+      serviceName,
+      workspaceName,
+      apiName,
+      apiTitle: header.meta.apiTitle,
+      versionName,
+      lifecycleStage: header.meta.lifecycleStage,
+      specificationName: header.meta.specificationName,
+      specificationVersion: header.meta.specificationVersion,
+      tags: header.tags,
+      deployments
+    });
+  }
+
+  public listCandidates(): Promise<SpecCandidate[]> {
+    return listCandidatesViaHydration(this);
   }
 
   /**

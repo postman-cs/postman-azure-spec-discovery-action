@@ -51,8 +51,9 @@ export interface SpecProvider {
   /**
    * Lightweight identifiers/tags/paths for narrowing. Optional for legacy
    * injected providers; the runtime adapts missing methods.
+   * Optional AbortSignal lets the runtime cancel a hung enumeration.
    */
-  listCandidateHeaders?(): Promise<SpecCandidateHeader[]>;
+  listCandidateHeaders?(signal?: AbortSignal): Promise<SpecCandidateHeader[]>;
   /**
    * Expensive detail/export-prep for a selected partition. May expand one
    * header into multiple candidates (e.g. template-spec embeds).
@@ -64,7 +65,7 @@ export interface SpecProvider {
 
 /** Runtime-facing provider that always exposes the split enumeration seam. */
 export interface HydratingSpecProvider extends SpecProvider {
-  listCandidateHeaders(): Promise<SpecCandidateHeader[]>;
+  listCandidateHeaders(signal?: AbortSignal): Promise<SpecCandidateHeader[]>;
   hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]>;
 }
 
@@ -102,9 +103,12 @@ export function adaptLegacyProvider(provider: SpecProvider): HydratingSpecProvid
 
   let cached: SpecCandidateHeader[] | undefined;
 
-  const listCandidateHeaders = async (): Promise<SpecCandidateHeader[]> => {
+  const listCandidateHeaders = async (signal?: AbortSignal): Promise<SpecCandidateHeader[]> => {
+    if (signal?.aborted) {
+      throw new Error(`Provider ${provider.type} candidate enumeration aborted`);
+    }
     if (typeof provider.listCandidateHeaders === 'function') {
-      return provider.listCandidateHeaders();
+      return provider.listCandidateHeaders(signal);
     }
     if (!cached) {
       const listed = await provider.listCandidates();
@@ -146,7 +150,7 @@ export function adaptLegacyProvider(provider: SpecProvider): HydratingSpecProvid
 
 /** Shared helper: listCandidates = headers then hydrate all (stable order). */
 export async function listCandidatesViaHydration(provider: {
-  listCandidateHeaders(): Promise<SpecCandidateHeader[]>;
+  listCandidateHeaders(signal?: AbortSignal): Promise<SpecCandidateHeader[]>;
   hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]>;
 }): Promise<SpecCandidate[]> {
   const headers = await provider.listCandidateHeaders();

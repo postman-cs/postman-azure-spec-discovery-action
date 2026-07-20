@@ -293,6 +293,95 @@ describe('R1 APIM metadata and explicit revision export', () => {
     if (root) await rm(root, { recursive: true, force: true });
   });
 
+  it('R1-TAG-002: sole supported API keeps select-grade inherited tags; unsupported siblings do not poison eligibility', async () => {
+    const client: AzureApimClient = {
+      listServices: vi.fn(async () => [
+        service({ tags: { 'postman:repo': 'org/payments', GithubOrg: 'org', GithubRepo: 'payments' } })
+      ]),
+      listApis: vi.fn(async () => [
+        api({ apiId: 'payments', path: 'payments', apiType: 'http' }),
+        api({ apiId: 'events-ws', path: 'events', apiType: 'websocket' }),
+        api({ apiId: 'orders-grpc', path: 'orders', apiType: 'grpc' })
+      ]),
+      exportApi: vi.fn(async () => OPENAPI),
+      getGraphqlSchema: vi.fn(async () => 'type Query { x: String }'),
+      getApi: vi.fn(async () => {
+        throw new Error('unused');
+      }),
+      probeApimReadAccess: vi.fn(async () => undefined)
+    };
+
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidates = await provider.listCandidates();
+    expect(candidates).toHaveLength(3);
+    const payments = candidates.find((c) => c.meta.apiId === 'payments');
+    expect(payments?.supported).toBe(true);
+    expect(payments?.meta.tagSource).toBe('api');
+    expect(payments?.tags['postman:repo']).toBe('org/payments');
+    // Unsupported siblings remain listed but must not carry select-grade ownership tags.
+    for (const unsupported of candidates.filter((c) => !c.supported)) {
+      expect(unsupported.tags['postman:repo']).toBeUndefined();
+      expect(unsupported.tags.GithubOrg).toBeUndefined();
+      expect(unsupported.tags.GithubRepo).toBeUndefined();
+    }
+
+    const narrowed = await runNarrowingPipeline(
+      {
+        repoSlug: 'org/payments',
+        serviceHints: [],
+        signals: { serviceHints: [], explicitApiIdHints: [], inferredApiIdHints: [], evidence: [], gatewayUrls: [] }
+      },
+      candidates.map((c) =>
+        candidate(c.apiId ?? c.id, {
+          tags: c.tags,
+          tagSource: c.meta.tagSource as 'api' | 'service-inherited' | undefined,
+          apiPath: c.meta.path,
+          hostnames: (c.meta.hostnames ?? '').split(',').filter(Boolean)
+        })
+      )
+    );
+    expect(narrowed?.mode).toBe('select');
+    expect(narrowed?.apiIds).toEqual([arm('payments')]);
+  });
+
+  it('R1-TAG-003: two supported APIs keep service tags inherited/fail-closed (narrow, never select)', async () => {
+    const client: AzureApimClient = {
+      listServices: vi.fn(async () => [service({ tags: { 'postman:repo': 'org/payments' } })]),
+      listApis: vi.fn(async () => [
+        api({ apiId: 'payments', path: 'payments', apiType: 'http' }),
+        api({ apiId: 'billing', path: 'billing', apiType: 'soap' })
+      ]),
+      exportApi: vi.fn(async () => OPENAPI),
+      getGraphqlSchema: vi.fn(async () => 'type Query { x: String }'),
+      getApi: vi.fn(async () => {
+        throw new Error('unused');
+      }),
+      probeApimReadAccess: vi.fn(async () => undefined)
+    };
+
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidates = await provider.listCandidates();
+    expect(candidates.every((c) => c.meta.tagSource === 'service-inherited')).toBe(true);
+
+    const result = await runNarrowingPipeline(
+      {
+        repoSlug: 'org/payments',
+        serviceHints: [],
+        signals: { serviceHints: [], explicitApiIdHints: [], inferredApiIdHints: [], evidence: [], gatewayUrls: [] }
+      },
+      candidates.map((c) =>
+        candidate(c.apiId ?? c.id, {
+          tags: c.tags,
+          tagSource: 'service-inherited',
+          apiPath: c.meta.path
+        })
+      )
+    );
+    expect(result?.mode).toBe('narrow');
+    expect(result?.mode).not.toBe('select');
+    expect(result?.apiIds.sort()).toEqual([arm('billing'), arm('payments')].sort());
+  });
+
   it('R1-META-001: service/workspace/custom-hostname/self-hosted gateway metadata preserve identity and assignment', async () => {
     const client: AzureApimClient = {
       listServices: vi.fn(async () => [

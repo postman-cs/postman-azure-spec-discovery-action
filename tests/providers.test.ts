@@ -21,6 +21,29 @@ const SWAGGER_20 = JSON.stringify({
   paths: { '/legacy': { get: { responses: { '200': { description: 'ok' } } } } }
 });
 
+const VALID_WSDL = `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://postman.example/payments"
+             name="PaymentsSoap"
+             targetNamespace="http://postman.example/payments">
+  <types/>
+  <message name="GetHealthRequest"/>
+  <message name="GetHealthResponse"/>
+  <portType name="PaymentsPortType">
+    <operation name="GetHealth">
+      <input message="tns:GetHealthRequest"/>
+      <output message="tns:GetHealthResponse"/>
+    </operation>
+  </portType>
+  <binding name="PaymentsBinding" type="tns:PaymentsPortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+  </binding>
+  <service name="PaymentsService">
+    <port name="PaymentsPort" binding="tns:PaymentsBinding"/>
+  </service>
+</definitions>`;
+
 describe('APIM provider', () => {
   function apimClient(overrides: Partial<AzureApimClient> = {}): AzureApimClient {
     return {
@@ -65,7 +88,9 @@ describe('APIM provider', () => {
       getApi: vi.fn(async () => {
         throw new Error('getApi unused');
       }),
-      exportApi: vi.fn(async () => VALID_OPENAPI),
+      exportApi: vi.fn(async (_rg, _svc, _apiId, _workspaceId, format) =>
+        format === 'wsdl-link' ? VALID_WSDL : VALID_OPENAPI
+      ),
       getGraphqlSchema: vi.fn(async () => 'type Query { ping: String! }'),
       probeApimReadAccess: vi.fn(async () => undefined),
       ...overrides
@@ -98,7 +123,11 @@ describe('APIM provider', () => {
     expect(exported.content.endsWith('\n')).toBe(true);
     expect(exported.content).toBe(`${JSON.stringify(JSON.parse(VALID_OPENAPI), null, 2)}\n`);
 
-    await expect(provider.exportSpec(soap!)).resolves.toMatchObject({ format: 'wsdl', filename: 'service.wsdl' });
+    const soapExported = await provider.exportSpec(soap!);
+    expect(soapExported).toMatchObject({ format: 'wsdl', filename: 'service.wsdl' });
+    expect(soapExported.content).toBe(VALID_WSDL);
+    expect(soapExported.content).toContain('xmlns="http://schemas.xmlsoap.org/wsdl/"');
+    expect(soapExported.content).toContain('name="PaymentsSoap"');
   });
 
   it('AZ-APIM-005: malformed export content rejects', async () => {

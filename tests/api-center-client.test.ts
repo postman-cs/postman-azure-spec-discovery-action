@@ -4,7 +4,10 @@ vi.mock('node:dns/promises', () => ({
   lookup: vi.fn(async () => [{ address: '20.0.0.1', family: 4 }])
 }));
 
-import { ApiCenterSdkClient } from '../src/lib/azure/api-center-client.js';
+import {
+  ApiCenterSdkClient,
+  MAX_API_CENTER_CHILDREN_PER_LEVEL
+} from '../src/lib/azure/api-center-client.js';
 
 function fakeCredential() {
   return { getToken: vi.fn(async () => ({ token: 'arm-token', expiresOnTimestamp: Date.now() + 3600_000 })) };
@@ -30,37 +33,38 @@ describe('ApiCenterSdkClient', () => {
     vi.unstubAllEnvs();
   });
 
-  it('AZ-APIC-001: hierarchy inventory walks services → workspaces → apis → versions → definitions across pages', async () => {
-    const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
-      requestTimeoutMs: 30000,
-      maxAttempts: 3,
-      sleep: async () => undefined
-    });
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes('/providers/Microsoft.ApiCenter/services?') && !url.includes('resourceGroups')) {
-        if (!url.includes('page=2')) {
-          return jsonResponse({
+  function hierarchyFetch(input: RequestInfo | URL): Promise<Response> {
+    const url = String(input);
+    if (url.includes('/providers/Microsoft.ApiCenter/services?') && !url.includes('resourceGroups')) {
+      if (!url.includes('page=2')) {
+        return Promise.resolve(
+          jsonResponse({
             value: [{ id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac', name: 'ac' }],
             nextLink:
               'https://management.azure.com/subscriptions/sub-1/providers/Microsoft.ApiCenter/services?api-version=2024-03-01&page=2'
-          });
-        }
-        return jsonResponse({
+          })
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
           value: [{ id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac2', name: 'ac2' }]
-        });
-      }
-      if (url.includes('/workspaces?')) {
-        return jsonResponse({ value: [{ id: '.../workspaces/default', name: 'default' }] });
-      }
-      if (url.includes('/apis?')) {
-        return jsonResponse({ value: [{ id: '.../apis/echo', name: 'echo', properties: { title: 'Echo' } }] });
-      }
-      if (url.includes('/versions?')) {
-        return jsonResponse({ value: [{ id: '.../versions/v1', name: 'v1', properties: { title: 'v1', lifecycleStage: 'production' } }] });
-      }
-      if (url.includes('/definitions?')) {
-        return jsonResponse({
+        })
+      );
+    }
+    if (url.includes('/workspaces?')) {
+      return Promise.resolve(jsonResponse({ value: [{ id: '.../workspaces/default', name: 'default' }] }));
+    }
+    if (url.includes('/apis?')) {
+      return Promise.resolve(jsonResponse({ value: [{ id: '.../apis/echo', name: 'echo', properties: { title: 'Echo' } }] }));
+    }
+    if (url.includes('/versions?')) {
+      return Promise.resolve(
+        jsonResponse({ value: [{ id: '.../versions/v1', name: 'v1', properties: { title: 'v1', lifecycleStage: 'production' } }] })
+      );
+    }
+    if (url.includes('/definitions?')) {
+      return Promise.resolve(
+        jsonResponse({
           value: [
             {
               id: DEF_ARM,
@@ -68,10 +72,12 @@ describe('ApiCenterSdkClient', () => {
               properties: { title: 'OpenAPI', specification: { name: 'openapi', version: '3.0.3' } }
             }
           ]
-        });
-      }
-      if (url.includes('/deployments?')) {
-        return jsonResponse({
+        })
+      );
+    }
+    if (url.includes('/deployments?')) {
+      return Promise.resolve(
+        jsonResponse({
           value: [
             {
               name: 'prod',
@@ -81,19 +87,98 @@ describe('ApiCenterSdkClient', () => {
               }
             }
           ]
-        });
-      }
-      return jsonResponse({ value: [] });
+        })
+      );
+    }
+    return Promise.resolve(jsonResponse({ value: [] }));
+  }
+
+  it('AZ-APIC-001: hierarchy inventory walks services → workspaces → apis → versions → definitions across pages without deployments or export', async () => {
+    const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
     });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(hierarchyFetch);
 
     const definitions = await client.listDefinitions();
     expect(definitions).toHaveLength(2);
     expect(definitions.map((d) => d.serviceName).sort()).toEqual(['ac', 'ac2']);
     expect(definitions[0]!.id).toBe(DEF_ARM);
-    expect(definitions[0]!.deployments?.some((d) => d.name === 'prod')).toBe(true);
+    expect(definitions[0]!.deployments).toBeUndefined();
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/deployments?'))).toBe(false);
     expect(fetchSpy.mock.calls.some(([url, init]) => String(url).includes('exportSpecification') || init?.method === 'POST')).toBe(
       false
     );
+  });
+
+  it('AZ-APIC-001a: selected listDeployments enrich association only; unselected versions are not queried', async () => {
+    const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(hierarchyFetch);
+
+    await client.listDefinitions();
+    const headerCalls = fetchSpy.mock.calls.length;
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/deployments?'))).toBe(false);
+
+    const deployments = await client.listDeployments({
+      resourceGroup: 'rg',
+      serviceName: 'ac',
+      workspaceName: 'default',
+      apiName: 'echo',
+      versionName: 'v1'
+    });
+    expect(deployments).toEqual([
+      expect.objectContaining({ name: 'prod', runtimeType: 'Azure API Management' })
+    ]);
+    const deploymentCalls = fetchSpy.mock.calls.slice(headerCalls).filter(([url]) => String(url).includes('/deployments?'));
+    expect(deploymentCalls).toHaveLength(1);
+    expect(String(deploymentCalls[0]![0])).toContain('/versions/v1/deployments?');
+    expect(fetchSpy.mock.calls.slice(headerCalls).some(([url]) => String(url).includes('exportSpecification'))).toBe(false);
+  });
+
+  it('AZ-APIC-001b: hierarchy 403 is AuthorizationFailed; optional deployment 403 is fail-soft empty', async () => {
+    const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 1,
+      sleep: async () => undefined
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('denied', { status: 403 }));
+    await expect(client.listServices()).rejects.toThrow(/AuthorizationFailed/);
+    await expect(client.listDefinitions()).rejects.toThrow(/AuthorizationFailed/);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('denied', { status: 403 }));
+    await expect(
+      client.listDeployments({
+        resourceGroup: 'rg',
+        serviceName: 'ac',
+        workspaceName: 'default',
+        apiName: 'echo',
+        versionName: 'v1'
+      })
+    ).resolves.toEqual([]);
+  });
+
+  it('AZ-APIC-001c: AbortSignal cancels outstanding header listing ARM requests', async () => {
+    const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 1,
+      sleep: async () => undefined
+    });
+    const controller = new AbortController();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason ?? new Error('aborted')), { once: true });
+      });
+    });
+    const pending = client.listDefinitions(undefined, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toBeTruthy();
   });
 
   it('AZ-APIC-002: nextLink repeat, cross-host, and 100-page ceiling abort inventory', async () => {
@@ -132,6 +217,30 @@ describe('ApiCenterSdkClient', () => {
       });
     });
     await expect(client.listServices()).rejects.toThrow(/exceeded 100 pages/);
+  });
+
+  it('AZ-APIC-002a: hierarchy child cap bounds fan-out and reports truncation', async () => {
+    const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 1,
+      sleep: async () => undefined
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/providers/Microsoft.ApiCenter/services?')) {
+        return jsonResponse({ value: [{ id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac', name: 'ac' }] });
+      }
+      if (url.includes('/workspaces?')) {
+        return jsonResponse({ value: Array.from({ length: MAX_API_CENTER_CHILDREN_PER_LEVEL + 1 }, (_, index) => ({ name: `ws-${index}` })) });
+      }
+      if (url.includes('/apis?')) return jsonResponse({ value: [] });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const definitions = await client.listDefinitions();
+    expect(definitions).toHaveLength(0);
+    expect(definitions.truncated).toBe(true);
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/apis?'))).toHaveLength(MAX_API_CENTER_CHILDREN_PER_LEVEL);
   });
 
   it('AZ-APIC-003: exportSpecification 200 inline returns bytes without Authorization on any later fetch', async () => {
@@ -294,6 +403,52 @@ describe('ApiCenterSdkClient', () => {
     ).rejects.toThrow(/LRO poll/);
     lro.mockRestore();
   });
+
+  it.each([501, 505] as const)(
+    'AZ-APIC-005b: API Center does not retry permanent HTTP %s',
+    async (status) => {
+      const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
+        requestTimeoutMs: 30000,
+        maxAttempts: 3,
+        sleep: async () => undefined
+      });
+      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('permanent', { status }));
+      await expect(
+        client.exportSpecification({
+          resourceGroup: 'rg',
+          serviceName: 'ac',
+          workspaceName: 'default',
+          apiName: 'echo',
+          versionName: 'v1',
+          definitionName: 'openapi'
+        })
+      ).rejects.toThrow(new RegExp(`HTTP ${status}`));
+      expect(spy).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each([500, 502, 503, 504] as const)(
+    'AZ-APIC-005c: API Center retries HTTP %s within maxAttempts then surfaces',
+    async (status) => {
+      const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
+        requestTimeoutMs: 30000,
+        maxAttempts: 3,
+        sleep: async () => undefined
+      });
+      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('transient', { status }));
+      await expect(
+        client.exportSpecification({
+          resourceGroup: 'rg',
+          serviceName: 'ac',
+          workspaceName: 'default',
+          apiName: 'echo',
+          versionName: 'v1',
+          definitionName: 'openapi'
+        })
+      ).rejects.toThrow(new RegExp(`HTTP ${status}`));
+      expect(spy).toHaveBeenCalledTimes(3);
+    }
+  );
 
   it('AZ-APIC-006: probe classifies 401/403 as authorization failures', async () => {
     const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {

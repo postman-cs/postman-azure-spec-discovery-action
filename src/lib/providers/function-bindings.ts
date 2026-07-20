@@ -1,4 +1,5 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
+import { safeUrlForEvidence } from '../azure/app-service-runtime-client.js';
 import type { AzureFunctionsClient, FunctionBindingSummary, FunctionSummary } from '../azure/clients.js';
 import { detectFunctionsOpenApiRoutes } from '../azure/functions-openapi.js';
 import { fetchSpecFromUrl, SpecFetchError } from '../fetch/spec-fetcher.js';
@@ -275,7 +276,10 @@ export class FunctionBindingsProvider implements SpecProvider {
     if (!openApiUrl) {
       throw new Error(`Function app ${candidate.name} has no evidenced OpenAPI extension URL`);
     }
+    const safeUrl = safeUrlForEvidence(openApiUrl);
+    const pathEvidence = candidate.meta.openApiPath ?? safeUrl;
     try {
+      // Guarded public fetch — never Authorization/Cookie/Azure/GitHub credentials.
       const fetched = await fetchSpecFromUrl(openApiUrl, { timeoutMs: this.options.requestTimeoutMs });
       const validated = parseAndValidateOpenApi(fetched.content);
       const normalized = fetched.content.endsWith('\n') ? fetched.content : `${fetched.content}\n`;
@@ -285,7 +289,7 @@ export class FunctionBindingsProvider implements SpecProvider {
         filename: validated.isJson ? 'index.json' : 'index.yaml',
         contractClass: 'authoritative',
         evidence: [
-          `Fetched Azure Functions OpenAPI extension document from ${candidate.meta.openApiPath ?? openApiUrl}`,
+          `Fetched Azure Functions OpenAPI extension document from ${pathEvidence}`,
           'Host/function key list operations and app-setting secret reads were never called',
           'No Authorization/Cookie/Azure/GitHub credentials were forwarded on the runtime fetch'
         ]
@@ -293,9 +297,14 @@ export class FunctionBindingsProvider implements SpecProvider {
     } catch (error) {
       if (error instanceof SpecFetchError && error.code === 'private-network-unreachable') {
         throw new Error(
-          `Functions OpenAPI extension URL is private-network-unreachable: ${openApiUrl}`,
+          `Functions OpenAPI extension URL is private-network-unreachable: ${safeUrl}`,
           { cause: error }
         );
+      }
+      if (error instanceof SpecFetchError && error.code === 'blocked-ssrf') {
+        throw new Error(`Functions OpenAPI extension URL blocked by SSRF defenses: ${safeUrl}`, {
+          cause: error
+        });
       }
       throw error;
     }

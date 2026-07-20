@@ -61,6 +61,47 @@ describe('resource graph paging (direct ARM REST)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('AZ-GRAPH-005: Resource Graph aborts at the 100-page ceiling', async () => {
+    fetchMock.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String((init as RequestInit).body)) as {
+        options?: { $skipToken?: string };
+      };
+      const page = body.options?.$skipToken ? Number(body.options.$skipToken) : 0;
+      return jsonResponse({ data: [], $skipToken: String(page + 1) });
+    });
+    const client = new ResourceGraphSdkClient(credentialStub(), {
+      requestTimeoutMs: 30000,
+      maxAttempts: 1,
+      sleep: async () => undefined
+    });
+    await expect(client.queryResources('sub-1', buildCandidateQuery())).rejects.toThrow(
+      'Resource Graph pagination exceeded 100 pages'
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(100);
+  });
+
+  it('AZ-GRAPH-006: Resource Graph forwards an opaque skipToken byte-for-byte without parsing it', async () => {
+    const opaque =
+      'opaque+token/=?&with spaces%2Fand\u2603unicode\nnewline';
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: [{ id: '/a', name: 'a', type: 't', resourceGroup: 'rg', tags: {} }],
+          $skipToken: opaque
+        })
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+
+    const client = new ResourceGraphSdkClient(credentialStub());
+    await expect(client.queryResources('sub-1', buildCandidateQuery())).resolves.toHaveLength(1);
+
+    const secondBody = JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body)) as {
+      options?: { $skipToken?: string };
+    };
+    expect(secondBody.options?.$skipToken).toBe(opaque);
+    expect(secondBody.options?.$skipToken).toHaveLength(opaque.length);
+  });
+
   it('AZ-CLIENT-004: Resource Graph retries transient failures within maxAttempts and never retries 400', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ error: 'unavailable' }, 503))
@@ -83,6 +124,39 @@ describe('resource graph paging (direct ARM REST)', () => {
     await expect(validationClient.queryResources('sub-1', buildCandidateQuery())).rejects.toThrow('400');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it.each([500, 502, 503, 504] as const)(
+    'AZ-RETRY-021: Resource Graph retries HTTP %s within maxAttempts then surfaces',
+    async (status) => {
+      fetchMock.mockResolvedValue(jsonResponse({ error: 'transient' }, status));
+      const client = new ResourceGraphSdkClient(credentialStub(), {
+        requestTimeoutMs: 30000,
+        maxAttempts: 3,
+        sleep: async () => undefined
+      });
+      // throwOnHttpError exhaust path wraps the final status as attempt-budget exhaustion.
+      await expect(client.queryResources('sub-1', buildCandidateQuery())).rejects.toThrow(
+        new RegExp(`failed after 3 attempt|HTTP ${status}`, 'i')
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it.each([501, 505] as const)(
+    'AZ-RETRY-022: Resource Graph throwOnHttpError does not retry permanent HTTP %s',
+    async (status) => {
+      fetchMock.mockResolvedValue(jsonResponse({ error: 'permanent' }, status));
+      const client = new ResourceGraphSdkClient(credentialStub(), {
+        requestTimeoutMs: 30000,
+        maxAttempts: 3,
+        sleep: async () => undefined
+      });
+      await expect(client.queryResources('sub-1', buildCandidateQuery())).rejects.toThrow(
+        new RegExp(`HTTP ${status}`)
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('AZ-CLOUD-020: US Government profile uses gov ARM host and scope with unchanged query/subscriptions paging', async () => {
     vi.stubEnv('AZURE_ENVIRONMENT', 'AzureUSGovernment');

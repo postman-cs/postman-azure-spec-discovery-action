@@ -1,11 +1,14 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureApimClient, ApimApiSummary, ApimServiceSummary } from '../azure/clients.js';
 import { normalizeApiBasePath, normalizeHostname } from '../repo/signals.js';
+import { parseAndValidateNativeSpec } from '../spec/native-formats.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
 import { toSpecCandidate } from './types.js';
 
 const APIM_API_TYPES = new Set(['http', 'soap', 'graphql', 'websocket', 'grpc', 'odata']);
+/** Current APIs with a supported discovery export path (HTTP OpenAPI, SOAP WSDL, GraphQL SDL). */
+const SUPPORTED_EXPORTABLE_API_TYPES = new Set(['http', 'soap', 'graphql']);
 const SELECT_GRADE_TAG_KEYS = new Set(['postman:repo', 'githuborg', 'githubrepo']);
 
 export interface ApimProviderOptions {
@@ -70,6 +73,14 @@ function assignedGatewaysForApi(service: ApimServiceSummary, api: ApimApiSummary
   return [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+function stripSelectGradeTags(tags: Record<string, string>): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(tags)) {
+    if (!SELECT_GRADE_TAG_KEYS.has(key.toLowerCase())) next[key] = value;
+  }
+  return next;
+}
+
 function tagsForApi(service: ApimServiceSummary, eligibleApiCount: number): { tags: Record<string, string>; tagSource: 'api' | 'service-inherited' } {
   const tags = { ...(service.tags ?? {}) };
   // A service tag is effective ownership only when this service contributes one
@@ -121,16 +132,23 @@ export class ApimProvider implements SpecProvider {
     const services = await this.client.listServices(this.options.resourceGroup);
     for (const service of services) {
       const apis = await this.client.listApis(service.resourceGroup, service.name);
+      // Inherited service-tag eligibility counts only current, supported/exportable APIs.
+      // Unsupported types (websocket/grpc/odata) stay visible for manual review but must
+      // not turn a sole eligible API into an ambiguous inherited tag.
       const eligibleApiCount = apis.filter((api) =>
-        api.isCurrent !== false && APIM_API_TYPES.has((api.apiType || 'http').toLowerCase())
+        api.isCurrent !== false && SUPPORTED_EXPORTABLE_API_TYPES.has((api.apiType || 'http').toLowerCase())
       ).length;
-      const { tags, tagSource } = tagsForApi(service, eligibleApiCount);
+      const { tags: serviceTags, tagSource } = tagsForApi(service, eligibleApiCount);
       const hostnames = serviceHostnames(service);
       for (const api of apis) {
         if (api.isCurrent === false) continue;
         const apiType = (api.apiType || 'http').toLowerCase();
-        const supported = apiType === 'http' || apiType === 'soap' || apiType === 'graphql';
+        const supported = SUPPORTED_EXPORTABLE_API_TYPES.has(apiType);
         if (!APIM_API_TYPES.has(apiType)) continue;
+        // When a service has a sole eligible API, unsupported siblings must not
+        // carry select-grade repo tags or they would re-poison tag selection.
+        const tags =
+          supported || eligibleApiCount > 1 ? serviceTags : stripSelectGradeTags(serviceTags);
         const armId = buildApimApiArmId(
           this.options.subscriptionId,
           service.resourceGroup,
@@ -215,7 +233,7 @@ export class ApimProvider implements SpecProvider {
       api.workspaceId ?? parsed.workspaceId
     );
     const apiType = (api.apiType || 'http').toLowerCase();
-    const supported = apiType === 'http' || apiType === 'soap' || apiType === 'graphql';
+    const supported = SUPPORTED_EXPORTABLE_API_TYPES.has(apiType);
     const hostnames = serviceHostnames(service);
     const assignedGatewayIds = assignedGatewaysForApi(service, api);
     return {
@@ -257,19 +275,41 @@ export class ApimProvider implements SpecProvider {
     }
     if (candidate.meta.apiType === 'soap') {
       const content = await this.client.exportApi(resourceGroup, serviceName, apiId, candidate.meta.workspaceId, 'wsdl-link');
+      let validated;
+      try {
+        validated = parseAndValidateNativeSpec(content, 'wsdl');
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`APIM SOAP export failed native validation: ${detail}`, { cause: error });
+      }
+      if (validated.format !== 'wsdl') {
+        throw new Error(`APIM SOAP export detected ${validated.format}, expected wsdl`);
+      }
       return {
         content,
         format: 'wsdl',
         filename: 'service.wsdl',
+        contractClass: 'authoritative',
         evidence: [`Exported revision of APIM SOAP API ${apiId} from service ${serviceName} as WSDL`]
       };
     }
     if (candidate.meta.apiType === 'graphql') {
       const content = await this.client.getGraphqlSchema(resourceGroup, serviceName, apiId, candidate.meta.workspaceId);
+      let validated;
+      try {
+        validated = parseAndValidateNativeSpec(content, 'graphql-sdl');
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`APIM GraphQL export failed native validation: ${detail}`, { cause: error });
+      }
+      if (validated.format !== 'graphql-sdl') {
+        throw new Error(`APIM GraphQL export detected ${validated.format}, expected graphql-sdl`);
+      }
       return {
         content,
         format: 'graphql-sdl',
         filename: 'schema.graphql',
+        contractClass: 'authoritative',
         evidence: [`Read GraphQL SDL for APIM API ${apiId} from service ${serviceName}`]
       };
     }

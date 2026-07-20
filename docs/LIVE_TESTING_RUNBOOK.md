@@ -12,7 +12,7 @@ Live validation provisions disposable real Azure resources, exercises the compil
 - Resource group: `CSE-Azure-Team` (the connection's Contributor scope)
 - API Center location: **`eastus`** (harness constant; independent of `AZURE_LOCATION` used for APIM/App Service)
 
-Do not provision live-validation resources from a personal Azure subscription. The Azure DevOps `AzureCLI@2` task authenticates with the workload-identity service connection and derives `AZURE_SUBSCRIPTION_ID` from `az account show`; no personal login, tenant, or subscription ID belongs in the pipeline or committed evidence.
+Do not provision live-validation resources from a personal Azure subscription. The Azure DevOps `AzureCLI@2` task authenticates with the workload-identity federation service connection and derives `AZURE_SUBSCRIPTION_ID` from `az account show`; no personal login, tenant, or subscription ID belongs in the pipeline or committed evidence. Equivalent ambient identity forms outside this pipeline (GitHub OIDC immutable repository-ID or legacy name subjects via `azure/login`, Azure-hosted managed identity, or service-principal environment credentials) are documented in the README Auth section and [docs/providers.md](providers.md#identity-forms-no-new-secret-inputs); this action never adds secret inputs for them.
 
 ## Exact SHA / githubRef
 
@@ -65,21 +65,25 @@ The runner executes the R8 case catalog (baseline six + APIM clean-repo/format/u
 | Lane | Notes |
 | --- | --- |
 | Baseline six | Always attempted when provisioned. |
-| APIM multi-API clean repo | Repo tag, Fox `GithubOrg`/`GithubRepo`, host+path, host-only ambiguity, version/revision ambiguity, historical revision, version set. |
+| APIM multi-API clean repo | Canonical vs Fox fixtures are distinct (path-isolated); no `--api-id` / `--repo-slug` (repo context from `GITHUB_REPOSITORY`). Host-only / revision ambiguity must stay unresolved under inherited multi-API service tags. Historical revision and version set are explicit. |
 | APIM formats | SOAP/WSDL and GraphQL SDL when Azure accepts inventory. |
 | APIM unsupported | WebSocket/gRPC/OData classified as manual-review only when Azure accepts inventory; otherwise `requires-capability`. |
 | API Center | `eastus`; preflight checks `Microsoft.ApiCenter` registration. Never auto-registers the provider or elevates RBAC. |
-| Logic Apps | Consumption request trigger: native `listSwagger` opt-in and Reader synthesis fallback. |
+| Logic Apps | Native `listSwagger` case requires native evidence (never synthesis fallback). Reader synthesis is a separate case. |
 | Custom connector | Inline Swagger when ARM deployment supports it safely. |
 | Template Specs | Embedded APIM OpenAPI definition. |
 | Event Grid | Webhook partial contract via run-owned App Service endpoint **without secret query**. |
 | Service Bus | Standard topic/subscription only when explicitly opted in and cost-bounded; otherwise `requires-capability` (`cost-guard-blocked`). |
-| Functions / App Service runtime | Run-owned apps; no key retrieval. |
+| Functions / App Service runtime | OpenAPI extension and SCM `ApiSpecPath` must prove those exact routes (seeded metadata) or return `requires-capability` — never public `apiDefinition` / binding-synthesis fallback. |
 | Local R3 | Compiled CLI format/parser matrix; `local-only`; no Azure calls. |
 
 ## Capability vs GCP category mismatch
 
 Azure evidence uses `requires-capability` for blocked public-cloud lanes. That is **not** the GCP live-harness `substitute` status. Coverage verification accepts only `status: pass` as backing for `validationState: live`. Neither `requires-capability` nor GCP `substitute` promotes a route to live.
+
+## Sovereign clouds
+
+Pipeline 157 and committed live evidence cover the Public cloud deployment context above only. Public, US Government, and China endpoint construction is locally unit-tested; US Government and China are **not** live-validated by this runbook. Do not promote any sovereign profile or API Center sovereign parity to live without committed evidence and a matching coverage-manifest `validationState: live` entry.
 
 ## Flags
 
@@ -92,7 +96,7 @@ Azure evidence uses `requires-capability` for blocked public-cloud lanes. That i
 ## Safety rules
 
 - Every root resource uses the run marker. The gitignored local manifest records exact type/name/id for operator recovery.
-- Shared-group teardown deletes only exact run-created resources verified by name, type, subscription, group, and run marker, in reverse dependency order. Dedicated-group mode deletes only the group it created, verified by run marker and subscription.
+- Shared-group teardown deletes only exact run-created resources verified by name, type, subscription, group, and run marker, in reverse dependency order. Dedicated-group mode awaits group deletion to terminal absence, then runs the same marker/residual audit; teardown timeout or residue fails the run.
 - Residual Resource Graph audit must report zero run-marked resources after cleanup.
 - Never delete shared RG `CSE-Azure-Team`.
 - Never auto-register a resource provider or elevate RBAC.

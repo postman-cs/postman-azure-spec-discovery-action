@@ -1,6 +1,9 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureAppServiceClient } from '../azure/clients.js';
-import type { AzureAppServiceRuntimeClient } from '../azure/app-service-runtime-client.js';
+import {
+  safeUrlForEvidence,
+  type AzureAppServiceRuntimeClient
+} from '../azure/app-service-runtime-client.js';
 import { fetchSpecFromUrl, SpecFetchError } from '../fetch/spec-fetcher.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
@@ -246,7 +249,9 @@ export class AppServiceProvider implements SpecProvider {
     if (parsedUrl.protocol !== 'https:') {
       throw new Error(`App Service API definition URL must use HTTPS; got ${parsedUrl.protocol}`);
     }
+    const safeUrl = safeUrlForEvidence(apiDefinitionUrl);
     try {
+      // Guarded public fetch — never Authorization/Cookie/Azure/GitHub credentials.
       const fetched = await fetchSpecFromUrl(apiDefinitionUrl, { timeoutMs: this.options.requestTimeoutMs });
       const validated = parseAndValidateOpenApi(fetched.content);
       const normalized = fetched.content.endsWith('\n') ? fetched.content : `${fetched.content}\n`;
@@ -256,19 +261,19 @@ export class AppServiceProvider implements SpecProvider {
         filename: validated.isJson ? 'index.json' : 'index.yaml',
         contractClass: 'authoritative',
         evidence: [
-          `Fetched API definition for App Service site ${candidate.meta.siteName ?? candidate.name} over HTTPS`,
+          `Fetched API definition for App Service site ${candidate.meta.siteName ?? candidate.name} over HTTPS from ${safeUrl}`,
           'No Authorization/Cookie/Azure/GitHub credentials were forwarded'
         ]
       };
     } catch (error) {
       if (error instanceof SpecFetchError && error.code === 'private-network-unreachable') {
         throw new Error(
-          `App Service API definition URL is private-network-unreachable: ${apiDefinitionUrl}`,
+          `App Service API definition URL is private-network-unreachable: ${safeUrl}`,
           { cause: error }
         );
       }
       if (error instanceof SpecFetchError && error.code === 'blocked-ssrf') {
-        throw new Error(`App Service API definition URL blocked by SSRF defenses: ${apiDefinitionUrl}`, {
+        throw new Error(`App Service API definition URL blocked by SSRF defenses: ${safeUrl}`, {
           cause: error
         });
       }

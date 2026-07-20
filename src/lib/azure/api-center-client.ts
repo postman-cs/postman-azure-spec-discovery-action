@@ -24,6 +24,12 @@ export const API_CENTER_API_VERSION = '2024-03-01';
  */
 const MAX_LIST_PAGES = 100;
 
+/** Total definition headers retained from an API Center hierarchy inventory. */
+export const MAX_API_CENTER_INVENTORY = 1000;
+
+/** Per-parent child ceiling to prevent hierarchy fan-out from multiplying requests. */
+export const MAX_API_CENTER_CHILDREN_PER_LEVEL = 200;
+
 /** Default bound on 202 LRO poll iterations for exportSpecification. */
 const DEFAULT_MAX_LRO_POLLS = 30;
 
@@ -59,6 +65,9 @@ export interface ApiCenterDefinitionSummary {
   deployments?: ApiCenterDeploymentSummary[];
 }
 
+/** Array-compatible API Center inventory with an observable truncation signal. */
+export type ApiCenterDefinitionsResult = ApiCenterDefinitionSummary[] & { truncated?: boolean };
+
 export interface ApiCenterExportCoordinates {
   resourceGroup: string;
   serviceName: string;
@@ -68,14 +77,36 @@ export interface ApiCenterExportCoordinates {
   definitionName: string;
 }
 
+/** Version coordinates for optional deployment/environment association enrichment. */
+export interface ApiCenterVersionCoordinates {
+  resourceGroup: string;
+  serviceName: string;
+  workspaceName: string;
+  apiName: string;
+  versionName: string;
+}
+
 export interface ApiCenterExportResult {
   content: string;
   source: 'inline' | 'link';
 }
 
 export interface AzureApiCenterClient {
-  listServices(resourceGroup?: string): Promise<Array<{ id: string; name: string; resourceGroup: string; tags: Record<string, string> }>>;
-  listDefinitions(resourceGroup?: string): Promise<ApiCenterDefinitionSummary[]>;
+  listServices(
+    resourceGroup?: string,
+    signal?: AbortSignal
+  ): Promise<Array<{ id: string; name: string; resourceGroup: string; tags: Record<string, string> }>>;
+  /**
+   * Header inventory: services → workspaces → APIs → versions → definitions.
+   * Does not list deployments or call exportSpecification.
+   */
+  listDefinitions(resourceGroup?: string, signal?: AbortSignal): Promise<ApiCenterDefinitionsResult>;
+  /**
+   * Optional association enrichment for a selected version. Callers treat
+   * authorization/other failures as empty (fail-soft); this method never throws
+   * for deployment listing denials.
+   */
+  listDeployments(coords: ApiCenterVersionCoordinates, signal?: AbortSignal): Promise<ApiCenterDeploymentSummary[]>;
   exportSpecification(coords: ApiCenterExportCoordinates, signal?: AbortSignal): Promise<ApiCenterExportResult>;
   probeApiCenterReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
@@ -169,125 +200,169 @@ export function extractApiCenterExportPayload(body: unknown): { kind: 'inline'; 
   return undefined;
 }
 
-/**
- * Azure API Center management-plane client (api-version 2024-03-01).
- *
- * Inventories services → workspaces → APIs → versions → definitions through ARM
- * GETs only. Spec bytes come exclusively from POST exportSpecification (200
- * immediate or 202 LRO). Data-plane inventory APIs are never called.
- */
-export class ApiCenterSdkClient implements AzureApiCenterClient {
-  private readonly credential: TokenCredential;
-  private readonly subscriptionId: string;
-  private readonly cloud: AzureCloudProfile;
-  private readonly maxAttempts: number;
-  private readonly requestTimeoutMs: number;
-  private readonly maxLroPolls: number;
-  private readonly maxLroWallClockMs: number;
-  private readonly sleep: (delayMs: number) => Promise<void>;
-  private readonly random: () => number;
+  /**
+   * Azure API Center management-plane client (api-version 2024-03-01).
+   *
+   * Header inventory walks services → workspaces → APIs → versions → definitions
+   * through ARM GETs only. Deployment/environment association is a separate
+   * selected enrichment. Spec bytes come exclusively from POST
+   * exportSpecification (200 immediate or 202 LRO). Data-plane inventory APIs
+   * are never called.
+   */
+  export class ApiCenterSdkClient implements AzureApiCenterClient {
+    private readonly credential: TokenCredential;
+    private readonly subscriptionId: string;
+    private readonly cloud: AzureCloudProfile;
+    private readonly maxAttempts: number;
+    private readonly requestTimeoutMs: number;
+    private readonly maxLroPolls: number;
+    private readonly maxLroWallClockMs: number;
+    private readonly sleep: (delayMs: number) => Promise<void>;
+    private readonly random: () => number;
 
-  public constructor(credential: TokenCredential, subscriptionId: string, options?: ApiCenterSdkOptions) {
-    this.credential = credential;
-    this.subscriptionId = subscriptionId;
-    this.cloud = resolveAzureCloudProfile();
-    this.maxAttempts = options?.maxAttempts ?? 3;
-    this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
-    this.maxLroPolls = options?.maxLroPolls ?? DEFAULT_MAX_LRO_POLLS;
-    this.maxLroWallClockMs = options?.maxLroWallClockMs ?? Math.max(this.requestTimeoutMs * this.maxAttempts, 120_000);
-    this.sleep = options?.sleep ?? defaultSleep;
-    this.random = options?.random ?? Math.random;
-  }
+    public constructor(credential: TokenCredential, subscriptionId: string, options?: ApiCenterSdkOptions) {
+      this.credential = credential;
+      this.subscriptionId = subscriptionId;
+      this.cloud = resolveAzureCloudProfile();
+      this.maxAttempts = options?.maxAttempts ?? 3;
+      this.requestTimeoutMs = options?.requestTimeoutMs ?? 30000;
+      this.maxLroPolls = options?.maxLroPolls ?? DEFAULT_MAX_LRO_POLLS;
+      this.maxLroWallClockMs = options?.maxLroWallClockMs ?? Math.max(this.requestTimeoutMs * this.maxAttempts, 120_000);
+      this.sleep = options?.sleep ?? defaultSleep;
+      this.random = options?.random ?? Math.random;
+    }
 
-  public async listServices(
-    resourceGroup?: string
-  ): Promise<Array<{ id: string; name: string; resourceGroup: string; tags: Record<string, string> }>> {
-    const scope = resourceGroup
-      ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.ApiCenter/services`
-      : 'providers/Microsoft.ApiCenter/services';
-    const first = armManagementUrl(
-      this.cloud,
-      `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${API_CENTER_API_VERSION}`
-    );
-    const entries = await this.listPaged<ArmNamedResource>(first, 'API Center service listing');
-    return entries
-      .filter((entry) => entry.id && entry.name)
-      .map((entry) => ({
-        id: entry.id!,
-        name: entry.name!,
-        resourceGroup: extractResourceGroup(entry.id),
-        tags: entry.tags ?? {}
-      }));
-  }
-
-  public async listDefinitions(resourceGroup?: string): Promise<ApiCenterDefinitionSummary[]> {
-    const services = await this.listServices(resourceGroup);
-    const definitions: ApiCenterDefinitionSummary[] = [];
-    for (const service of services) {
-      const workspaces = await this.listNamedChildren(
-        service.resourceGroup,
-        service.name,
-        'workspaces',
-        'API Center workspace listing'
+    public async listServices(
+      resourceGroup?: string,
+      signal?: AbortSignal
+    ): Promise<Array<{ id: string; name: string; resourceGroup: string; tags: Record<string, string> }>> {
+      const scope = resourceGroup
+        ? `resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.ApiCenter/services`
+        : 'providers/Microsoft.ApiCenter/services';
+      const first = armManagementUrl(
+        this.cloud,
+        `/subscriptions/${encodeURIComponent(this.subscriptionId)}/${scope}?api-version=${API_CENTER_API_VERSION}`
       );
-      for (const workspace of workspaces) {
-        const apis = await this.listNamedChildren(
+      const entries = await this.listPaged<ArmNamedResource>(first, 'API Center service listing', signal);
+      return entries
+        .filter((entry) => entry.id && entry.name)
+        .map((entry) => ({
+          id: entry.id!,
+          name: entry.name!,
+          resourceGroup: extractResourceGroup(entry.id),
+          tags: entry.tags ?? {}
+        }));
+    }
+
+    public async listDefinitions(resourceGroup?: string, signal?: AbortSignal): Promise<ApiCenterDefinitionsResult> {
+      const services = await this.listServices(resourceGroup, signal);
+      const definitions: ApiCenterDefinitionsResult = [];
+      let truncated = false;
+      const markTruncated = (): ApiCenterDefinitionsResult => {
+        Object.defineProperty(definitions, 'truncated', { value: true, enumerable: false });
+        return definitions;
+      };
+      const boundedChildren = <T>(children: T[]): T[] => {
+        if (children.length > MAX_API_CENTER_CHILDREN_PER_LEVEL) truncated = true;
+        return children.slice(0, MAX_API_CENTER_CHILDREN_PER_LEVEL);
+      };
+      for (const service of services) {
+        signal?.throwIfAborted();
+        const workspaces = await this.listNamedChildren(
           service.resourceGroup,
           service.name,
-          `workspaces/${encodeURIComponent(workspace.name)}/apis`,
-          'API Center API listing'
+          'workspaces',
+          'API Center workspace listing',
+          signal
         );
-        for (const api of apis) {
-          const versions = await this.listNamedChildren(
+        for (const workspace of boundedChildren(workspaces)) {
+          signal?.throwIfAborted();
+          const apis = await this.listNamedChildren(
             service.resourceGroup,
             service.name,
-            `workspaces/${encodeURIComponent(workspace.name)}/apis/${encodeURIComponent(api.name)}/versions`,
-            'API Center version listing'
+            `workspaces/${encodeURIComponent(workspace.name)}/apis`,
+            'API Center API listing',
+            signal
           );
-          for (const version of versions) {
-            const versionProps = asRecord(version.properties) ?? {};
-            const defs = await this.listNamedChildren(
+          for (const api of boundedChildren(apis)) {
+            signal?.throwIfAborted();
+            const versions = await this.listNamedChildren(
               service.resourceGroup,
               service.name,
-              `workspaces/${encodeURIComponent(workspace.name)}/apis/${encodeURIComponent(api.name)}/versions/${encodeURIComponent(version.name)}/definitions`,
-              'API Center definition listing'
+              `workspaces/${encodeURIComponent(workspace.name)}/apis/${encodeURIComponent(api.name)}/versions`,
+              'API Center version listing',
+              signal
             );
-            const deployments = await this.listDeployments(
-              service.resourceGroup,
-              service.name,
-              workspace.name,
-              api.name,
-              version.name
-            );
-            for (const def of defs) {
-              if (!def.id || !def.name) continue;
-              const defProps = asRecord(def.properties) ?? {};
-              const specification = asRecord(defProps.specification) ?? {};
-              definitions.push({
-                id: def.id,
-                name: def.name,
-                title: typeof defProps.title === 'string' ? defProps.title : undefined,
-                resourceGroup: service.resourceGroup,
-                serviceName: service.name,
-                workspaceName: workspace.name,
-                apiName: api.name,
-                apiTitle: typeof asRecord(api.properties)?.title === 'string' ? String(asRecord(api.properties)!.title) : undefined,
-                versionName: version.name,
-                versionTitle: typeof versionProps.title === 'string' ? versionProps.title : undefined,
-                lifecycleStage:
-                  typeof versionProps.lifecycleStage === 'string' ? versionProps.lifecycleStage : undefined,
-                specificationName: typeof specification.name === 'string' ? specification.name : undefined,
-                specificationVersion: typeof specification.version === 'string' ? specification.version : undefined,
-                tags: { ...service.tags, ...(def.tags ?? {}) },
-                deployments
-              });
+            for (const version of boundedChildren(versions)) {
+              signal?.throwIfAborted();
+              const versionProps = asRecord(version.properties) ?? {};
+              const defs = await this.listNamedChildren(
+                service.resourceGroup,
+                service.name,
+                `workspaces/${encodeURIComponent(workspace.name)}/apis/${encodeURIComponent(api.name)}/versions/${encodeURIComponent(version.name)}/definitions`,
+                'API Center definition listing',
+                signal
+              );
+              for (const def of boundedChildren(defs)) {
+                if (!def.id || !def.name) continue;
+                if (definitions.length >= MAX_API_CENTER_INVENTORY) {
+                  truncated = true;
+                  return markTruncated();
+                }
+                const defProps = asRecord(def.properties) ?? {};
+                const specification = asRecord(defProps.specification) ?? {};
+                definitions.push({
+                  id: def.id,
+                  name: def.name,
+                  title: typeof defProps.title === 'string' ? defProps.title : undefined,
+                  resourceGroup: service.resourceGroup,
+                  serviceName: service.name,
+                  workspaceName: workspace.name,
+                  apiName: api.name,
+                  apiTitle: typeof asRecord(api.properties)?.title === 'string' ? String(asRecord(api.properties)!.title) : undefined,
+                  versionName: version.name,
+                  versionTitle: typeof versionProps.title === 'string' ? versionProps.title : undefined,
+                  lifecycleStage:
+                    typeof versionProps.lifecycleStage === 'string' ? versionProps.lifecycleStage : undefined,
+                  specificationName: typeof specification.name === 'string' ? specification.name : undefined,
+                  specificationVersion: typeof specification.version === 'string' ? specification.version : undefined,
+                  tags: { ...service.tags, ...(def.tags ?? {}) }
+                });
+              }
             }
           }
         }
       }
+      if (truncated) return markTruncated();
+      return definitions;
     }
-    return definitions;
-  }
+
+    public async listDeployments(
+      coords: ApiCenterVersionCoordinates,
+      signal?: AbortSignal
+    ): Promise<ApiCenterDeploymentSummary[]> {
+      try {
+        const entries = await this.listNamedChildren(
+          coords.resourceGroup,
+          coords.serviceName,
+          `workspaces/${encodeURIComponent(coords.workspaceName)}/apis/${encodeURIComponent(coords.apiName)}/versions/${encodeURIComponent(coords.versionName)}/deployments`,
+          'API Center deployment listing',
+          signal
+        );
+        return entries.map((entry) => {
+          const props = asRecord(entry.properties) ?? {};
+          const server = asRecord(props.server) ?? {};
+          return {
+            name: entry.name,
+            ...(typeof props.environmentId === 'string' ? { environmentId: props.environmentId } : {}),
+            ...(typeof server.type === 'string' ? { runtimeType: server.type } : {})
+          };
+        });
+      } catch {
+        // Deployments are association enrichment only; selected inventory must still succeed.
+        return [];
+      }
+    }
 
   public async exportSpecification(
     coords: ApiCenterExportCoordinates,
@@ -348,7 +423,8 @@ export class ApiCenterSdkClient implements AzureApiCenterClient {
     resourceGroup: string,
     serviceName: string,
     relativePath: string,
-    operation: string
+    operation: string,
+    signal?: AbortSignal
   ): Promise<Array<ArmNamedResource & { name: string }>> {
     const first = armManagementUrl(
       this.cloud,
@@ -357,51 +433,26 @@ export class ApiCenterSdkClient implements AzureApiCenterClient {
         `/providers/Microsoft.ApiCenter/services/${encodeURIComponent(serviceName)}` +
         `/${relativePath}?api-version=${API_CENTER_API_VERSION}`
     );
-    const entries = await this.listPaged<ArmNamedResource>(first, operation);
+    const entries = await this.listPaged<ArmNamedResource>(first, operation, signal);
     return entries.filter((entry): entry is ArmNamedResource & { name: string } => Boolean(entry.name));
   }
 
-  private async listDeployments(
-    resourceGroup: string,
-    serviceName: string,
-    workspaceName: string,
-    apiName: string,
-    versionName: string
-  ): Promise<ApiCenterDeploymentSummary[]> {
-    try {
-      const entries = await this.listNamedChildren(
-        resourceGroup,
-        serviceName,
-        `workspaces/${encodeURIComponent(workspaceName)}/apis/${encodeURIComponent(apiName)}/versions/${encodeURIComponent(versionName)}/deployments`,
-        'API Center deployment listing'
-      );
-      return entries.map((entry) => {
-        const props = asRecord(entry.properties) ?? {};
-        const server = asRecord(props.server) ?? {};
-        return {
-          name: entry.name,
-          ...(typeof props.environmentId === 'string' ? { environmentId: props.environmentId } : {}),
-          ...(typeof server.type === 'string' ? { runtimeType: server.type } : {})
-        };
-      });
-    } catch {
-      // Deployments are association enrichment only; inventory must still succeed.
-      return [];
-    }
-  }
-
-  private async listPaged<T>(firstUrl: string, operation: string): Promise<T[]> {
+  private async listPaged<T>(firstUrl: string, operation: string, signal?: AbortSignal): Promise<T[]> {
     const token = await getArmAccessToken(this.credential, this.cloud);
     let url: string | undefined = firstUrl;
     const entries: T[] = [];
     const seen = new Set<string>();
     let pages = 0;
     while (url) {
+      signal?.throwIfAborted();
       pages += 1;
       if (pages > MAX_LIST_PAGES) {
         throw new Error(`${operation} pagination exceeded ${MAX_LIST_PAGES} pages; aborting`);
       }
-      const response = await this.armRequest(url, token, { method: 'GET', operation });
+      const response = await this.armRequest(url, token, { method: 'GET', operation, signal });
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`AuthorizationFailed: ${operation} returned HTTP ${response.status}`);
+      }
       if (!response.ok) {
         throw new Error(`${operation} failed with HTTP ${response.status}`);
       }
@@ -536,7 +587,9 @@ export class ApiCenterSdkClient implements AzureApiCenterClient {
           return response;
         }
         if (!isTransientHttpStatus(response.status)) {
-          return response;
+          // Route through typed status so catch rethrows permanent 5xx (501/505)
+          // the same way as 4xx — never via a 1xx–4xx-only message regex.
+          throw new ArmHttpError(options.operation, response.status, response);
         }
         if (attempt === this.maxAttempts) {
           return response;
@@ -548,12 +601,8 @@ export class ApiCenterSdkClient implements AzureApiCenterClient {
         });
         await this.sleep(delayMs);
       } catch (error) {
-        if (
-          error instanceof Error &&
-          /failed with HTTP [1-4]/.test(error.message) &&
-          !/HTTP (408|429)/.test(error.message)
-        ) {
-          throw error;
+        if (error instanceof ArmHttpError && !isTransientHttpStatus(error.status)) {
+          return error.response;
         }
         if (options.signal?.aborted) throw error;
         if (attempt === this.maxAttempts) {
@@ -564,5 +613,18 @@ export class ApiCenterSdkClient implements AzureApiCenterClient {
       }
     }
     throw new Error(`${options.operation} exhausted its attempt limit`);
+  }
+}
+
+/** Private to this helper: carries status (+ response) so catch can honor isTransientHttpStatus. */
+class ArmHttpError extends Error {
+  readonly status: number;
+  readonly response: Response;
+
+  constructor(operation: string, status: number, response: Response) {
+    super(`${operation} failed with HTTP ${status}`);
+    this.name = 'ArmHttpError';
+    this.status = status;
+    this.response = response;
   }
 }

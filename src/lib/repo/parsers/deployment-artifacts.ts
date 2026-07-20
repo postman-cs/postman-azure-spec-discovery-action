@@ -10,8 +10,40 @@ import {
 } from '../arm-ids.js';
 import { isSecretKey, isSecretValue } from '../secret-hygiene.js';
 
+/** Deterministic ceilings for recursive deployment-artifact object walks. */
+export const DEPLOYMENT_WALK_MAX_DEPTH = 32;
+export const DEPLOYMENT_WALK_MAX_NODES = 4000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+interface WalkBudget {
+  nodes: number;
+  seen: WeakSet<object>;
+  truncated: boolean;
+}
+
+function createWalkBudget(): WalkBudget {
+  return { nodes: 0, seen: new WeakSet<object>(), truncated: false };
+}
+
+function enterWalkNode(value: object, budget: WalkBudget, depth: number): boolean {
+  if (budget.truncated || depth > DEPLOYMENT_WALK_MAX_DEPTH) {
+    budget.truncated = true;
+    return false;
+  }
+  if (budget.seen.has(value)) {
+    budget.truncated = true;
+    return false;
+  }
+  budget.seen.add(value);
+  budget.nodes += 1;
+  if (budget.nodes > DEPLOYMENT_WALK_MAX_NODES) {
+    budget.truncated = true;
+    return false;
+  }
+  return true;
 }
 
 function pushFromString(
@@ -74,16 +106,29 @@ function pushFromString(
   }
 }
 
-function walk(value: unknown, relativePath: string, field: string, variables: Record<string, string>, bindings: AzureResourceBinding[]): void {
+function walk(
+  value: unknown,
+  relativePath: string,
+  field: string,
+  variables: Record<string, string>,
+  bindings: AzureResourceBinding[],
+  budget = createWalkBudget(),
+  depth = 0
+): void {
+  if (budget.truncated) return;
   if (typeof value === 'string') {
     pushFromString(relativePath, field, value, variables, bindings);
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => walk(entry, relativePath, `${field}[${index}]`, variables, bindings));
+    if (!enterWalkNode(value, budget, depth)) return;
+    value.forEach((entry, index) =>
+      walk(entry, relativePath, `${field}[${index}]`, variables, bindings, budget, depth + 1)
+    );
     return;
   }
   if (!isRecord(value)) return;
+  if (!enterWalkNode(value, budget, depth)) return;
 
   // ARM deployment outputs shape: { outputs: { name: { value: '...' } } } or flattened outputs.
   if (isRecord(value.outputs)) {
@@ -91,9 +136,9 @@ function walk(value: unknown, relativePath: string, field: string, variables: Re
       if (isSecretKey(name)) continue;
       if (isRecord(output)) {
         if (output.type === 'secureString' || output.type === 'secureObject') continue;
-        walk(output.value ?? output, relativePath, `outputs.${name}`, variables, bindings);
+        walk(output.value ?? output, relativePath, `outputs.${name}`, variables, bindings, budget, depth + 1);
       } else {
-        walk(output, relativePath, `outputs.${name}`, variables, bindings);
+        walk(output, relativePath, `outputs.${name}`, variables, bindings, budget, depth + 1);
       }
     }
   }
@@ -101,7 +146,7 @@ function walk(value: unknown, relativePath: string, field: string, variables: Re
   for (const [key, child] of Object.entries(value)) {
     if (key === 'outputs') continue;
     if (isSecretKey(key)) continue;
-    walk(child, relativePath, field ? `${field}.${key}` : key, variables, bindings);
+    walk(child, relativePath, field ? `${field}.${key}` : key, variables, bindings, budget, depth + 1);
   }
 }
 

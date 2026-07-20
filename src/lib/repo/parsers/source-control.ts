@@ -10,6 +10,10 @@ import {
 } from '../arm-ids.js';
 import { isSecretKey, isSecretValue, sanitizeEvidenceValue } from '../secret-hygiene.js';
 
+/** Deterministic ceilings for recursive source-control object walks. */
+export const SOURCE_CONTROL_WALK_MAX_DEPTH = 32;
+export const SOURCE_CONTROL_WALK_MAX_NODES = 4000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -26,12 +30,49 @@ interface SourceControlHit {
   field: string;
 }
 
-function collectHits(value: unknown, field: string, hits: SourceControlHit[]): void {
+interface WalkBudget {
+  nodes: number;
+  seen: WeakSet<object>;
+  truncated: boolean;
+}
+
+function createWalkBudget(): WalkBudget {
+  return { nodes: 0, seen: new WeakSet<object>(), truncated: false };
+}
+
+function enterWalkNode(value: object, budget: WalkBudget, depth: number): boolean {
+  if (budget.truncated || depth > SOURCE_CONTROL_WALK_MAX_DEPTH) {
+    budget.truncated = true;
+    return false;
+  }
+  if (budget.seen.has(value)) {
+    budget.truncated = true;
+    return false;
+  }
+  budget.seen.add(value);
+  budget.nodes += 1;
+  if (budget.nodes > SOURCE_CONTROL_WALK_MAX_NODES) {
+    budget.truncated = true;
+    return false;
+  }
+  return true;
+}
+
+function collectHits(
+  value: unknown,
+  field: string,
+  hits: SourceControlHit[],
+  budget = createWalkBudget(),
+  depth = 0
+): void {
+  if (budget.truncated) return;
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => collectHits(entry, `${field}[${index}]`, hits));
+    if (!enterWalkNode(value, budget, depth)) return;
+    value.forEach((entry, index) => collectHits(entry, `${field}[${index}]`, hits, budget, depth + 1));
     return;
   }
   if (!isRecord(value)) return;
+  if (!enterWalkNode(value, budget, depth)) return;
 
   const type = (asString(value.type) ?? '').toLowerCase();
   const props = isRecord(value.properties) ? value.properties : value;
@@ -95,7 +136,7 @@ function collectHits(value: unknown, field: string, hits: SourceControlHit[]): v
   for (const [key, child] of Object.entries(value)) {
     if (isSecretKey(key)) continue;
     if (typeof child === 'string' && isSecretValue(child)) continue;
-    collectHits(child, field ? `${field}.${key}` : key, hits);
+    collectHits(child, field ? `${field}.${key}` : key, hits, budget, depth + 1);
   }
 }
 
