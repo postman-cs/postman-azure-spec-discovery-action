@@ -186,6 +186,7 @@ describe('live validation control flow', () => {
   it('AZ-LIVE-002: teardown treats an already-absent resource as successfully cleaned', () => {
     expect(isResourceNotFoundError(new Error('ResourceNotFound: the resource was not found'))).toBe(true);
     expect(isResourceNotFoundError('Resource group could not be found')).toBe(true);
+    expect(isResourceNotFoundError("Operation returned an invalid status 'Not Found'")).toBe(true);
     expect(isResourceNotFoundError(new Error('AuthorizationFailed'))).toBe(false);
   });
 
@@ -225,8 +226,16 @@ describe('live validation control flow', () => {
 
   it('AZ-LIVE-002: verified shared-group deletes are asynchronous before the bounded absence audit', async () => {
     const commands: string[][] = [];
+    let deploymentShowCount = 0;
     const runner = (_command: string, args: string[]) => {
       commands.push(args);
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'show') {
+        deploymentShowCount += 1;
+        return JSON.stringify({
+          properties: { provisioningState: deploymentShowCount === 1 ? 'Running' : 'Canceled' }
+        });
+      }
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'cancel') return '';
       if (args[0] === 'resource' && args[1] === 'show') {
         return JSON.stringify({
           name: 'apim-1',
@@ -254,6 +263,18 @@ describe('live validation control flow', () => {
       subscriptionId: 'sub-1'
     });
 
+    expect(commands).toContainEqual([
+      'deployment',
+      'group',
+      'cancel',
+      '--resource-group',
+      'CSE-Azure-Team',
+      '--name',
+      'deployment-1'
+    ]);
+    expect(commands.findIndex((args) => args[2] === 'cancel')).toBeLessThan(
+      commands.findIndex((args) => args[0] === 'resource' && args[1] === 'delete')
+    );
     expect(commands).toContainEqual([
       'resource',
       'delete',
@@ -538,6 +559,7 @@ describe('R8 harness matrix contract', () => {
         return JSON.stringify({ name: 'CSE-Azure-Team', id: '/subscriptions/sub-1/resourceGroups/CSE-Azure-Team' });
       }
       if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'create') throw originalFailure;
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'show') throw new Error('ResourceNotFound');
       if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'delete') return '';
       if (args[0] === 'resource' && args[1] === 'show') throw new Error('ResourceNotFound');
       if (args[0] === 'resource' && args[1] === 'list') return '[]';

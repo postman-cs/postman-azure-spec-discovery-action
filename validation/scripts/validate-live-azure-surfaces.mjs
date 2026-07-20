@@ -176,7 +176,7 @@ export function classifyProbeError(message) {
 
 export function isResourceNotFoundError(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return /ResourceNotFound|could not be found|was not found|NotFound/i.test(message);
+  return /ResourceNotFound|could not be found|was not found|NotFound|\bNot Found\b/i.test(message);
 }
 
 export function parseFlags(argv) {
@@ -1007,6 +1007,71 @@ export async function teardownSharedGroupResources({
   const cleanupErrors = [];
   const resourceGroup = manifest.resourceGroup;
   const runMarker = manifest.runMarker;
+  const deploymentNames = [manifest.extendedDeploymentName, manifest.deploymentName].filter(Boolean);
+
+  const activeDeployments = new Set();
+  for (const deploymentName of deploymentNames) {
+    try {
+      const deployment = azJson(runner, [
+        'deployment',
+        'group',
+        'show',
+        '--resource-group',
+        resourceGroup,
+        '--name',
+        deploymentName
+      ]);
+      if (['Accepted', 'Running'].includes(deployment?.properties?.provisioningState)) {
+        log(`Canceling active deployment ${deploymentName} before resource teardown`);
+        az(runner, [
+          'deployment',
+          'group',
+          'cancel',
+          '--resource-group',
+          resourceGroup,
+          '--name',
+          deploymentName
+        ]);
+        activeDeployments.add(deploymentName);
+      }
+    } catch (error) {
+      if (!isResourceNotFoundError(error)) {
+        cleanupErrors.push(error);
+        log(`Deployment cancellation check failed for ${deploymentName}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
+  }
+
+  const deploymentCancelDeadline = now() + CLEANUP_READY_TIMEOUT_MS;
+  while (activeDeployments.size > 0 && now() < deploymentCancelDeadline) {
+    for (const deploymentName of [...activeDeployments]) {
+      try {
+        const deployment = azJson(runner, [
+          'deployment',
+          'group',
+          'show',
+          '--resource-group',
+          resourceGroup,
+          '--name',
+          deploymentName
+        ]);
+        if (!['Accepted', 'Running'].includes(deployment?.properties?.provisioningState)) {
+          activeDeployments.delete(deploymentName);
+        }
+      } catch (error) {
+        if (isResourceNotFoundError(error)) activeDeployments.delete(deploymentName);
+        else {
+          cleanupErrors.push(error);
+          activeDeployments.delete(deploymentName);
+          log(`Deployment cancellation poll failed for ${deploymentName}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+        }
+      }
+    }
+    if (activeDeployments.size > 0) await sleep(CLEANUP_POLL_INTERVAL_MS);
+  }
+  if (activeDeployments.size > 0) {
+    cleanupErrors.push(new Error(`${activeDeployments.size} deployment cancellation(s) did not reach a terminal state`));
+  }
 
   for (const resource of CLEANUP_RESOURCE_ORDER) {
     const name = manifest[resource.key];
@@ -1082,7 +1147,7 @@ export async function teardownSharedGroupResources({
     }
   }
 
-  for (const deploymentName of [manifest.extendedDeploymentName, manifest.deploymentName].filter(Boolean)) {
+  for (const deploymentName of deploymentNames) {
     try {
       az(runner, [
         'deployment',
