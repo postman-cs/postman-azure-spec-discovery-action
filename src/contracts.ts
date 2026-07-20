@@ -19,11 +19,22 @@ export type ActionMode = 'resolve-one' | 'discover-many' | 'discover-estate';
 
 export type ResolutionStatus = 'resolved' | 'unresolved';
 
-export type ProviderType = 'apim' | 'app-service' | 'iac-local' | 'custom-apis' | 'logic-apps' | 'template-specs' | 'event-grid' | 'service-bus' | 'function-bindings';
+export type ProviderType =
+  | 'apim'
+  | 'api-center'
+  | 'app-service'
+  | 'iac-local'
+  | 'custom-apis'
+  | 'logic-apps'
+  | 'template-specs'
+  | 'event-grid'
+  | 'service-bus'
+  | 'function-bindings';
 
 export type SourceType =
   | 'repo-spec'
   | 'apim-export'
+  | 'api-center-export'
   | 'app-service-api-definition'
   | 'iac-embedded'
   | 'custom-api-swagger'
@@ -186,6 +197,12 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       required: false,
       default: ''
     },
+    'api-center-definition-id': {
+      description:
+        'Optional full Azure API Center definition ARM resource ID. Exact match only; conflicts with a different .postman apiCenterDefinitionId binding.',
+      required: false,
+      default: ''
+    },
     'output-dir': {
       description: 'Directory under the repository root where generated specs are written.',
       required: false,
@@ -210,7 +227,8 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Resolution status: resolved or unresolved.'
     },
     'source-type': {
-      description: 'Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, discover-many, or discover-estate.'
+      description:
+        'Resolved source type: repo-spec, apim-export, api-center-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, discover-many, or discover-estate.'
     },
     'mapping-confidence': {
       description: 'Numeric confidence score for the selected service candidate.'
@@ -219,7 +237,8 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Path to the resolved or generated specification when available.'
     },
     'api-id': {
-      description: 'Full APIM API ARM resource ID for APIM resolutions; empty for App Service or IaC-local resolutions.'
+      description:
+        'Full APIM API ARM resource ID or API Center definition ARM resource ID when those providers resolve; empty for App Service or IaC-local resolutions.'
     },
     'service-name': {
       description: 'Resolved service name.'
@@ -237,7 +256,8 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'Ranked ambiguous candidates as JSON when resolution is unresolved with at least two candidates; empty otherwise.'
     },
     'provider-type': {
-      description: 'Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings.'
+      description:
+        'Provider that produced the resolved spec: apim, api-center, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings.'
     },
     'spec-format': {
       description:

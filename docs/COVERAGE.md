@@ -16,7 +16,7 @@ Contract classes (`authoritative`, `reconstructed`, `partial`, `association-only
 ## Updating claims
 
 1. Edit `coverage/route-claims.json` when adding, changing, or retiring a route.
-2. Keep `advertisedProviders` aligned with the nine providers documented in `docs/providers.md`.
+2. Keep `advertisedProviders` aligned with the ten providers documented in `docs/providers.md`.
 3. Run `npm run verify:coverage`.
 4. Run `npx vitest run tests/coverage-manifest.test.ts`.
 

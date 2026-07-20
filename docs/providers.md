@@ -1,10 +1,10 @@
 # Provider contracts
 
-Azure spec discovery ships nine providers: `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
+Azure spec discovery ships ten providers: `apim`, `api-center`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, and `iac-local`. Each implements the same `SpecProvider` seam (`probe`, `listCandidates`, `exportSpec`) and is probed fail-soft and concurrently: authorization failures map to `skipped:iam`, other failures (including a probe exceeding its 30 s deadline) to `skipped:error`, and discovery continues with the remaining providers.
 
 ## Security and IAM
 
-Use Azure `Reader` at the chosen subscription or resource-group scope for providers that use generic read operations. APIM exports additionally require `API Management Service Reader` at the relevant APIM service, resource group, or subscription scope. Inaccessible providers fail-soft as `skipped:iam`, so discovery continues through providers the credential can read. Grant permissions only for the providers relevant to the workflow; the action does not require every provider permission.
+Use Azure `Reader` at the chosen subscription or resource-group scope for providers that use generic read operations. APIM exports additionally require `API Management Service Reader` at the relevant APIM service, resource group, or subscription scope. API Center authoritative export requires the control-plane action `Microsoft.ApiCenter/services/workspaces/apis/versions/definitions/exportSpecification/action` (typically via Azure API Center Service Reader) in addition to service/workspace read rights. Optional API Center data-plane inventory permissions can enrich search UX in the Azure portal but are never required by this action and are never called. Inaccessible providers fail-soft as `skipped:iam`, so discovery continues through providers the credential can read. Grant permissions only for the providers relevant to the workflow; the action does not require every provider permission.
 
 ## `apim` — Azure API Management
 
@@ -14,6 +14,15 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 - **HTTP** APIs export OpenAPI JSON. **SOAP** APIs use the same ARM export protocol with `wsdl-link` and write native `service.wsdl`. **GraphQL** APIs read the `graphql` schema (or the first GraphQL content type) through the Reader GET schema surface and write native `schema.graphql`; derivation also emits a deliberately partial OpenAPI 3.0.3 `/graphql` POST shell. WebSocket, gRPC, and OData APIs stay visible as unsupported candidates for manual review.
 - ARM HTTP/WSDL export returns a short-lived Storage SAS link, and the document is fetched immediately. A 403 discards the expired link and repeats the whole export/fetch cycle within `max-attempts`; links are never logged. HTTP OpenAPI is validated before writing. WSDL remains native and is not converted to OpenAPI.
 - The full APIM API ARM resource ID appears only in the `api-id` output and `resolution-json.apiId`. Logs, evidence, and Step Summaries redact it.
+
+## `api-center` — Azure API Center authoritative definitions
+
+- Enumerates API Center services, workspaces, APIs, versions, and definitions through ARM `api-version=2024-03-01` (subscription-wide or `resource-group` scoped). Follows opaque `nextLink` with configured-cloud host validation, repeated-link detection, and a 100-page ceiling. Data-plane inventory APIs are never used for bytes.
+- Candidate IDs are full definition ARM resource IDs. Deployment/environment metadata and APIM synchronization links are association evidence only and never auto-select among multiple versions or definitions.
+- Export uses `POST .../definitions/{definition}/exportSpecification?api-version=2024-03-01`. Handles immediate `200` bodies and `202` LRO via `Location` / `Azure-AsyncOperation`, honors `Retry-After`, bounds polls/time/attempts, and retries only transient `408`/`429`/`5xx`. Permanent `4xx` responses are not retried. Poll URLs must stay on the configured ARM host.
+- Export payload shapes are parsed defensively (`format=inline|link`, `value`/`content` string or object). Link results are fetched immediately through guarded `fetchSpecFromUrl` without Azure `Authorization`. SAS query material is never logged.
+- Native formats are detected and validated: OpenAPI JSON/YAML, AsyncAPI JSON/YAML, WSDL, WADL, XSD, protobuf, and GraphQL SDL. Bytes are preserved except canonical JSON where existing conventions require it. Contract class is `authoritative`. Empty, malformed, or wrong-kind exports fail selected resolution.
+- Exact selection uses Action/CLI `api-center-definition-id` or `.postman` `apiCenterDefinitionId` (same selector). Conflicting explicit input vs binding refuses to choose. Exact API Center IDs win over cloud ranking and never pick first/latest among ambiguous definitions.
 
 ## `app-service` — App Service API definition
 
@@ -75,11 +84,11 @@ Not a provider. `mode: discover-estate` runs a separate association-only enumera
 
 ## Ordering and narrowing
 
-Probe order is `apim`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, `iac-local`. Candidates from all available providers enter the same narrowing pipeline; the chosen tier is reported in the `narrowing-strategy` output.
+Probe order is `apim`, `api-center`, `app-service`, `custom-apis`, `logic-apps`, `template-specs`, `event-grid`, `service-bus`, `function-bindings`, `iac-local`. Candidates from all available providers enter the same narrowing pipeline; the chosen tier is reported in the `narrowing-strategy` output.
 
 Selection precedence (fail closed on ambiguity):
 
-1. Exact `.postman/resources.yaml` (or dedicated `.postman/azure-bindings.yaml`) binding / explicit full `api-id` (including `;rev=N`).
+1. Exact `.postman/resources.yaml` (or dedicated `.postman/azure-bindings.yaml`) binding / explicit full `api-id` (including `;rev=N`) / exact `api-center-definition-id`.
 2. Exact normalized gateway hostname + API base path, optionally narrowed by `environment` / `api-version` / `api-revision` selectors.
 3. Unique **API-level** select-grade repo tag (`postman:repo`, Fox `GithubOrg`/`GithubRepo`, or CLI `repo-tag-keys-json`). A service tag is select-grade only when that service contributes exactly one eligible API; tags inherited by multiple eligible APIs narrow but never select.
 4. Self-hosted / workspace gateway assignment narrowing via `gateway-id` (never select-grade alone).

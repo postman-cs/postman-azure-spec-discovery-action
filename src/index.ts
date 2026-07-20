@@ -28,6 +28,7 @@ import {
   type AzureServiceBusClient,
   type AzureFunctionsClient
 } from './lib/azure/clients.js';
+import { ApiCenterSdkClient, type AzureApiCenterClient } from './lib/azure/api-center-client.js';
 import { formatUserSafeError } from './lib/logging/sanitize.js';
 import { appendAmbiguityStepSummary } from './lib/logging/step-summary.js';
 import { prepareTelemetryCredentials, resolveTelemetryTeamId } from './lib/postman/telemetry-credentials.js';
@@ -51,6 +52,7 @@ export interface GitHubActionDependencies {
   subscriptions?: AzureSubscriptionsClient;
   createApimClient?: (subscriptionId: string) => AzureApimClient;
   createAppServiceClient?: (subscriptionId: string) => AzureAppServiceClient;
+  createApiCenterClient?: (subscriptionId: string) => AzureApiCenterClient;
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
   createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
@@ -114,6 +116,9 @@ async function runActionInner(
     createAppServiceClient:
       dependencies.createAppServiceClient ??
       ((subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions)),
+    createApiCenterClient:
+      dependencies.createApiCenterClient ??
+      (useProductionProviders ? (subscriptionId) => new ApiCenterSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
     createCustomApisClient:
       dependencies.createCustomApisClient ??
       (useProductionProviders ? (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
@@ -198,6 +203,8 @@ export { collectRepoSignals } from './lib/repo/signals.js';
 export { scanAzureIac, type IacScanResult, type IacFingerprint } from './lib/repo/azure-iac-scanner.js';
 export { findExistingRepoSpecTyped, type RepoSpecMatch } from './lib/repo/specs.js';
 export { ApimProvider, buildApimApiArmId } from './lib/providers/apim.js';
+export { ApiCenterProvider, parseApiCenterDefinitionArmId, safeNativeFilename } from './lib/providers/api-center.js';
+export { ApiCenterSdkClient, extractApiCenterExportPayload } from './lib/azure/api-center-client.js';
 export { AppServiceProvider } from './lib/providers/app-service.js';
 export { IacLocalProvider } from './lib/providers/iac-local.js';
 export { fetchSpecFromUrl } from './lib/fetch/spec-fetcher.js';

@@ -17,6 +17,7 @@ import {
   ServiceBusSdkClient,
   FunctionsSdkClient
 } from './lib/azure/clients.js';
+import { ApiCenterSdkClient } from './lib/azure/api-center-client.js';
 import { formatUserSafeError, sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { prepareTelemetryCredentials, resolveTelemetryTeamId } from './lib/postman/telemetry-credentials.js';
 import { writeFileWithinRoot } from './lib/utils/resolve-path-within-root.js';
@@ -63,6 +64,7 @@ const CLI_INPUT_NAMES = [
   'gateway-id',
   'api-version',
   'api-revision',
+  'api-center-definition-id',
   'repo-url',
   'repo-slug',
   'git-provider',
@@ -296,6 +298,7 @@ export async function runCli(
             subscriptions: new SubscriptionsSdkClient(credential!, sdkOptions),
             createApimClient: (subscriptionId) => new ApimSdkClient(credential!, subscriptionId, sdkOptions),
             createAppServiceClient: (subscriptionId) => new AppServiceSdkClient(credential!, subscriptionId, sdkOptions),
+            createApiCenterClient: (subscriptionId) => new ApiCenterSdkClient(credential!, subscriptionId, sdkOptions),
             createCustomApisClient: (subscriptionId) => new CustomApisSdkClient(credential!, subscriptionId, sdkOptions),
             createLogicWorkflowsClient: (subscriptionId) => new LogicWorkflowsSdkClient(credential!, subscriptionId, sdkOptions),
             createTemplateSpecsClient: (subscriptionId) => new TemplateSpecsSdkClient(credential!, subscriptionId, sdkOptions),

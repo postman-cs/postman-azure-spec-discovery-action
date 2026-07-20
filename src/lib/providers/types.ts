@@ -1,10 +1,11 @@
-import type { ProviderType, ProviderProbeStatus, SpecFormat } from '../../contracts.js';
+import type { ContractClass, ProviderType, ProviderProbeStatus, SpecFormat } from '../../contracts.js';
 
 export interface SpecCandidate {
   id: string; // full ARM ID, or stable repo-relative IaC candidate ID
   name: string;
   providerType: ProviderType;
-  apiId?: string; // full APIM API ARM ID only
+  /** Full APIM API ARM ID or API Center definition ARM ID when applicable. */
+  apiId?: string;
   resourceGroup?: string;
   tags: Record<string, string>;
   supported: boolean;
@@ -24,6 +25,8 @@ export interface SpecExportResult {
    * 'partial' to 'full'.
    */
   completeness?: 'full' | 'partial';
+  /** Optional fidelity class declared by the exporting provider. */
+  contractClass?: ContractClass;
 }
 
 export interface SpecProvider {

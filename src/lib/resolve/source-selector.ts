@@ -19,6 +19,8 @@ export function sourceTypeFor(providerType: ProviderType): ResolutionResult['sou
   switch (providerType) {
     case 'apim':
       return 'apim-export';
+    case 'api-center':
+      return 'api-center-export';
     case 'app-service':
       return 'app-service-api-definition';
     case 'iac-local':

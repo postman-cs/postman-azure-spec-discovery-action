@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 export const ADVERTISED_PROVIDERS = Object.freeze([
   'apim',
+  'api-center',
   'app-service',
   'custom-apis',
   'logic-apps',
@@ -100,7 +101,7 @@ function advertisedProvidersFromDocs(root) {
   const text = readFileSync(docsPath, 'utf8');
   // Longer separators first so ", and `name`" is not truncated by ", ".
   const match = text.match(
-    /ships nine providers:\s*((?:`[a-z0-9-]+`(?:,\s*and\s*| and |,\s*)?)+)/i
+    /ships ten providers:\s*((?:`[a-z0-9-]+`(?:,\s*and\s*| and |,\s*)?)+)/i
   );
   if (!match) {
     return null;
