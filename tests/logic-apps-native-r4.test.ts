@@ -69,7 +69,7 @@ function native(overrides: Partial<AzureLogicAppsNativeClient> = {}): AzureLogic
 }
 
 describe('R4 Logic Apps native listSwagger + Standard', () => {
-  it('AZ-LOGIC-R4-001: listSwagger success exports authoritative native document', async () => {
+  it('AZ-LOGIC-R4-001: listSwagger success exports reconstructed native document', async () => {
     const nativeClient = native();
     const provider = new LogicAppsProvider(client(), {
       enableListSwagger: true,
@@ -77,8 +77,12 @@ describe('R4 Logic Apps native listSwagger + Standard', () => {
     });
     const [candidate] = await provider.listCandidates();
     const exported = await provider.exportSpec(candidate!);
-    expect(exported.contractClass).toBe('authoritative');
+    expect(exported.contractClass).toBe('reconstructed');
+    expect(exported.completeness).toBe('full');
+    expect(exported.format).toBe('openapi-json');
     expect(exported.content).toContain('"swagger": "2.0"');
+    expect(exported.evidence.join(' ')).toMatch(/listSwagger/);
+    expect(exported.evidence.join(' ')).toMatch(/Callback URLs \(SAS\) were never requested/);
     expect(nativeClient.listSwagger).toHaveBeenCalledWith('rg-flow', 'order-intake');
     expect(provider.getListSwaggerCallLog()).toEqual(['rg-flow/order-intake']);
   });

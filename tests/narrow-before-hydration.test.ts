@@ -7,6 +7,8 @@ import {
   execute,
   headerEnumerationDeadline,
   HEADER_ENUMERATION_DEADLINE_MS,
+  providerHydrationDeadline,
+  PROVIDER_HYDRATION_DEADLINE_MS,
   resolveInputs,
   type AzureDependencies,
   type ReporterLike,
@@ -726,6 +728,158 @@ describe('narrow-before-hydration (R7 / POS-400)', () => {
       );
     } finally {
       headerEnumerationDeadline.ms = previousDeadline;
+    }
+  });
+
+  it('C7/Q4: selected hydration timeout aborts cooperative work and fails hard', async () => {
+    const previousDeadline = providerHydrationDeadline.ms;
+    providerHydrationDeadline.ms = 25;
+    try {
+      expect(PROVIDER_HYDRATION_DEADLINE_MS).toBe(30000);
+      let hydrateSignal: AbortSignal | undefined;
+      let abortHandled = false;
+      const winnerId =
+        '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Logic/workflows/payments';
+      const winner = candidate('logic-apps', 'payments', {
+        id: winnerId,
+        tags: { 'postman:repo': 'acme/payments' }
+      });
+      const hungHydrate: SpecProvider = {
+        type: 'logic-apps',
+        probe: vi.fn(async () => 'available' as const),
+        listCandidates: vi.fn(async () => []),
+        listCandidateHeaders: vi.fn(async () => [{ ...winner, headerHydrated: false }]),
+        hydrateCandidates: vi.fn(
+          (_headers: SpecCandidateHeader[], signal?: AbortSignal) =>
+            new Promise<SpecCandidate[]>((_resolve, reject) => {
+              hydrateSignal = signal;
+              if (signal?.aborted) {
+                abortHandled = true;
+                reject(new Error('aborted'));
+                return;
+              }
+              signal?.addEventListener(
+                'abort',
+                () => {
+                  abortHandled = true;
+                  reject(new Error('aborted'));
+                },
+                { once: true }
+              );
+            })
+        ),
+        exportSpec: vi.fn(async () => ({
+          content: VALID_OPENAPI,
+          format: 'openapi-json' as const,
+          filename: 'index.json',
+          evidence: ['hung hydrate export']
+        }))
+      };
+
+      await expect(execute(inputs(), baseDeps([hungHydrate]))).rejects.toThrow(
+        /Hydration failed for selected logic-apps candidate\(s\):/
+      );
+      expect(hydrateSignal?.aborted).toBe(true);
+      expect(abortHandled).toBe(true);
+      expect(hungHydrate.exportSpec).not.toHaveBeenCalled();
+      // Losing hydration arm must have been aborted; give it a beat to settle so
+      // no dangling cooperative work remains after the orchestration bound.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(abortHandled).toBe(true);
+      expect(hydrateSignal?.aborted).toBe(true);
+    } finally {
+      providerHydrationDeadline.ms = previousDeadline;
+    }
+  });
+
+  it('C7/Q4: unselected hydration timeout warns/fails soft while another provider continues', async () => {
+    const previousDeadline = providerHydrationDeadline.ms;
+    providerHydrationDeadline.ms = 25;
+    try {
+      let hydrateSignal: AbortSignal | undefined;
+      let abortHandled = false;
+      const hungHeader = candidate('logic-apps', 'slow', {
+        tags: { 'postman:repo': 'acme/payments' }
+      });
+      const winnerId =
+        '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments';
+      const winner = candidate('apim', 'payments', {
+        id: winnerId,
+        apiId: winnerId,
+        tags: { 'postman:repo': 'acme/payments' }
+      });
+      const hungHydrate: SpecProvider = {
+        type: 'logic-apps',
+        probe: vi.fn(async () => 'available' as const),
+        listCandidates: vi.fn(async () => []),
+        listCandidateHeaders: vi.fn(async () => [{ ...hungHeader, headerHydrated: false }]),
+        hydrateCandidates: vi.fn(
+          (_headers: SpecCandidateHeader[], signal?: AbortSignal) =>
+            new Promise<SpecCandidate[]>((_resolve, reject) => {
+              hydrateSignal = signal;
+              if (signal?.aborted) {
+                abortHandled = true;
+                reject(new Error('aborted'));
+                return;
+              }
+              signal?.addEventListener(
+                'abort',
+                () => {
+                  abortHandled = true;
+                  reject(new Error('aborted'));
+                },
+                { once: true }
+              );
+            })
+        ),
+        exportSpec: vi.fn(async () => ({
+          content: VALID_OPENAPI,
+          format: 'openapi-json' as const,
+          filename: 'index.json',
+          evidence: ['hung hydrate export']
+        }))
+      };
+      const apim: SpecProvider = {
+        type: 'apim',
+        probe: vi.fn(async () => 'available' as const),
+        listCandidates: vi.fn(async () => [winner]),
+        listCandidateHeaders: vi.fn(async () => [{ ...winner, headerHydrated: false }]),
+        hydrateCandidates: vi.fn(async (headers: SpecCandidateHeader[]) =>
+          headers.map((header) => ({ ...header, evidence: [...header.evidence, 'hydrated'] }))
+        ),
+        exportSpec: vi.fn(async () => ({
+          content: VALID_OPENAPI,
+          format: 'openapi-json' as const,
+          filename: 'index.json',
+          evidence: ['apim export']
+        }))
+      };
+
+      const warnings: string[] = [];
+      const deps = baseDeps([hungHydrate, apim]);
+      deps.core = {
+        group: async (_name, fn) => fn(),
+        info: () => undefined,
+        warning: (message) => {
+          warnings.push(message);
+        }
+      };
+
+      const result = await execute(inputs({ mode: 'discover-many', maxCandidates: 10 }), deps);
+      expect(hydrateSignal?.aborted).toBe(true);
+      expect(abortHandled).toBe(true);
+      expect(
+        warnings.some((message) =>
+          /Provider logic-apps hydration failed \(unselected\/fail-soft\):/i.test(message)
+        )
+      ).toBe(true);
+      expect(result.discovered.some((row) => row.providerType === 'apim')).toBe(true);
+      expect(apim.exportSpec).toHaveBeenCalledTimes(1);
+      expect(hungHydrate.exportSpec).not.toHaveBeenCalled();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(abortHandled).toBe(true);
+    } finally {
+      providerHydrationDeadline.ms = previousDeadline;
     }
   });
 });

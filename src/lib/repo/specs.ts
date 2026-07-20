@@ -5,6 +5,7 @@ import type { SpecFormat } from '../../contracts.js';
 import { detectNativeFormat, parseAndValidateNativeSpec } from '../spec/native-formats.js';
 import type { LocalSpecCandidate } from './discovery-types.js';
 import { DEFAULT_MAX_FILE_BYTES, walkRepoFiles } from './scan.js';
+import { isSecretPath } from './secret-hygiene.js';
 
 const DIRECT_SPEC_CANDIDATES = [
   'openapi.yaml',
@@ -80,7 +81,8 @@ export interface RepoSpecMatch {
 }
 
 function isSpecScanCandidate(relativePosix: string, basename: string): boolean {
-  void relativePosix;
+  // Never content-detect secret/state-bearing paths.
+  if (isSecretPath(relativePosix)) return false;
   const lower = basename.toLowerCase();
   const ext = path.posix.extname(lower);
   // Content-detect regardless of common filename; only skip obvious binaries.

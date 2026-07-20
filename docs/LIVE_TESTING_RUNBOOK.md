@@ -67,7 +67,7 @@ The runner executes the R8 case catalog (baseline six + APIM clean-repo/format/u
 | Baseline six | Always attempted when provisioned. |
 | APIM multi-API clean repo | Canonical vs Fox fixtures are distinct (path-isolated); no `--api-id` / `--repo-slug` (repo context from `GITHUB_REPOSITORY`). Host-only / revision ambiguity must stay unresolved under inherited multi-API service tags. Historical revision and version set are explicit. |
 | APIM formats | SOAP/WSDL and GraphQL SDL when Azure accepts inventory. |
-| APIM unsupported | WebSocket/gRPC/OData classified as manual-review only when Azure accepts inventory; otherwise `requires-capability`. |
+| APIM unsupported | WebSocket and OData classified as manual-review when Azure accepts inventory (WebSocket may be `requires-capability` on Consumption SKU). gRPC live fixture lacks a `text/protobuf` schema and must pass as unsupported/manual-review — not a protobuf happy-path live validation. |
 | API Center | `eastus`; preflight checks `Microsoft.ApiCenter` registration. Never auto-registers the provider or elevates RBAC. |
 | Logic Apps | Native `listSwagger` case requires native evidence (never synthesis fallback). Reader synthesis is a separate case. |
 | Custom connector | Inline Swagger when ARM deployment supports it safely. |

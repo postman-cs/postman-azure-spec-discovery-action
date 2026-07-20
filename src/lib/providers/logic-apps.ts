@@ -363,7 +363,7 @@ export class LogicAppsProvider implements SpecProvider {
           format: validated.isJson ? 'openapi-json' : 'openapi-yaml',
           filename: validated.isJson ? 'index.json' : 'index.yaml',
           completeness: 'full',
-          contractClass: 'authoritative',
+          contractClass: 'reconstructed',
           evidence: [
             `Retrieved native listSwagger document for Logic App workflow ${workflowName}`,
             'Callback URLs (SAS) were never requested; any access endpoint was reduced to its public origin and path'

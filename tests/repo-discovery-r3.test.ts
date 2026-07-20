@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { discoverRepository } from '../src/lib/repo/discovery.js';
 import { scanAzureIac } from '../src/lib/repo/azure-iac-scanner.js';
+import { collectRepoSignals } from '../src/lib/repo/signals.js';
 import { findAllRepoSpecs } from '../src/lib/repo/specs.js';
 import {
   parseApiOpsConfig,
@@ -501,6 +502,88 @@ resource "azurerm_api_management_api" "orders" {
     expect(prod[0]?.class).toBe('exact-binding');
     expect(dev[0]?.environment).toBe('dev');
     expect(dev[0]?.class).toBe('association-only');
+  });
+
+  it('C3/Q1: secret-named and root .env files are not read into discovery or signals', async () => {
+    const leakedHost = 'leaked-secret-service.azure-api.net';
+    const leakedUrl = `https://${leakedHost}/orders`;
+    await writeFile(path.join(repoRoot, 'secrets.json'), JSON.stringify({
+      openapi: '3.0.3',
+      info: { title: 'LeakedFromSecrets', version: '1.0.0' },
+      paths: {
+        '/health': {
+          get: { responses: { '200': { description: 'ok' } } }
+        }
+      },
+      servers: [{ url: leakedUrl }]
+    }));
+    await writeFile(
+      path.join(repoRoot, 'credentials.env'),
+      `APIM_GATEWAY_URL=${leakedUrl}\nAPIM_API_ID=${FULL_APIM}\n`
+    );
+    await writeFile(
+      path.join(repoRoot, '.env'),
+      `APIM_GATEWAY_URL=${leakedUrl}\nOPENAPI_PATH=specs/leaked.yaml\n`
+    );
+    // Dedicated R3 allowlist path must remain readable via discovery.
+    await mkdir(path.join(repoRoot, '.azure/prod'), { recursive: true });
+    await writeFile(path.join(repoRoot, '.azure/prod/.env'), `APIM_API_ID=${FULL_APIM}\n`);
+
+    const specs = await findAllRepoSpecs(repoRoot);
+    expect(specs.some((spec) => spec.path === 'secrets.json')).toBe(false);
+    expect(specs.some((spec) => spec.path === '.env')).toBe(false);
+    expect(specs.some((spec) => spec.path === 'credentials.env')).toBe(false);
+    expect(JSON.stringify(specs)).not.toContain('LeakedFromSecrets');
+    expect(JSON.stringify(specs)).not.toContain(leakedHost);
+
+    const discovery = await discoverRepository({ repoRoot });
+    expect(discovery.localSpecs.some((spec) => spec.path === 'secrets.json')).toBe(false);
+    expect(discovery.diagnostics.skippedSecretFiles).toEqual(
+      expect.arrayContaining(['.env', 'credentials.env', 'secrets.json'])
+    );
+    expect(discovery.exactBindings.some((binding) => binding.apimApiId === FULL_APIM)).toBe(true);
+    expect(JSON.stringify(discovery.localSpecs)).not.toContain(leakedHost);
+    expect(JSON.stringify(discovery.exactBindings)).not.toContain(leakedHost);
+
+    const signals = await collectRepoSignals({ repoRoot });
+    expect(signals.gatewayUrls.some((url) => url.hostname === leakedHost)).toBe(false);
+    expect(signals.serviceHints).not.toContain('leaked-secret-service');
+    expect(JSON.stringify(signals)).not.toContain(leakedHost);
+  });
+
+  it('C3/Q1: discovers exact Pulumi binding from conventional infra/index.ts', async () => {
+    await mkdir(path.join(repoRoot, 'infra'), { recursive: true });
+    await writeFile(
+      path.join(repoRoot, 'infra/index.ts'),
+      `
+import * as apimanagement from "@pulumi/azure-native/apimanagement";
+
+const ordersApi = new apimanagement.Api("orders", {
+  path: "orders",
+  openApiSpecification: "specs/orders.yaml",
+});
+
+export const apimApiId = "${FULL_APIM}";
+`
+    );
+
+    const discovery = await discoverRepository({ repoRoot });
+    expect(
+      discovery.exactBindings.some(
+        (binding) =>
+          binding.family === 'pulumi' &&
+          binding.class === 'exact-binding' &&
+          binding.apimApiId === FULL_APIM
+      )
+    ).toBe(true);
+    expect(
+      discovery.associations.some(
+        (binding) => binding.family === 'pulumi' && binding.nativeSpecPath === 'specs/orders.yaml'
+      ) ||
+        discovery.exactBindings.some(
+          (binding) => binding.family === 'pulumi' && binding.nativeSpecPath === 'specs/orders.yaml'
+        )
+    ).toBe(true);
   });
 
   it('C3/Q1: parser object walks terminate on over-deep and over-node input', () => {

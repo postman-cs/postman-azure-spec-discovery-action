@@ -1526,6 +1526,14 @@ export const headerEnumerationDeadline = {
   ms: HEADER_ENUMERATION_DEADLINE_MS
 };
 
+/** Per-provider deadline for candidate hydration (abort on timeout). */
+export const PROVIDER_HYDRATION_DEADLINE_MS = 30000;
+
+/** Test-only override seam for provider-hydration deadline. */
+export const providerHydrationDeadline = {
+  ms: PROVIDER_HYDRATION_DEADLINE_MS
+};
+
 export interface ProviderHydrationMetrics {
   /** Header counts per provider type (no resource IDs). */
   enumeratedByProvider: Record<string, number>;
@@ -1672,8 +1680,19 @@ async function hydrateHeadersForProviders(
     return aKey.localeCompare(bKey);
   })) {
     const providerType = provider.type;
+    let timer: NodeJS.Timeout | undefined;
+    const controller = new AbortController();
     try {
-      const batch = await provider.hydrateCandidates(group);
+      const deadlineMs = providerHydrationDeadline.ms;
+      const batch = await Promise.race([
+        provider.hydrateCandidates(group, controller.signal),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error(`candidate hydration exceeded ${deadlineMs}ms`));
+          }, deadlineMs);
+        })
+      ]);
       metrics.hydratedByProvider[providerType] =
         (metrics.hydratedByProvider[providerType] ?? 0) + batch.length;
       hydrated.push(...batch);
@@ -1687,6 +1706,8 @@ async function hydrateHeadersForProviders(
       options.core.warning(
         sanitizeLogMessage(`Provider ${providerType} hydration failed (unselected/fail-soft): ${detail}`)
       );
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
   return hydrated;

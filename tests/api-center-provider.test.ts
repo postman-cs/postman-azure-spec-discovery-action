@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type {
   ApiCenterDefinitionSummary,
+  ApiCenterDefinitionsResult,
   AzureApiCenterClient
 } from '../src/lib/azure/api-center-client.js';
 import {
@@ -256,6 +257,29 @@ describe('ApiCenterProvider', () => {
     const exported = await provider.exportSpec(candidate!);
     expect(exported.format).toBe('openapi-json');
     expect(exportSpecification).toHaveBeenCalledTimes(1);
+  });
+
+  it('AZ-APIC-PROV-002d: truncated inventory fails closed; no partial headers; exact definition-ID still resolves', async () => {
+    const truncatedMessage =
+      'API Center inventory was truncated; refusing to treat partial results as exhaustive without an exact API Center definition binding';
+    const listDefinitions = vi.fn(async () => {
+      const definitions: ApiCenterDefinitionsResult = [
+        definition({ id: DEF_A }),
+        definition({ id: DEF_B, versionName: 'v2' })
+      ];
+      Object.defineProperty(definitions, 'truncated', { value: true, enumerable: false });
+      return definitions;
+    });
+    const provider = new ApiCenterProvider(client({ listDefinitions }), { subscriptionId: 'sub-1' });
+
+    await expect(provider.listCandidateHeaders()).rejects.toThrow(truncatedMessage);
+    await expect(provider.listCandidates()).rejects.toThrow(truncatedMessage);
+
+    // Exact definition-ID resolution bypasses broad inventory entirely.
+    const exact = provider.resolveExplicitDefinition(DEF_B);
+    expect(exact).toBeTruthy();
+    expect(exact!.id).toBe(DEF_B);
+    expect(listDefinitions).toHaveBeenCalledTimes(2);
   });
 
   it('AZ-APIC-PROV-003: multiple definitions remain listed; no first/latest auto-pick in provider', async () => {

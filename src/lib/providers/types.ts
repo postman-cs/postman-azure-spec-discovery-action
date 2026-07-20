@@ -73,8 +73,9 @@ export interface SpecProvider {
   /**
    * Expensive detail/export-prep for a selected partition. May expand one
    * header into multiple candidates (e.g. template-spec embeds).
+   * Optional AbortSignal lets the runtime cancel a hung hydration.
    */
-  hydrateCandidates?(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]>;
+  hydrateCandidates?(headers: SpecCandidateHeader[], signal?: AbortSignal): Promise<SpecCandidate[]>;
   /** Single-candidate convenience; default adapters fan out to hydrateCandidates. */
   hydrateCandidate?(header: SpecCandidateHeader): Promise<SpecCandidate>;
 }
@@ -82,7 +83,7 @@ export interface SpecProvider {
 /** Runtime-facing provider that always exposes the split enumeration seam. */
 export interface HydratingSpecProvider extends SpecProvider {
   listCandidateHeaders(signal?: AbortSignal): Promise<SpecCandidateHeader[]>;
-  hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]>;
+  hydrateCandidates(headers: SpecCandidateHeader[], signal?: AbortSignal): Promise<SpecCandidate[]>;
 }
 
 function asHeader(candidate: SpecCandidate, headerHydrated: boolean): SpecCandidateHeader {
@@ -133,13 +134,22 @@ export function adaptLegacyProvider(provider: SpecProvider): HydratingSpecProvid
     return cached;
   };
 
-  const hydrateCandidates = async (headers: SpecCandidateHeader[]): Promise<SpecCandidate[]> => {
+  const hydrateCandidates = async (
+    headers: SpecCandidateHeader[],
+    signal?: AbortSignal
+  ): Promise<SpecCandidate[]> => {
+    if (signal?.aborted) {
+      throw new Error(`Provider ${provider.type} candidate hydration aborted`);
+    }
     if (typeof provider.hydrateCandidates === 'function') {
-      return provider.hydrateCandidates(headers);
+      return provider.hydrateCandidates(headers, signal);
     }
     if (typeof provider.hydrateCandidate === 'function') {
       const out: SpecCandidate[] = [];
       for (const header of headers) {
+        if (signal?.aborted) {
+          throw new Error(`Provider ${provider.type} candidate hydration aborted`);
+        }
         out.push(await provider.hydrateCandidate(header));
       }
       return out;
@@ -167,7 +177,7 @@ export function adaptLegacyProvider(provider: SpecProvider): HydratingSpecProvid
 /** Shared helper: listCandidates = headers then hydrate all (stable order). */
 export async function listCandidatesViaHydration(provider: {
   listCandidateHeaders(signal?: AbortSignal): Promise<SpecCandidateHeader[]>;
-  hydrateCandidates(headers: SpecCandidateHeader[]): Promise<SpecCandidate[]>;
+  hydrateCandidates(headers: SpecCandidateHeader[], signal?: AbortSignal): Promise<SpecCandidate[]>;
 }): Promise<SpecCandidate[]> {
   const headers = await provider.listCandidateHeaders();
   const pending = headers.filter((header) => header.headerHydrated !== true);
