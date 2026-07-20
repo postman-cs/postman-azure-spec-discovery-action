@@ -2205,6 +2205,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   };
   let evidence;
   let cleanupFailure;
+  let validationFailure;
   try {
     if (flags.provision) {
       if (ownsResourceGroup) {
@@ -2457,6 +2458,8 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
         throw new Error(`${evidence.failed} live validation case(s) failed`);
       }
     }
+  } catch (error) {
+    validationFailure = error instanceof Error ? error : new Error(String(error));
   } finally {
     if (flags.teardown && provisioned) {
       if (ownsResourceGroup) {
@@ -2492,6 +2495,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
     );
   }
   if (cleanupFailure) throw cleanupFailure;
+  if (validationFailure) throw validationFailure;
   return evidence;
 }
 

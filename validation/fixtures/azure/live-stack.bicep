@@ -82,11 +82,8 @@ resource paymentsApiRev2 'Microsoft.ApiManagement/service/apis@2023-05-01-previe
     ]
     apiType: 'http'
     isCurrent: false
-    format: 'openapi+json'
-    value: loadTextContent('./app-service-stub/openapi.json')
+    sourceApiId: paymentsApi.id
     apiRevision: '2'
-    apiVersionSetId: paymentsVersionSet.id
-    apiVersion: 'v1'
   }
 }
 
