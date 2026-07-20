@@ -45,7 +45,7 @@ export const PROVIDER_REGISTRATIONS: readonly ProviderRegistration[] = Object.fr
     providerType: 'apim',
     sourceType: 'apim-export',
     defaultContractClass: 'authoritative',
-    nativeFormats: ['openapi-json', 'wsdl', 'graphql-sdl'],
+    nativeFormats: ['openapi-json', 'wsdl', 'graphql-sdl', 'protobuf'],
     requiredCapability: 'API Management Service Reader',
     resourceGraphTypes: [
       'microsoft.apimanagement/service/apis',
@@ -68,7 +68,8 @@ export const PROVIDER_REGISTRATIONS: readonly ProviderRegistration[] = Object.fr
       'wadl',
       'xsd',
       'protobuf',
-      'graphql-sdl'
+      'graphql-sdl',
+      'mcp-json'
     ],
     requiredCapability:
       'Microsoft.ApiCenter read + definitions/exportSpecification/action (Service Reader); data-plane inventory optional and unused',
@@ -92,7 +93,7 @@ export const PROVIDER_REGISTRATIONS: readonly ProviderRegistration[] = Object.fr
     providerType: 'custom-apis',
     sourceType: 'custom-api-swagger',
     defaultContractClass: 'authoritative',
-    nativeFormats: ['openapi-json'],
+    nativeFormats: ['openapi-json', 'wsdl'],
     requiredCapability: 'Reader (Microsoft.Web/customApis read)',
     resourceGraphTypes: ['microsoft.web/customapis'],
     dependencyKey: 'createCustomApisClient',
@@ -171,7 +172,8 @@ export const PROVIDER_REGISTRATIONS: readonly ProviderRegistration[] = Object.fr
       'wadl',
       'xsd',
       'protobuf',
-      'graphql-sdl'
+      'graphql-sdl',
+      'mcp-json'
     ],
     requiredCapability: 'none (local filesystem)',
     resourceGraphTypes: [],
@@ -183,7 +185,18 @@ export const PROVIDER_REGISTRATIONS: readonly ProviderRegistration[] = Object.fr
     providerType: 'runtime-declared',
     sourceType: 'runtime-declared-spec',
     defaultContractClass: 'authoritative',
-    nativeFormats: ['openapi-json', 'openapi-yaml'],
+    nativeFormats: [
+      'openapi-json',
+      'openapi-yaml',
+      'asyncapi-json',
+      'asyncapi-yaml',
+      'wsdl',
+      'wadl',
+      'xsd',
+      'protobuf',
+      'graphql-sdl',
+      'mcp-json'
+    ],
     requiredCapability: 'explicit named runtime target',
     resourceGraphTypes: [],
     dependencyKey: 'runtime-declared',
@@ -211,6 +224,10 @@ export function getProviderRegistration(providerType: ProviderType): ProviderReg
 
 export function sourceTypeForProvider(providerType: ProviderType): SourceType {
   return getProviderRegistration(providerType).sourceType;
+}
+
+export function defaultContractClassForProvider(providerType: ProviderType): ContractClass {
+  return getProviderRegistration(providerType).defaultContractClass;
 }
 
 export function providerRegistrationsInProbeOrder(): readonly ProviderRegistration[] {

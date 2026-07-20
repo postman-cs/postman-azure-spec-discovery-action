@@ -33,9 +33,9 @@ No IDs, UUIDs, hosts, URLs, names, paths, SAS, tokens, request IDs, or spec bodi
 
 ## Live Azure surfaces
 
-Latest committed run: 6 cases, 6 passed, 0 failed, 0 requires-capability, 0 local-only.
+Latest committed run: 31 cases, 22 passed, 0 failed, 8 requires-capability, 1 local-only. ADO pipeline 157 run 2712 tested immutable commit `99c42c5` on 2026-07-20 in 7m29s and retained the persistent paid stack.
 
-These six passes are the truthful historical baseline. Expanded R8 matrix cases are implemented in the harness and mapped as planned ids in `coverage/route-claims.json`, but they remain `unit-only` until a credentialed pipeline 157 run commits new sanitized passes. Do not treat planned ids as live.
+The eight non-pass Azure lanes are explicit facts, not hidden failures: API Center provider registration was absent (four cases), the Consumption APIM SKU rejected WebSocket inventory, `Microsoft.Web/customApis` returned an internal capability error, Service Bus Standard remained cost-guarded, and no Functions OpenAPI extension was installed. The compiled CLI local-format matrix is `local-only` by design.
 
 | Case | Validated behavior |
 | --- | --- |
@@ -45,5 +45,12 @@ These six passes are the truthful historical baseline. Expanded R8 matrix cases 
 | `discover-many` | discover-many exports every exportable candidate in the run resource group and reports an export summary. |
 | `iac-single` | A repository containing one inline ARM-embedded OpenAPI spec resolves locally (cloud providers fail soft). |
 | `ambiguity` | Two equal local candidates surface as an unresolved ranked-candidate resolution instead of a guess. |
+| `apim-clean-repo-*`, gateway, version, revision | Clean repositories resolve from exact repository/gateway/version evidence and fail closed on host-only or revision ambiguity. |
+| `apim-soap-wsdl`, `apim-graphql-sdl` | Native WSDL and GraphQL SDL exports preserve authoritative format fidelity. |
+| `apim-unsupported-*` | gRPC and OData inventory produce explicit unsupported outcomes; WebSocket is capability-gated by the live Consumption SKU. |
+| `logic-apps-*` | Native `listSwagger` and Reader-only partial synthesis both resolve with distinct fidelity classes. |
+| `template-specs-embedded-apim` | Embedded APIM template-spec content resolves after selected hydration expands the version header. |
+| `event-grid-webhook-partial` | Event Grid webhook metadata resolves to a partial OpenAPI contract after a real subscription-validation handshake. |
+| `app-service-apispecpath-runtime` | Built-in MCP `properties.aiIntegration.ApiSpecPath` is read through the 2026-03-15 ARM surface and fetched from the correlated Kudu VFS path. |
 
 Regenerate by queueing pipeline **157** (`postman-azure-spec-discovery-live-validation`) in `PostmanDevOps/CSE Pilots` (service connection `azure-cse-pilot-builders`) against an exact immutable GitHub SHA. Download the sanitized `azure-spec-discovery-live-evidence` artifact and commit only `live-azure-surfaces.json` after review (see `docs/LIVE_TESTING_RUNBOOK.md`).

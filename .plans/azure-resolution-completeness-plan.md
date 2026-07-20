@@ -1,7 +1,7 @@
 # Azure Specification Resolution Completeness Plan
 
-Status: PLANNED
-Date: 2026-07-19
+Status: IMPLEMENTED; release blocked on API Center provider registration
+Date: 2026-07-20
 Repository: `postman-cs/postman-azure-spec-discovery-action`
 Linear project: [Azure Spec Discovery Action](https://linear.app/postman/project/azure-spec-discovery-action-bbfb637f5594)
 
@@ -27,41 +27,28 @@ Every provider and output must declare one of these classes. Association metadat
 
 ## Current Evidence
 
-Verified on 2026-07-19 at `17bf659`:
+Verified on 2026-07-20 at `99c42c5`:
 
-- `npm test`: 35 files and 220 tests passed.
-- `npm run typecheck`: passed.
-- `npm run lint`: passed.
-- Package and immutable release are `1.2.1`; npm reports `1.2.1`.
-- Committed live evidence dated 2026-07-18 reports 6/6 passing cases.
+- `npm test`: 51 files and 504 tests passed.
+- `npm run typecheck`, `npm run lint`, `npm run build`, `npm run verify:coverage`, and committed-bundle verification passed.
+- ADO pipeline 157 run 2712 tested compiled `dist/cli.cjs` against the paid Postman Azure subscription in 7m29s: 31 cases, 22 passed, 0 failed, 8 capability-gated, 1 local-only. Persistent stack `c5e1feed` remains running.
+- Live passes cover clean-repository APIM host/path and tag resolution, current/historical revisions, version sets, SOAP/WSDL, GraphQL SDL, explicit unsupported gRPC/OData outcomes, native and Reader Logic Apps routes, Template Specs, Event Grid, public App Service specs, and built-in MCP `ApiSpecPath` through correlated Kudu VFS.
+- Capability outcomes are explicit: WebSocket is unavailable on the live Consumption SKU; Custom APIs returns an Azure internal capability error; Service Bus Standard remains cost-guarded; no Functions OpenAPI extension is installed.
+- API Center source, 200/202 export/LRO, pagination, Retry-After, permission, native-format, exact-selection, and ambiguity tests are implemented. Live provisioning is blocked because the only service connection lacks subscription action `Microsoft.ApiCenter/register/action` (ADO run 2713). A subscription owner must register `Microsoft.ApiCenter`; the product and default harness never auto-register providers.
+- Release `1.3.0`, final judge closure, Linear closure, and public artifact verification remain pending this provider-registration gate.
 
 Current implementation coverage:
 
-| Route | Implemented | Unit/integration tested | Live validated | Completion verdict |
-| --- | --- | --- | --- | --- |
-| Repository OpenAPI/Swagger named-file scan | Yes | Yes | Local-only behavior, no dedicated evidence case | Incomplete: filename-biased, first match wins, OpenAPI only |
-| Explicit APIM API ARM ID | Yes | Yes | Yes | Implemented for enumerated current APIs only |
-| APIM service HTTP export | Yes | Yes | Yes | Implemented |
-| APIM workspace HTTP export | Yes | Yes | No | Not validated |
-| APIM current revision filtering | Yes | Yes | Current HTTP only | Incomplete: no explicit historical revision contract |
-| APIM API versions/version sets | Metadata retained | Partial | No | Incomplete selection semantics |
-| APIM SOAP/WSDL export | Yes | Yes | No | Not validated |
-| APIM GraphQL SDL retrieval | Yes | Yes | No | Not validated |
-| APIM WebSocket/gRPC/OData | Visible manual review | Yes | No | Correctly unsupported until a documented byte route exists |
-| App Service `siteConfig.apiDefinition.url` | Yes | Yes | Yes | Implemented for public HTTPS URLs |
-| Logic Apps custom connector inline Swagger | Yes | Yes | No | Not validated |
-| Consumption Logic App Request-trigger synthesis | Yes | Yes | No | Partial only; native `listSwagger` absent |
-| Template Spec embedded APIM document | Yes | Yes | No | Not validated |
-| Event Grid webhook synthesis | Yes | Yes | No | Partial only; not validated |
-| Service Bus topic synthesis | Yes | Yes | No | Partial only; not validated |
-| Function binding synthesis | Yes | Yes | No | Partial only; not validated |
-| Repository ARM/compiled-Bicep inline APIM document | Yes | Yes | Yes | Implemented for the narrow scanned shape |
-| API Center definition inventory/export | No | No | No | P0 gap |
-| Fox-style `GithubOrg`/`GithubRepo` selection | Yes | Yes | No | P0 validation gap |
-| Canonical `postman:repo` selection | Yes | Yes | No | P0 validation gap |
-| Gateway hostname signal | Service-name hint only | Partial | No | Does not resolve service path/API in multi-API gateways |
-| Self-hosted/workspace gateway API association | No | No | No | P0 gap |
-| Sovereign cloud ARM endpoints | No; public ARM is hardcoded | Public-cloud tests only | No | P0 portability gap |
+| Requirement | Implementation/test status | Live status |
+| --- | --- | --- |
+| R1 APIM/repository/gateway/version/revision | Complete, fail-closed, regression-tested | Passing |
+| R2 API Center ARM inventory/export | Complete, including bounded 200/202 LRO and native formats | Blocked by subscription provider registration |
+| R3 local/IaC/deployment/source-control bindings | Complete under no-exec confinement and ambiguity bounds | Compiled local matrix (`local-only`) |
+| R4 native/runtime routes and SSRF controls | Complete, including App Service API `2026-03-15` MCP and Kudu path mapping | Logic Apps, Event Grid, and App Service passing; optional capability rows explicit |
+| R5 native formats/fidelity | Complete with authoritative/reconstructed/partial/unsupported classes | APIM WSDL and GraphQL passing; local native matrix compiled |
+| R6 cloud/scope/identity/retry | Complete for Public/Government/China profiles and bounded selected scopes | Public Azure passing; sovereign clouds not advertised as live |
+| R7 provider registry/narrow-before-hydration | Complete with bounded deterministic ordering and expansion-safe hydration | Exercised throughout run 2712 |
+| R8 coverage/evidence gate | Complete and machine-verified | 22 live passes; non-pass reasons explicit |
 
 ## Key Finding: Per-Repository Gateway Resolution
 
@@ -298,6 +285,7 @@ These are completion outcomes, not backlog, unless Azure publishes a new safe AP
 - APIM revisions: <https://learn.microsoft.com/en-us/rest/api/apimanagement/api-revision/list-by-service?view=rest-apimanagement-2024-05-01>
 - API Center definition export: <https://learn.microsoft.com/en-us/rest/api/resource-manager/apicenter/api-definitions/export-specification?view=rest-resource-manager-apicenter-2024-03-01>
 - Logic Apps `listSwagger`: <https://github.com/Azure/azure-rest-api-specs/blob/main/specification/logic/resource-manager/Microsoft.Logic/Logic/stable/2016-06-01/examples/WorkflowsListSwagger.json>
+- App Service built-in MCP `aiIntegration`: <https://learn.microsoft.com/en-us/azure/app-service/configure-mcp-built-in>
 - Resource Graph pagination: <https://learn.microsoft.com/en-us/azure/governance/resource-graph/concepts/paging-results>
 - Azure cloud profiles: <https://learn.microsoft.com/en-us/cli/azure/manage-clouds-azure-cli>
 
@@ -341,10 +329,10 @@ Release gate:
 
 ## Definition of Done
 
-- R1, R2, R3, R6, and R8 P0 work is complete and released.
-- R4, R5, and R7 routes are either implemented and validated or explicitly classified as unsupported/opt-in with evidence.
-- The clean-repository per-repo APIM gateway case is live-proven without explicit `api-id`.
-- API Center authoritative export is live-proven.
-- Every advertised route maps to implementation, positive/negative tests, permissions, contract class, and live evidence status.
-- No absolute "every Azure specification" or global-absence claim remains in product documentation.
-- Linear issues linked from this plan are closed with test, live-run, and release evidence.
+- [ ] R1, R2, R3, R6, and R8 P0 work is complete and released (implementation complete; release and R2 live proof pending).
+- [x] R4, R5, and R7 routes are implemented and validated or explicitly classified as unsupported/opt-in with evidence.
+- [x] The clean-repository per-repo APIM gateway case is live-proven without explicit `api-id`.
+- [ ] API Center authoritative export is live-proven (blocked on subscription provider registration).
+- [x] Every advertised route maps to implementation, positive/negative tests, permissions, contract class, and live evidence status.
+- [x] No absolute "every Azure specification" or global-absence claim remains in product documentation.
+- [ ] Linear issues linked from this plan are closed with test, live-run, and release evidence.

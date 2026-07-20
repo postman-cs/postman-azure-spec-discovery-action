@@ -1,7 +1,12 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import { safeUrlForEvidence } from '../azure/app-service-runtime-client.js';
 import { fetchSpecFromUrl, SpecFetchError } from '../fetch/spec-fetcher.js';
-import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
+import {
+  applyNativeDependencyFidelity,
+  assessNativeDependencyFidelity
+} from '../spec/dependency-fidelity.js';
+import { parseAndValidateNativeSpec } from '../spec/native-formats.js';
+import { safeNativeFilename } from '../spec/native-filenames.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
 import { toSpecCandidate } from './types.js';
 
@@ -58,6 +63,16 @@ function assertExactHttpsTarget(url: string): URL {
     throw new Error('Runtime-declared spec URL must not contain userinfo credentials');
   }
   return parsed;
+}
+
+function filenameHintFromUrl(url: string): string | undefined {
+  try {
+    const pathname = new URL(url).pathname;
+    const base = pathname.split('/').pop();
+    return base && base.includes('.') ? base : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -160,25 +175,34 @@ export class RuntimeDeclaredRoutesProvider implements SpecProvider {
     }
 
     try {
-      const validated = parseAndValidateOpenApi(fetched.content);
-      const normalized = fetched.content.endsWith('\n') ? fetched.content : `${fetched.content}\n`;
-      return {
-        content: normalized,
-        format: validated.isJson ? 'openapi-json' : 'openapi-yaml',
-        filename: validated.isJson ? 'index.json' : 'index.yaml',
-        completeness: 'full',
-        contractClass: 'authoritative',
-        evidence: [
-          `Fetched runtime-declared specification for ${candidate.name} over guarded HTTPS from ${safeUrl}`,
-          `Workload kind: ${candidate.meta.workloadKind ?? 'unknown'}`,
-          'Document validated; treated as authoritative runtime bytes',
-          'No Authorization/Cookie/Azure/GitHub credentials were forwarded'
-        ]
-      };
+      const fileName = filenameHintFromUrl(specUrl);
+      const validated = parseAndValidateNativeSpec(fetched.content, undefined, fileName);
+      const normalized =
+        validated.format === 'openapi-json' || validated.format === 'asyncapi-json' || validated.format === 'mcp-json'
+          ? fetched.content.endsWith('\n')
+            ? fetched.content
+            : `${fetched.content}\n`
+          : fetched.content;
+      return applyNativeDependencyFidelity(
+        {
+          content: normalized,
+          format: validated.format,
+          filename: safeNativeFilename(validated.format),
+          completeness: 'full',
+          contractClass: 'authoritative',
+          evidence: [
+            `Fetched runtime-declared specification for ${candidate.name} over guarded HTTPS from ${safeUrl}`,
+            `Workload kind: ${candidate.meta.workloadKind ?? 'unknown'}`,
+            `Document validated as ${validated.format}; treated as authoritative runtime bytes`,
+            'No Authorization/Cookie/Azure/GitHub credentials were forwarded'
+          ]
+        },
+        assessNativeDependencyFidelity({ content: normalized, format: validated.format })
+      );
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `Runtime-declared specification for ${candidate.name} did not validate as OpenAPI (${detail}); bytes are not authoritative`,
+        `Runtime-declared specification for ${candidate.name} did not validate as a supported native format (${detail}); bytes are not authoritative`,
         { cause: error }
       );
     }

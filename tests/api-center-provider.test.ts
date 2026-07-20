@@ -74,6 +74,15 @@ const XSD = `<?xml version="1.0"?>
   <xs:element name="echo" type="xs:string"/>
 </xs:schema>`;
 
+const MCP_JSON = JSON.stringify({
+  mcpServers: {
+    echo: {
+      command: 'npx',
+      args: ['-y', '@example/echo-mcp']
+    }
+  }
+});
+
 const PROTO = `syntax = "proto3";
 package echo;
 service Echo {
@@ -336,7 +345,8 @@ describe('ApiCenterProvider', () => {
       { content: WADL, format: 'wadl', filename: 'application.wadl' },
       { content: XSD, format: 'xsd', filename: 'schema.xsd' },
       { content: PROTO, format: 'protobuf', filename: 'service.proto' },
-      { content: GRAPHQL, format: 'graphql-sdl', filename: 'schema.graphql' }
+      { content: GRAPHQL, format: 'graphql-sdl', filename: 'schema.graphql' },
+      { content: MCP_JSON, format: 'mcp-json', filename: 'mcp.json' }
     ];
 
     for (const entry of cases) {
@@ -359,13 +369,22 @@ describe('ApiCenterProvider', () => {
       }
     }
 
-    for (const bad of ['', '{not-json', 'just text', '{"openapi":"3.0.3","info":{},"paths":{}}']) {
+    for (const bad of [
+      '',
+      '{not-json',
+      'just text',
+      '{"openapi":"3.0.3","info":{},"paths":{}}',
+      '{"name":"not-mcp"}',
+      '{"mcpServers":{}}'
+    ]) {
       const provider = new ApiCenterProvider(
         client({ exportSpecification: vi.fn(async () => ({ content: bad, source: 'inline' as const })) }),
         { subscriptionId: 'sub-1' }
       );
       const [candidate] = await provider.listCandidates();
-      await expect(provider.exportSpec(candidate!)).rejects.toThrow(/empty|parseable|paths|supported native|wrong kind|not an/i);
+      await expect(provider.exportSpec(candidate!)).rejects.toThrow(
+        /empty|parseable|paths|supported native|wrong kind|not an|MCP JSON/i
+      );
     }
   });
 
@@ -383,5 +402,6 @@ describe('ApiCenterProvider', () => {
     expect(parseApiCenterDefinitionArmId('/subscriptions/x/resourceGroups/rg/providers/Microsoft.ApiManagement/service/s/apis/a')).toBeUndefined();
     expect(safeNativeFilename('openapi-json')).toBe('index.json');
     expect(safeNativeFilename('protobuf')).toBe('service.proto');
+    expect(safeNativeFilename('mcp-json')).toBe('mcp.json');
   });
 });

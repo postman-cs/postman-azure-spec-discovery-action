@@ -92,6 +92,13 @@ describe('APIM provider', () => {
         format === 'wsdl-link' ? VALID_WSDL : VALID_OPENAPI
       ),
       getGraphqlSchema: vi.fn(async () => 'type Query { ping: String! }'),
+      listApiSchemas: vi.fn(async () => []),
+      getApiSchemaDocument: vi.fn(async () => {
+        throw new Error('schema document unused');
+      }),
+      getProtobufSchema: vi.fn(async () => {
+        throw new Error('protobuf unused');
+      }),
       probeApimReadAccess: vi.fn(async () => undefined),
       ...overrides
     };

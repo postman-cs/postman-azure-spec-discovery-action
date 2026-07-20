@@ -131,6 +131,79 @@ describe('R4 runtime-declared specification routes', () => {
     expect(candidate!.meta.workloadKind).toBe('aks');
   });
 
+  it('AZ-RT-R4-008: exports each bootstrap-native single-file format with shared safeNativeFilename', async () => {
+    const samples: Array<{ url: string; body: string; format: string; filename: string }> = [
+      {
+        url: 'https://orders.example.com/openapi.json',
+        body: VALID_OPENAPI,
+        format: 'openapi-json',
+        filename: 'index.json'
+      },
+      {
+        url: 'https://orders.example.com/openapi.yaml',
+        body: 'openapi: "3.0.3"\ninfo:\n  title: RuntimeOrders\n  version: "1"\npaths:\n  /orders:\n    get:\n      responses:\n        "200":\n          description: ok\n',
+        format: 'openapi-yaml',
+        filename: 'index.yaml'
+      },
+      {
+        url: 'https://orders.example.com/asyncapi.json',
+        body: `${JSON.stringify({
+          asyncapi: '2.6.0',
+          info: { title: 'events', version: '1.0.0' },
+          channels: { ping: { publish: { message: { payload: { type: 'string' } } } } }
+        })}\n`,
+        format: 'asyncapi-json',
+        filename: 'asyncapi.json'
+      },
+      {
+        url: 'https://orders.example.com/schema.graphql',
+        body: 'type Query { ping: String! }\n',
+        format: 'graphql-sdl',
+        filename: 'schema.graphql'
+      },
+      {
+        url: 'https://orders.example.com/service.proto',
+        body: 'syntax = "proto3";\nservice Greeter { rpc SayHello (HelloRequest) returns (HelloReply); }\n',
+        format: 'protobuf',
+        filename: 'service.proto'
+      },
+      {
+        url: 'https://orders.example.com/mcp.json',
+        body: `${JSON.stringify({
+          mcpServers: { weather: { command: 'npx', args: ['-y', '@example/weather-mcp'] } }
+        })}\n`,
+        format: 'mcp-json',
+        filename: 'mcp.json'
+      },
+      {
+        url: 'https://orders.example.com/service.wsdl',
+        body: `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/" name="Orders">
+  <portType name="OrdersPort"/>
+</definitions>`,
+        format: 'wsdl',
+        filename: 'service.wsdl'
+      }
+    ];
+
+    for (const sample of samples) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(sample.body, { status: 200, headers: { 'content-type': 'application/octet-stream' } })
+      );
+      const provider = new RuntimeDeclaredRoutesProvider({
+        enabled: true,
+        targets: [target({ url: sample.url })]
+      });
+      const [candidate] = await provider.listCandidates();
+      const exported = await provider.exportSpec(candidate!);
+      expect(exported.format, sample.url).toBe(sample.format);
+      expect(exported.filename, sample.url).toBe(sample.filename);
+      expect(exported.contractClass).toBe('authoritative');
+      vi.restoreAllMocks();
+      lookupMock.mockResolvedValue([{ address: '8.8.8.8', family: 4 }]);
+    }
+  });
+
   it('AZ-RT-R4-007: evidence and errors redact query/SAS while preserving SSRF distinction', async () => {
     const sasUrl = 'https://orders.example.com/openapi.json?sv=2024-01-01&sig=super-secret-sas';
     const provider = new RuntimeDeclaredRoutesProvider({

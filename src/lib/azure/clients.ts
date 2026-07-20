@@ -113,7 +113,29 @@ export interface AzureApimClient {
    */
   getApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<ApimApiSummary>;
   exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string, format?: ApimExportFormat): Promise<string>;
+  /**
+   * List schema headers (name + contentType) for an API. Used to decide whether a
+   * gRPC API has a preservable `text/protobuf` document without fetching bytes.
+   */
+  listApiSchemas(
+    resourceGroup: string,
+    serviceName: string,
+    apiId: string,
+    workspaceId?: string
+  ): Promise<Array<{ name: string; contentType?: string }>>;
+  /**
+   * Read one API schema document. Accepts either the SDK-flattened `value` or a
+   * raw ARM `document.value` envelope.
+   */
+  getApiSchemaDocument(
+    resourceGroup: string,
+    serviceName: string,
+    apiId: string,
+    schemaName: string,
+    workspaceId?: string
+  ): Promise<{ name: string; contentType: string; value: string }>;
   getGraphqlSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string>;
+  getProtobufSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string>;
   probeApimReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -147,12 +169,18 @@ export function normalizeResourceGraphSubscriptions(
  * connectionParameters.oAuthSettings.clientSecret beside the swagger, so the
  * client must never surface raw properties.
  */
+export type CustomApiWsdlImportMethod = 'NotSpecified' | 'SoapToRest' | 'SoapPassThrough' | string;
+
 export interface CustomApiSummary {
   id: string;
   name: string;
   resourceGroup: string;
   tags: Record<string, string>;
   hasSwagger: boolean;
+  /** True when secret-safe projection found non-empty wsdlDefinition.content. */
+  hasWsdl: boolean;
+  /** WSDL import method when present (SoapToRest is lossy/transformed). */
+  wsdlImportMethod?: CustomApiWsdlImportMethod;
   backendServiceUrl?: string;
   originalSwaggerUrl?: string;
 }
@@ -160,6 +188,8 @@ export interface CustomApiSummary {
 export interface AzureCustomApisClient {
   listCustomApis(resourceGroup?: string): Promise<CustomApiSummary[]>;
   getSwagger(resourceGroup: string, name: string): Promise<string>;
+  /** Returns secret-safe WSDL content only (properties.wsdlDefinition.content). */
+  getWsdl(resourceGroup: string, name: string): Promise<{ content: string; importMethod?: CustomApiWsdlImportMethod }>;
   probeCustomApisReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -725,25 +755,72 @@ export class ApimSdkClient implements AzureApimClient {
     throw new Error('APIM export exhausted its attempt limit');
   }
 
-  public async getGraphqlSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string> {
+  public async listApiSchemas(
+    resourceGroup: string,
+    serviceName: string,
+    apiId: string,
+    workspaceId?: string
+  ): Promise<Array<{ name: string; contentType?: string }>> {
     const schemas = workspaceId
       ? await collectBounded(
           this.client.workspaceApiSchema.listByApi(resourceGroup, serviceName, workspaceId, apiId),
           `APIM workspace ${workspaceId} API schema list`
         )
       : await collectBounded(this.client.apiSchema.listByApi(resourceGroup, serviceName, apiId), 'APIM API schema list');
-    const schema = schemas.find((entry) => entry.name?.toLowerCase() === 'graphql')
-      ?? schemas.find((entry) => entry.contentType?.toLowerCase().includes('graphql'));
-    if (!schema?.name) {
+    return schemas
+      .filter((entry): entry is typeof entry & { name: string } => typeof entry.name === 'string' && entry.name.trim().length > 0)
+      .map((entry) => ({
+        name: entry.name,
+        ...(typeof entry.contentType === 'string' && entry.contentType ? { contentType: entry.contentType } : {})
+      }));
+  }
+
+  public async getApiSchemaDocument(
+    resourceGroup: string,
+    serviceName: string,
+    apiId: string,
+    schemaName: string,
+    workspaceId?: string
+  ): Promise<{ name: string; contentType: string; value: string }> {
+    const detail = workspaceId
+      ? await this.client.workspaceApiSchema.get(resourceGroup, serviceName, workspaceId, apiId, schemaName)
+      : await this.client.apiSchema.get(resourceGroup, serviceName, apiId, schemaName);
+    const value = extractApimSchemaDocumentValue(detail);
+    if (!value) {
+      throw new Error(`APIM schema ${schemaName} returned no document value`);
+    }
+    const contentType =
+      (typeof detail.contentType === 'string' && detail.contentType.trim()) ||
+      extractApimSchemaContentType(detail) ||
+      '';
+    return { name: schemaName, contentType, value };
+  }
+
+  public async getGraphqlSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string> {
+    const schemas = await this.listApiSchemas(resourceGroup, serviceName, apiId, workspaceId);
+    const schema =
+      schemas.find((entry) => entry.name.toLowerCase() === 'graphql') ??
+      schemas.find((entry) => (entry.contentType ?? '').toLowerCase().includes('graphql'));
+    if (!schema) {
       throw new Error(`APIM GraphQL API ${apiId} returned no GraphQL schema`);
     }
-    const detail = workspaceId
-      ? await this.client.workspaceApiSchema.get(resourceGroup, serviceName, workspaceId, apiId, schema.name)
-      : await this.client.apiSchema.get(resourceGroup, serviceName, apiId, schema.name);
-    if (typeof detail.value !== 'string' || !detail.value.trim()) {
-      throw new Error(`APIM GraphQL schema ${schema.name} returned no SDL value`);
+    const document = await this.getApiSchemaDocument(resourceGroup, serviceName, apiId, schema.name, workspaceId);
+    return document.value;
+  }
+
+  public async getProtobufSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string> {
+    const schemas = await this.listApiSchemas(resourceGroup, serviceName, apiId, workspaceId);
+    const schema =
+      schemas.find((entry) => (entry.contentType ?? '').trim().toLowerCase() === 'text/protobuf') ??
+      schemas.find((entry) => entry.name.toLowerCase() === 'grpc' || entry.name.toLowerCase() === 'protobuf');
+    if (!schema || (schema.contentType ?? '').trim().toLowerCase() !== 'text/protobuf') {
+      throw new Error(`APIM gRPC API ${apiId} returned no text/protobuf schema`);
     }
-    return detail.value;
+    const document = await this.getApiSchemaDocument(resourceGroup, serviceName, apiId, schema.name, workspaceId);
+    if (document.contentType.trim().toLowerCase() !== 'text/protobuf') {
+      throw new Error(`APIM schema ${schema.name} contentType is ${document.contentType || 'missing'}, expected text/protobuf`);
+    }
+    return document.value;
   }
 
   public async probeApimReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {
@@ -752,6 +829,45 @@ export class ApimSdkClient implements AzureApimClient {
       : this.client.apiManagementService.list({ abortSignal: signal });
     await iterator[Symbol.asyncIterator]().next();
   }
+}
+
+/**
+ * APIM SchemaContract stores document bytes at properties.document.value; the
+ * management SDK flattens that to `value`. Accept either shape so workspace and
+ * raw ARM fixtures continue to work.
+ */
+function extractApimSchemaDocumentValue(detail: unknown): string | undefined {
+  if (!detail || typeof detail !== 'object') return undefined;
+  const record = detail as Record<string, unknown>;
+  if (typeof record.value === 'string' && record.value.trim()) return record.value;
+  const document = record.document;
+  if (document && typeof document === 'object' && !Array.isArray(document)) {
+    const nested = (document as Record<string, unknown>).value;
+    if (typeof nested === 'string' && nested.trim()) return nested;
+  }
+  const properties = record.properties;
+  if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+    const props = properties as Record<string, unknown>;
+    if (typeof props.value === 'string' && props.value.trim()) return props.value;
+    const propsDocument = props.document;
+    if (propsDocument && typeof propsDocument === 'object' && !Array.isArray(propsDocument)) {
+      const nested = (propsDocument as Record<string, unknown>).value;
+      if (typeof nested === 'string' && nested.trim()) return nested;
+    }
+  }
+  return undefined;
+}
+
+function extractApimSchemaContentType(detail: unknown): string | undefined {
+  if (!detail || typeof detail !== 'object') return undefined;
+  const record = detail as Record<string, unknown>;
+  if (typeof record.contentType === 'string' && record.contentType.trim()) return record.contentType;
+  const properties = record.properties;
+  if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+    const contentType = (properties as Record<string, unknown>).contentType;
+    if (typeof contentType === 'string' && contentType.trim()) return contentType;
+  }
+  return undefined;
 }
 
 function hostnameFromGatewayUrl(gatewayUrl: string | undefined): string | undefined {
@@ -1056,6 +1172,33 @@ interface CustomApiArmEnvelope {
     swagger?: unknown;
     backendService?: { serviceUrl?: unknown };
     apiDefinitions?: { originalSwaggerUrl?: unknown; modifiedSwaggerUrl?: unknown };
+    wsdlDefinition?: {
+      content?: unknown;
+      importMethod?: unknown;
+      url?: unknown;
+      service?: unknown;
+    };
+  };
+}
+
+function projectWsdlDefinition(wsdlDefinition: CustomApiArmEnvelope['properties'] extends infer P
+  ? P extends { wsdlDefinition?: infer W }
+    ? W
+    : undefined
+  : undefined): { hasWsdl: boolean; importMethod?: CustomApiWsdlImportMethod } {
+  if (!wsdlDefinition || typeof wsdlDefinition !== 'object') {
+    return { hasWsdl: false };
+  }
+  const content = (wsdlDefinition as { content?: unknown }).content;
+  const importMethodRaw = (wsdlDefinition as { importMethod?: unknown }).importMethod;
+  const hasWsdl = typeof content === 'string' && content.trim().length > 0;
+  const importMethod =
+    typeof importMethodRaw === 'string' && importMethodRaw.trim()
+      ? (importMethodRaw.trim() as CustomApiWsdlImportMethod)
+      : undefined;
+  return {
+    hasWsdl,
+    ...(importMethod ? { importMethod } : {})
   };
 }
 
@@ -1066,12 +1209,15 @@ function toCustomApiSummary(entry: CustomApiArmEnvelope): CustomApiSummary | und
   const properties = entry.properties ?? {};
   const backendServiceUrl = properties.backendService?.serviceUrl;
   const originalSwaggerUrl = properties.apiDefinitions?.originalSwaggerUrl;
+  const wsdl = projectWsdlDefinition(properties.wsdlDefinition);
   return {
     id,
     name,
     resourceGroup: extractResourceGroup(id),
     tags: entry.tags ?? {},
     hasSwagger: properties.swagger !== undefined && properties.swagger !== null,
+    hasWsdl: wsdl.hasWsdl,
+    ...(wsdl.importMethod ? { wsdlImportMethod: wsdl.importMethod } : {}),
     ...(typeof backendServiceUrl === 'string' && backendServiceUrl ? { backendServiceUrl } : {}),
     ...(typeof originalSwaggerUrl === 'string' && originalSwaggerUrl ? { originalSwaggerUrl } : {})
   };
@@ -1154,6 +1300,46 @@ export class CustomApisSdkClient implements AzureCustomApisClient {
       throw new Error(`Custom API ${name} carries no inline swagger document`);
     }
     return `${JSON.stringify(swagger, null, 2)}\n`;
+  }
+
+  public async getWsdl(
+    resourceGroup: string,
+    name: string
+  ): Promise<{ content: string; importMethod?: CustomApiWsdlImportMethod }> {
+    const token = await getArmAccessToken(this.credential, this.cloud);
+    const url = armManagementUrl(
+      this.cloud,
+      `/subscriptions/${encodeURIComponent(this.subscriptionId)}` +
+        `/resourceGroups/${encodeURIComponent(resourceGroup)}/providers/Microsoft.Web/customApis/${encodeURIComponent(name)}` +
+        `?api-version=${CUSTOM_APIS_API_VERSION}`
+    );
+    const response = await this.fetchArm(url, token, 'Custom API read');
+    if (!response.ok) {
+      throw new Error(`Custom API read failed with HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as CustomApiArmEnvelope;
+    // Project only wsdlDefinition.content (+ importMethod). Never read url/service
+    // blobs that might sit beside connectionParameters secrets on the same payload.
+    const wsdlDefinition = body.properties?.wsdlDefinition;
+    const content =
+      wsdlDefinition && typeof wsdlDefinition === 'object'
+        ? (wsdlDefinition as { content?: unknown }).content
+        : undefined;
+    if (typeof content !== 'string' || !content.trim()) {
+      throw new Error(`Custom API ${name} carries no inline WSDL content`);
+    }
+    const importMethodRaw =
+      wsdlDefinition && typeof wsdlDefinition === 'object'
+        ? (wsdlDefinition as { importMethod?: unknown }).importMethod
+        : undefined;
+    const importMethod =
+      typeof importMethodRaw === 'string' && importMethodRaw.trim()
+        ? (importMethodRaw.trim() as CustomApiWsdlImportMethod)
+        : undefined;
+    return {
+      content,
+      ...(importMethod ? { importMethod } : {})
+    };
   }
 
   public async probeCustomApisReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void> {

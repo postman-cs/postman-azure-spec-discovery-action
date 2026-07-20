@@ -4,12 +4,16 @@ import { readFile } from 'node:fs/promises';
 import {
   actionContract,
   type ActionMode,
+  type ContractClass,
   type DiscoveredService,
   type ExportSummary,
   type ProviderProbeResult,
+  type ProviderType,
   type ResolutionResult,
   type SpecFormat
 } from './contracts.js';
+import { getProviderRegistration } from './lib/providers/registry.js';
+import { applyDeclaredFidelity, deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
 import type {
   AzureApimClient,
   AzureAppServiceClient,
@@ -53,7 +57,6 @@ import {
 import { runNarrowingPipeline, type NarrowingCandidate, type NarrowingResult } from './lib/resolve/narrowing-pipeline.js';
 import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
 import { enumerateEstate, parseRepoSlug, type EstateRepo } from './lib/estate/enumerate.js';
-import { deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
 import { parseAndValidateNativeSpec } from './lib/spec/native-formats.js';
 import { ApimProvider, parseApimApiArmId } from './lib/providers/apim.js';
 import { ApiCenterProvider } from './lib/providers/api-center.js';
@@ -611,14 +614,23 @@ function sanitizeTargetUrlForEvidence(url: string): string {
   }
 }
 
-function normalizeTargetUrlKey(url: string): string | undefined {
+/**
+ * Canonical authorization key for runtime-declared URL corroboration.
+ * Compares scheme + host (lowercase) + exact pathname + exact search.
+ * Hash is ignored. Caller query substitution against an authorized URL is rejected.
+ */
+export function normalizeTargetUrlKey(url: string): string | undefined {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') return undefined;
     if (parsed.username || parsed.password) return undefined;
-    parsed.search = '';
     parsed.hash = '';
-    return parsed.toString().toLowerCase();
+    parsed.username = '';
+    parsed.password = '';
+    parsed.protocol = 'https:';
+    parsed.hostname = parsed.hostname.toLowerCase();
+    // Keep pathname and search exact (including empty search vs present search).
+    return parsed.toString();
   } catch {
     return undefined;
   }
@@ -916,6 +928,7 @@ function resolveServiceName(candidate: SpecCandidate, serviceMapping: Record<str
 interface WrittenExport {
   specPath: string;
   specFormat: SpecFormat;
+  contractClass: ContractClass;
   derived?: {
     path: string;
     version: '3.0.3' | '3.1.0';
@@ -925,31 +938,75 @@ interface WrittenExport {
   };
 }
 
+/**
+ * Ensure every export carries an operative contractClass: provider-declared
+ * reconstructed/partial overrides win; otherwise the registry default applies.
+ * Explicit partial/reconstructed/association-only/unsupported is never upgraded
+ * by the registry default.
+ */
+export function applyExportContractClass(
+  providerType: ProviderType,
+  exportResult: SpecExportResult
+): SpecExportResult & { contractClass: ContractClass } {
+  if (exportResult.contractClass) {
+    return { ...exportResult, contractClass: exportResult.contractClass };
+  }
+  const contractClass = getProviderRegistration(providerType).defaultContractClass;
+  return { ...exportResult, contractClass };
+}
+
+function assertSafeArtifactRelativePath(relativePath: string): string {
+  const normalized = relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (
+    !normalized ||
+    path.posix.isAbsolute(normalized) ||
+    normalized.includes('\0') ||
+    normalized.split('/').includes('..') ||
+    normalized.startsWith('/')
+  ) {
+    throw new Error(`Refusing unsafe artifact relative path: ${relativePath}`);
+  }
+  return normalized;
+}
+
 async function writeSpecExport(
   inputs: ResolvedInputs,
   serviceName: string,
   exportResult: SpecExportResult,
-  writeSpecFile: (outputPath: string, content: string, rootPath: string) => Promise<void>
+  writeSpecFile: (outputPath: string, content: string, rootPath: string) => Promise<void>,
+  providerType: ProviderType
 ): Promise<WrittenExport> {
+  const classified = applyExportContractClass(providerType, exportResult);
   const folder = projectFolderName(serviceName);
-  const relativeSpecPath = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, exportResult.filename);
+  const relativeSpecPath = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, classified.filename);
   const absoluteSpecPath = resolvePathWithinRoot(inputs.repoRoot, relativeSpecPath, 'output-dir');
   if (!inputs.dryRun) {
-    await writeSpecFile(absoluteSpecPath, exportResult.content, inputs.repoRoot);
+    await writeSpecFile(absoluteSpecPath, classified.content, inputs.repoRoot);
+    for (const artifact of classified.artifacts ?? []) {
+      const safeRel = assertSafeArtifactRelativePath(artifact.relativePath);
+      const relativeArtifactPath = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, safeRel);
+      const absoluteArtifactPath = resolvePathWithinRoot(inputs.repoRoot, relativeArtifactPath, 'output-dir');
+      await writeSpecFile(absoluteArtifactPath, artifact.content, inputs.repoRoot);
+    }
   }
 
-  const written: WrittenExport = { specPath: relativeSpecPath, specFormat: exportResult.format };
+  const written: WrittenExport = {
+    specPath: relativeSpecPath,
+    specFormat: classified.format,
+    contractClass: classified.contractClass
+  };
 
-  const derivation = deriveOpenApiDocument({ content: exportResult.content, format: exportResult.format, title: serviceName });
-  if (derivation) {
-    // Provider-declared completeness may downgrade the derivation verdict but
-    // never upgrade it: a provider that synthesized a partial document keeps
-    // 'partial' even when the output parses as complete OpenAPI 3.x.
-    if (exportResult.completeness === 'partial' && derivation.completeness === 'full') {
-      derivation.completeness = 'partial';
-      derivation.evidence = [...derivation.evidence, 'Provider declared this export partial (synthesized from a non-spec surface)'];
-    }
-    if (derivation.completeness === 'full' && exportResult.format === 'openapi-json') {
+  const rawDerivation = deriveOpenApiDocument({
+    content: classified.content,
+    format: classified.format,
+    title: serviceName
+  });
+  if (rawDerivation) {
+    const derivation = applyDeclaredFidelity(rawDerivation, {
+      completeness: classified.completeness,
+      contractClass: classified.contractClass
+    });
+    if (derivation.completeness === 'full' && classified.format === 'openapi-json') {
       // Already OpenAPI 3.x JSON: the exported file itself is the derived document.
       written.derived = {
         path: relativeSpecPath,
@@ -1715,7 +1772,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     const provider = new IacLocalProvider(iacScan);
     const exportResult = await provider.exportSpec(only);
     const serviceName = resolveServiceName(only, inputs.serviceMapping);
-    const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+    const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile, 'iac-local');
     const resolution: ResolutionResult = {
       status: 'resolved',
       sourceType: 'iac-embedded',
@@ -1724,6 +1781,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       specPath: written.specPath,
       providerType: 'iac-local',
       specFormat: written.specFormat,
+      contractClass: written.contractClass,
       ...(written.derived
         ? {
             derivedOpenApiPath: written.derived.path,
@@ -1862,7 +1920,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     }
     const exportResult = await provider.exportSpec(target);
     const serviceName = resolveServiceName(target, inputs.serviceMapping);
-    const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+    const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile, 'api-center');
     const selectionEvidence =
       selectors.bindingEvidence.length > 0
         ? selectors.bindingEvidence
@@ -1876,7 +1934,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       ...(target.apiId ? { apiId: target.apiId } : {}),
       providerType: 'api-center',
       specFormat: written.specFormat,
-      ...(exportResult.contractClass ? { contractClass: exportResult.contractClass } : {}),
+      contractClass: written.contractClass,
       ...(written.derived
         ? {
             derivedOpenApiPath: written.derived.path,
@@ -2069,7 +2127,13 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       if (provider) {
         const exportResult = await provider.exportSpec(target);
         const serviceName = resolveServiceName(target, inputs.serviceMapping);
-        const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+        const written = await writeSpecExport(
+          inputs,
+          serviceName,
+          exportResult,
+          dependencies.writeSpecFile,
+          target.providerType
+        );
         const selectionEvidence = selectors.bindingEvidence.length > 0
           ? selectors.bindingEvidence
           : [`Caller-selected API ID`];
@@ -2082,7 +2146,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           ...(target.apiId ? { apiId: target.apiId } : {}),
           providerType: target.providerType,
           specFormat: written.specFormat,
-          ...(exportResult.contractClass ? { contractClass: exportResult.contractClass } : {}),
+          contractClass: written.contractClass,
           ...(written.derived
             ? {
                 derivedOpenApiPath: written.derived.path,
@@ -2283,7 +2347,13 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         }
         const exportResult = await provider.exportSpec(target);
         const serviceName = resolveServiceName(target, inputs.serviceMapping);
-        const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+        const written = await writeSpecExport(
+          inputs,
+          serviceName,
+          exportResult,
+          dependencies.writeSpecFile,
+          target.providerType
+        );
         const resolution: ResolutionResult = {
           status: 'resolved',
           sourceType: sourceTypeFor(target.providerType),
@@ -2293,7 +2363,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           ...(target.apiId ? { apiId: target.apiId } : {}),
           providerType: target.providerType,
           specFormat: written.specFormat,
-          ...(exportResult.contractClass ? { contractClass: exportResult.contractClass } : {}),
+          contractClass: written.contractClass,
           ...(written.derived
             ? {
                 derivedOpenApiPath: written.derived.path,
@@ -2502,7 +2572,13 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
         // still counted both. Fail this one loudly instead.
         throw new Error(`Spec path collision at ${targetPath}: already written by ${priorOwner}`);
       }
-      const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+      const written = await writeSpecExport(
+        inputs,
+        serviceName,
+        exportResult,
+        dependencies.writeSpecFile,
+        candidate.providerType
+      );
       writtenPaths.set(written.specPath, candidate.id);
       discovered.push({
         serviceName,
@@ -2510,6 +2586,7 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
         ...(candidate.apiId ? { apiId: candidate.apiId } : {}),
         providerType: candidate.providerType,
         specFormat: written.specFormat,
+        contractClass: written.contractClass,
         ...(written.derived
           ? {
               derivedOpenApiPath: written.derived.path,

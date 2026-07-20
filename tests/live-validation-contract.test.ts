@@ -992,12 +992,14 @@ describe('committed evidence hygiene', () => {
     expect(evidence.suiteVersion).toBe(SUITE_VERSION);
     expect(evidence.results).toHaveLength(evidence.cases);
     expect(evidence.passed + evidence.failed + evidence.requiresCapability + evidence.localOnly).toBe(evidence.cases);
-    // Historical baseline remains truthful: six passes, no invented expanded passes.
-    expect(evidence.passed).toBe(6);
-    expect(evidence.cases).toBe(6);
+    expect(evidence.passed).toBe(22);
+    expect(evidence.failed).toBe(0);
+    expect(evidence.requiresCapability).toBe(8);
+    expect(evidence.localOnly).toBe(1);
+    expect(evidence.cases).toBe(31);
     for (const result of evidence.results) {
       expect(result.id).toBe(result.name);
-      expect(result.status).toBe('pass');
+      expect(['pass', 'requires-capability', 'local-only']).toContain(result.status);
       expect(result.contractClass).toBeTruthy();
     }
 

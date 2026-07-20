@@ -22,6 +22,8 @@ const DIRECT_SPEC_CANDIDATES = [
   'asyncapi.yaml',
   'asyncapi.yml',
   'asyncapi.json',
+  'mcp.json',
+  'server.json',
   'spec/openapi.yaml',
   'spec/openapi.yml',
   'spec/openapi.json',
@@ -94,6 +96,7 @@ export function specCandidateScore(candidate: string): number {
   if (DIRECT_SPEC_CANDIDATES.includes(normalized)) score += 200;
   if (/^(openapi|swagger)(?:[.-]v?\d+(?:\.\d+)*)?\.(?:ya?ml|json)$/.test(basename)) score += 90;
   if (/^(asyncapi)(?:[.-]v?\d+(?:\.\d+)*)?\.(?:ya?ml|json)$/.test(basename)) score += 88;
+  if (/^(?:\.?mcp(?:[-.]?(?:config|servers?))?|server)\.json$/.test(basename)) score += 88;
   if (/^(api|oas)(?:[.-]v?\d+(?:\.\d+)*)?\.(?:ya?ml|json)$/.test(basename)) score += 85;
   if (/\.(?:wsdl|wadl|xsd|graphql|gql|proto)$/.test(basename)) score += 70;
   if (/^(api|apis|spec|specs|contracts|reference|public)\//.test(normalized)) score += 20;
@@ -123,10 +126,11 @@ export async function findAllRepoSpecs(
     const content = await readFile(file.absolutePath, 'utf8').catch(() => undefined);
     if (content === undefined) continue;
 
-    const detected = detectNativeFormat(content);
+    const basename = path.posix.basename(file.relativePath);
+    const detected = detectNativeFormat(content, basename);
     if (!detected) continue;
     try {
-      const validated = parseAndValidateNativeSpec(content, detected.format);
+      const validated = parseAndValidateNativeSpec(content, detected.format, basename);
       const rankScore = specCandidateScore(file.relativePath);
       const evidence = [`Resolved from repository specification ${file.relativePath}`];
       if (rankScore >= 200) {

@@ -13,7 +13,8 @@ export type NativeSpecKind =
   | 'wadl'
   | 'xsd'
   | 'protobuf'
-  | 'graphql-sdl';
+  | 'graphql-sdl'
+  | 'mcp-json';
 
 export type NativeSerialization = 'json' | 'yaml' | 'xml' | 'text';
 
@@ -116,14 +117,31 @@ function isGraphqlSdl(content: string): boolean {
   return GRAPHQL_DEFINITION_RE.test(trimmed);
 }
 
+/**
+ * Bootstrap-aligned protobuf identity (content path):
+ * `syntax = "proto[23]";` or a `service ... { rpc ... }` block.
+ * Bare `message` definitions alone are not enough — bootstrap would not classify
+ * them as grpc without a `.proto` filename hint.
+ */
 function isProtobufSource(content: string): boolean {
   const trimmed = trimContent(content);
   if (!trimmed || looksLikeJson(trimmed) || looksLikeXml(trimmed)) return false;
   if (/^\s*(?:openapi|swagger|asyncapi)\s*:/m.test(trimmed)) return false;
   if (/^\s*syntax\s*=\s*["']proto[23]["']\s*;/m.test(trimmed)) return true;
-  if (/\bmessage\s+[A-Za-z_]\w*\s*\{/.test(trimmed)) return true;
   if (/\bservice\s+[A-Za-z_]\w*\s*\{[\s\S]*\brpc\b/.test(trimmed)) return true;
   return false;
+}
+
+/** Bootstrap treats an unambiguous `.proto` extension as grpc even for message-only IDL. */
+function isProtobufByFileNameHint(content: string, fileName?: string): boolean {
+  if (!fileName || !fileName.toLowerCase().endsWith('.proto')) return false;
+  const trimmed = trimContent(content);
+  if (!trimmed || looksLikeJson(trimmed) || looksLikeXml(trimmed)) return false;
+  return (
+    isProtobufSource(trimmed) ||
+    /\bmessage\s+[A-Za-z_]\w*\s*\{/.test(trimmed) ||
+    /^\s*package\s+[\w.]+/m.test(trimmed)
+  );
 }
 
 function extractXsdReferences(xml: string): string[] {
@@ -142,6 +160,49 @@ function asyncApiVersionOf(document: Record<string, unknown>): string | undefine
   return typeof document.asyncapi === 'string' && document.asyncapi.trim() ? document.asyncapi.trim() : undefined;
 }
 
+/**
+ * Bootstrap-aligned MCP identity. Arbitrary JSON must stay on other paths.
+ * Detection is JSON-only (`mcp-json`); YAML near-matches are rejected.
+ */
+function looksLikeMcp(document: Record<string, unknown>): boolean {
+  if (document.mcpServers && typeof document.mcpServers === 'object' && !Array.isArray(document.mcpServers)) {
+    return true;
+  }
+  if (typeof document.$schema === 'string' && /modelcontextprotocol/i.test(document.$schema)) {
+    return true;
+  }
+  return typeof document.name === 'string' && (Array.isArray(document.remotes) || Array.isArray(document.packages));
+}
+
+function mcpServersHasObjectEntry(mcpServers: Record<string, unknown>): boolean {
+  for (const value of Object.values(mcpServers)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return true;
+  }
+  return false;
+}
+
+function arrayHasUsableObjectEntries(entries: unknown[]): boolean {
+  return entries.some((entry) => entry !== null && typeof entry === 'object' && !Array.isArray(entry));
+}
+
+function isSubstantiveMcpDocument(document: Record<string, unknown>): boolean {
+  const mcpServers = document.mcpServers;
+  if (mcpServers && typeof mcpServers === 'object' && !Array.isArray(mcpServers)) {
+    return mcpServersHasObjectEntry(mcpServers as Record<string, unknown>);
+  }
+  const remotes = Array.isArray(document.remotes) ? document.remotes : [];
+  const packages = Array.isArray(document.packages) ? document.packages : [];
+  if (
+    typeof document.name === 'string' &&
+    document.name.trim() &&
+    (arrayHasUsableObjectEntries(remotes) || arrayHasUsableObjectEntries(packages))
+  ) {
+    return true;
+  }
+  // `$schema` alone (or with empty/non-object remotes/packages) is a near-match.
+  return false;
+}
+
 function hasAsyncApiChannels(document: Record<string, unknown>): boolean {
   const channels = document.channels;
   if (channels && typeof channels === 'object' && !Array.isArray(channels)) {
@@ -157,9 +218,10 @@ function hasAsyncApiChannels(document: Record<string, unknown>): boolean {
 
 /**
  * Content-based native format detection with bounded text assumptions.
+ * Optional `fileName` applies bootstrap's unambiguous extension hints (e.g. `.proto`).
  * Returns undefined when the document does not match a supported family.
  */
-export function detectNativeFormat(content: string): NativeFormatDetection | undefined {
+export function detectNativeFormat(content: string, fileName?: string): NativeFormatDetection | undefined {
   const trimmed = trimContent(content);
   if (!trimmed) return undefined;
 
@@ -178,6 +240,11 @@ export function detectNativeFormat(content: string): NativeFormatDetection | und
 
   const parsed = parseObjectDocument(trimmed);
   if (parsed) {
+    // MCP is JSON-only and checked before OpenAPI/AsyncAPI so registry/client
+    // configs never fall through to an unrelated JSON family.
+    if (parsed.isJson && looksLikeMcp(parsed.document) && isSubstantiveMcpDocument(parsed.document)) {
+      return { kind: 'mcp-json', format: 'mcp-json', serialization: 'json' };
+    }
     const asyncVersion = asyncApiVersionOf(parsed.document);
     if (asyncVersion) {
       return {
@@ -198,7 +265,7 @@ export function detectNativeFormat(content: string): NativeFormatDetection | und
     }
   }
 
-  if (isProtobufSource(trimmed)) {
+  if (isProtobufSource(trimmed) || isProtobufByFileNameHint(trimmed, fileName)) {
     return { kind: 'protobuf', format: 'protobuf', serialization: 'text' };
   }
   if (isGraphqlSdl(trimmed)) {
@@ -277,11 +344,11 @@ function validateXmlFamily(content: string, expected?: SpecFormat): NativeValida
   throw new Error('XML document is not a WSDL, WADL, or XSD root');
 }
 
-function validateProtobuf(content: string, expected?: SpecFormat): NativeValidationResult {
+function validateProtobuf(content: string, expected?: SpecFormat, fileName?: string): NativeValidationResult {
   const trimmed = trimContent(content);
   if (!trimmed) throw new Error('Specification content is empty');
-  if (!isProtobufSource(trimmed)) {
-    throw new Error('Specification is not protobuf source (syntax, message, or service required)');
+  if (!isProtobufSource(trimmed) && !isProtobufByFileNameHint(trimmed, fileName)) {
+    throw new Error('Specification is not protobuf source (syntax = "proto[23]" or service with rpc required)');
   }
   assertExpectedFormat('protobuf', expected);
   return { kind: 'protobuf', format: 'protobuf', serialization: 'text' };
@@ -310,6 +377,37 @@ function validateOpenApi(content: string, expected?: SpecFormat): NativeValidati
   };
 }
 
+function validateMcpJson(content: string, expected?: SpecFormat): NativeValidationResult {
+  const trimmed = trimContent(content);
+  if (!trimmed) throw new Error('Specification content is empty');
+  if (!looksLikeJson(trimmed)) {
+    throw new Error('Specification is not MCP JSON (JSON object required)');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Specification is not parseable JSON or YAML: ${detail}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Specification did not parse to an object document');
+  }
+  const document = parsed as Record<string, unknown>;
+  if (!looksLikeMcp(document) || !isSubstantiveMcpDocument(document)) {
+    throw new Error(
+      'Specification is not MCP JSON (mcpServers object, modelcontextprotocol $schema with servers, or registry name plus remotes/packages required)'
+    );
+  }
+  assertExpectedFormat('mcp-json', expected);
+  return {
+    kind: 'mcp-json',
+    format: 'mcp-json',
+    serialization: 'json',
+    document
+  };
+}
+
 /**
  * Parse and validate a native specification document.
  *
@@ -317,7 +415,11 @@ function validateOpenApi(content: string, expected?: SpecFormat): NativeValidati
  * `paths` contract. XML checks distinguish WSDL/WADL/XSD roots and collect
  * relative XSD references without fetching them.
  */
-export function parseAndValidateNativeSpec(content: string, expectedFormat?: SpecFormat): NativeValidationResult {
+export function parseAndValidateNativeSpec(
+  content: string,
+  expectedFormat?: SpecFormat,
+  fileName?: string
+): NativeValidationResult {
   const trimmed = trimContent(content);
   if (!trimmed) {
     throw new Error('Specification content is empty');
@@ -333,13 +435,16 @@ export function parseAndValidateNativeSpec(content: string, expectedFormat?: Spe
     return validateXmlFamily(content, expectedFormat);
   }
   if (expectedFormat === 'protobuf') {
-    return validateProtobuf(content, expectedFormat);
+    return validateProtobuf(content, expectedFormat, fileName);
   }
   if (expectedFormat === 'graphql-sdl') {
     return validateGraphql(content, expectedFormat);
   }
+  if (expectedFormat === 'mcp-json') {
+    return validateMcpJson(content, expectedFormat);
+  }
 
-  const detected = detectNativeFormat(content);
+  const detected = detectNativeFormat(content, fileName);
   if (!detected) {
     if (looksLikeXml(trimmed)) {
       throw new Error('XML document is not a WSDL, WADL, or XSD root');
@@ -353,9 +458,28 @@ export function parseAndValidateNativeSpec(content: string, expectedFormat?: Spe
         const detail = error instanceof Error ? error.message : String(error);
         throw new Error(`Specification is not parseable JSON or YAML: ${detail}`);
       }
+      // Near-match MCP shells (empty mcpServers, schema-only, name without servers).
+      try {
+        const candidate = looksLikeJson(trimmed) ? JSON.parse(trimmed) : parse(trimmed);
+        if (
+          candidate &&
+          typeof candidate === 'object' &&
+          !Array.isArray(candidate) &&
+          (looksLikeMcp(candidate as Record<string, unknown>) ||
+            'mcpServers' in (candidate as Record<string, unknown>) ||
+            (typeof (candidate as Record<string, unknown>).$schema === 'string' &&
+              /modelcontextprotocol/i.test(String((candidate as Record<string, unknown>).$schema))))
+        ) {
+          throw new Error(
+            'Specification is not MCP JSON (mcpServers object, modelcontextprotocol $schema with servers, or registry name plus remotes/packages required)'
+          );
+        }
+      } catch (error) {
+        if (error instanceof Error && /MCP JSON/i.test(error.message)) throw error;
+      }
     }
-    if (/^\s*package\s+[\w.]+/m.test(trimmed) || /\bproto\b/i.test(trimmed)) {
-      throw new Error('Specification is not protobuf source (syntax, message, or service required)');
+    if (/^\s*package\s+[\w.]+/m.test(trimmed) || /\bproto\b/i.test(trimmed) || /\bmessage\s+\w+\s*\{/.test(trimmed)) {
+      throw new Error('Specification is not protobuf source (syntax = "proto[23]" or service with rpc required)');
     }
     if (/^\s*#/.test(trimmed) || /\b(type|schema|query)\b/i.test(trimmed)) {
       throw new Error('Specification is not GraphQL SDL (type or schema definition required)');
@@ -373,8 +497,10 @@ export function parseAndValidateNativeSpec(content: string, expectedFormat?: Spe
     case 'xsd':
       return validateXmlFamily(content, expectedFormat);
     case 'protobuf':
-      return validateProtobuf(content, expectedFormat);
+      return validateProtobuf(content, expectedFormat, fileName);
     case 'graphql-sdl':
       return validateGraphql(content, expectedFormat);
+    case 'mcp-json':
+      return validateMcpJson(content, expectedFormat);
   }
 }

@@ -16,8 +16,26 @@ const REQUIRED_FORMATS: SpecFormat[] = [
   'wadl',
   'xsd',
   'protobuf',
-  'graphql-sdl'
+  'graphql-sdl',
+  'mcp-json'
 ];
+
+const MCP_CLIENT_CONFIG = JSON.stringify({
+  mcpServers: {
+    weather: {
+      command: 'npx',
+      args: ['-y', '@example/weather-mcp']
+    }
+  }
+});
+
+const MCP_REGISTRY = JSON.stringify({
+  $schema: 'https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json',
+  name: 'io.github.example/weather',
+  version: '1.2.0',
+  remotes: [{ type: 'sse', url: 'https://mcp.example.com/sse' }],
+  packages: [{ registry_type: 'npm', identifier: '@example/weather-mcp', version: '1.2.0' }]
+});
 
 const REQUIRED_CONTRACT_CLASSES: ContractClass[] = [
   'authoritative',
@@ -111,7 +129,7 @@ describe('native format detection', () => {
     expect(detectNativeFormat(xsd)).toMatchObject({ format: 'xsd', kind: 'xsd' });
   });
 
-  it('detects protobuf from syntax/service/message structure, not extension alone', () => {
+  it('detects protobuf from syntax or service/rpc; message-only needs .proto hint', () => {
     expect(
       detectNativeFormat('syntax = "proto3";\npackage demo;\nmessage Ping { string id = 1; }\n')
     ).toMatchObject({ format: 'protobuf', kind: 'protobuf' });
@@ -119,6 +137,14 @@ describe('native format detection', () => {
     expect(
       detectNativeFormat('service Greeter {\n  rpc SayHello (HelloRequest) returns (HelloReply);\n}\n')
     ).toMatchObject({ format: 'protobuf', kind: 'protobuf' });
+
+    // Bootstrap content-path: bare message IDL is not protobuf without .proto hint.
+    expect(detectNativeFormat('message Ping { string id = 1; }\n')).toBeUndefined();
+    expect(detectNativeFormat('message Ping { string id = 1; }\n', 'notes.txt')).toBeUndefined();
+    expect(detectNativeFormat('message Ping { string id = 1; }\n', 'types.proto')).toMatchObject({
+      format: 'protobuf',
+      kind: 'protobuf'
+    });
 
     expect(detectNativeFormat('// not a protobuf file, just a comment\n')).toBeUndefined();
   });
@@ -133,6 +159,42 @@ describe('native format detection', () => {
       kind: 'graphql-sdl'
     });
     expect(detectNativeFormat('type: object\nproperties:\n  id: { type: string }\n')).toBeUndefined();
+  });
+
+  it('detects MCP client config and registry JSON; rejects arbitrary JSON and YAML near-matches', () => {
+    expect(detectNativeFormat(MCP_CLIENT_CONFIG)).toMatchObject({
+      format: 'mcp-json',
+      kind: 'mcp-json',
+      serialization: 'json'
+    });
+    expect(detectNativeFormat(MCP_REGISTRY)).toMatchObject({
+      format: 'mcp-json',
+      kind: 'mcp-json'
+    });
+    // Empty $schema shell / non-object remotes/packages must not resolve.
+    expect(
+      detectNativeFormat(
+        JSON.stringify({
+          $schema: 'https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json',
+          name: 'io.github.example/empty-shell'
+        })
+      )
+    ).toBeUndefined();
+    expect(
+      detectNativeFormat(JSON.stringify({ name: 'io.github.example/weather', remotes: ['https://example.com'] }))
+    ).toBeUndefined();
+    expect(
+      detectNativeFormat(JSON.stringify({ name: 'io.github.example/weather', packages: ['@example/pkg'] }))
+    ).toBeUndefined();
+
+    expect(detectNativeFormat(JSON.stringify({ name: 'not-mcp' }))).toBeUndefined();
+    expect(detectNativeFormat(JSON.stringify({ foo: 1, bar: ['a'] }))).toBeUndefined();
+    expect(detectNativeFormat(JSON.stringify({ mcpServers: [] }))).toBeUndefined();
+    expect(detectNativeFormat(JSON.stringify({ mcpServers: 'weather' }))).toBeUndefined();
+    expect(detectNativeFormat(JSON.stringify({ name: 'x', remotes: { url: 'https://example.com' } }))).toBeUndefined();
+    expect(
+      detectNativeFormat('mcpServers:\n  weather:\n    command: npx\n')
+    ).toBeUndefined();
   });
 });
 
@@ -221,10 +283,60 @@ describe('native format validation', () => {
     expect(
       parseAndValidateNativeSpec('syntax = "proto3";\nmessage Ping { string id = 1; }\n').format
     ).toBe('protobuf');
+    expect(() => parseAndValidateNativeSpec('message Ping { string id = 1; }\n')).toThrow(
+      /protobuf|syntax|service|supported native/i
+    );
+    expect(parseAndValidateNativeSpec('message Ping { string id = 1; }\n', undefined, 'x.proto').format).toBe(
+      'protobuf'
+    );
     expect(() => parseAndValidateNativeSpec('package only.comments;\n')).toThrow(/protobuf|syntax|message|service/i);
 
     expect(parseAndValidateNativeSpec('type Query { ok: Boolean! }\n').format).toBe('graphql-sdl');
     expect(() => parseAndValidateNativeSpec('# just a comment\n')).toThrow(/graphql|type|schema/i);
+  });
+
+  it('validates MCP JSON client/registry documents and rejects empty or malformed near-matches', () => {
+    const client = parseAndValidateNativeSpec(MCP_CLIENT_CONFIG);
+    expect(client).toMatchObject({ format: 'mcp-json', kind: 'mcp-json', serialization: 'json' });
+    expect(client.document).toMatchObject({ mcpServers: expect.any(Object) });
+
+    const registry = parseAndValidateNativeSpec(MCP_REGISTRY);
+    expect(registry).toMatchObject({ format: 'mcp-json', kind: 'mcp-json' });
+    expect(registry.document).toMatchObject({
+      name: 'io.github.example/weather',
+      remotes: expect.any(Array),
+      packages: expect.any(Array)
+    });
+
+    expect(() => parseAndValidateNativeSpec(JSON.stringify({ name: 'not-mcp' }))).toThrow(
+      /supported native|MCP JSON/i
+    );
+    expect(() => parseAndValidateNativeSpec(JSON.stringify({ mcpServers: {} }))).toThrow(/MCP JSON/i);
+    expect(() =>
+      parseAndValidateNativeSpec(
+        JSON.stringify({
+          $schema: 'https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json',
+          name: 'io.github.example/empty-shell'
+        })
+      )
+    ).toThrow(/MCP JSON/i);
+    expect(() =>
+      parseAndValidateNativeSpec(JSON.stringify({ name: 'io.github.example/weather', remotes: [] }))
+    ).toThrow(/MCP JSON/i);
+    expect(() =>
+      parseAndValidateNativeSpec(
+        JSON.stringify({ name: 'io.github.example/weather', remotes: ['https://example.com/sse'] })
+      )
+    ).toThrow(/MCP JSON/i);
+    expect(() =>
+      parseAndValidateNativeSpec(
+        JSON.stringify({ name: 'io.github.example/weather', packages: ['@example/weather-mcp'] })
+      )
+    ).toThrow(/MCP JSON/i);
+    expect(() => parseAndValidateNativeSpec(MCP_CLIENT_CONFIG, 'openapi-json')).toThrow(/openapi|wrong/i);
+    expect(() => parseAndValidateNativeSpec('mcpServers:\n  weather:\n    command: npx\n', 'mcp-json')).toThrow(
+      /MCP JSON|JSON object/i
+    );
   });
 });
 

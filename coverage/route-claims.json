@@ -204,10 +204,10 @@
       "paginationTests": [
         "tests/azure-clients.test.ts"
       ],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "apim-version-set",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-version-set",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -234,10 +234,10 @@
         "tests/apim-provider.test.ts"
       ],
       "paginationTests": [],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "apim-soap-wsdl",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-soap-wsdl",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -264,10 +264,10 @@
       ],
       "securityTests": [],
       "paginationTests": [],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "apim-graphql-sdl",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-graphql-sdl",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -301,22 +301,25 @@
       "implementationFiles": [
         "src/lib/providers/apim.ts"
       ],
-      "contractClass": "unsupported",
-      "nativeFormats": [],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "protobuf"
+      ],
       "requiredCapability": "API Management Service Reader",
       "positiveTests": [
-        "tests/apim-provider.test.ts"
+        "tests/apim-provider.test.ts",
+        "tests/azure-clients.test.ts"
       ],
       "negativeTests": [
         "tests/apim-provider.test.ts"
       ],
       "securityTests": [],
       "paginationTests": [],
-      "validationState": "unsupported",
+      "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": "APIM gRPC APIs have no documented .proto export route; use a repository artifact or API Center when available.",
-      "plannedLiveEvidenceCase": "apim-unsupported-grpc",
-      "localOnlyRationale": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null,
+      "localOnlyRationale": "APIM gRPC text/protobuf schema list/get export is unit-tested end-to-end; the live harness currently provisions gRPC APIs without a protobuf schema (covered by apim-unsupported-grpc). Do not invent live pass evidence until a disposable protobuf schema fixture exists."
     },
     {
       "id": "apim.odata",
@@ -379,14 +382,15 @@
     {
       "id": "custom-apis.inline-swagger",
       "provider": "custom-apis",
-      "route": "logic-apps-custom-connector-inline-swagger",
+      "route": "logic-apps-custom-connector-inline-swagger-or-wsdl",
       "implementationFiles": [
         "src/lib/providers/custom-apis.ts",
         "src/lib/azure/clients.ts"
       ],
       "contractClass": "authoritative",
       "nativeFormats": [
-        "openapi-json"
+        "openapi-json",
+        "wsdl"
       ],
       "requiredCapability": "Reader (Microsoft.Web/customApis read)",
       "positiveTests": [
@@ -435,10 +439,10 @@
       "paginationTests": [
         "tests/azure-clients.test.ts"
       ],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "logic-apps-reader-synthesis",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "logic-apps-reader-synthesis",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -466,10 +470,10 @@
       "paginationTests": [
         "tests/azure-clients.test.ts"
       ],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "template-specs-embedded-apim",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "template-specs-embedded-apim",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -497,10 +501,10 @@
       "paginationTests": [
         "tests/azure-clients.test.ts"
       ],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "event-grid-webhook-partial",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "event-grid-webhook-partial",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -587,10 +591,10 @@
       "paginationTests": [
         "tests/resource-graph.test.ts"
       ],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "apim-clean-repo-tag",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-clean-repo-tag",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -616,10 +620,10 @@
         "tests/estate.test.ts"
       ],
       "paginationTests": [],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "apim-clean-repo-fox-pair",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-clean-repo-fox-pair",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -644,10 +648,10 @@
         "tests/azure-bindings.test.ts"
       ],
       "paginationTests": [],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "apim-gateway-host-path",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-gateway-host-path",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -724,10 +728,10 @@
       ],
       "securityTests": [],
       "paginationTests": [],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "apim-gateway-host-path",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "apim-gateway-host-path",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -863,7 +867,8 @@
         "wadl",
         "xsd",
         "protobuf",
-        "graphql-sdl"
+        "graphql-sdl",
+        "mcp-json"
       ],
       "requiredCapability": "Microsoft.ApiCenter read + definitions/exportSpecification/action (Service Reader); data-plane inventory optional and unused",
       "positiveTests": [
@@ -905,7 +910,8 @@
         "wadl",
         "xsd",
         "protobuf",
-        "graphql-sdl"
+        "graphql-sdl",
+        "mcp-json"
       ],
       "requiredCapability": "none (local filesystem)",
       "positiveTests": [
@@ -948,10 +954,10 @@
         "tests/logic-apps-native-r4.test.ts"
       ],
       "paginationTests": [],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "logic-apps-list-swagger",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "logic-apps-list-swagger",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -978,10 +984,10 @@
         "tests/app-service-r4.test.ts"
       ],
       "paginationTests": [],
-      "validationState": "unit-only",
-      "liveEvidenceCase": null,
+      "validationState": "live",
+      "liveEvidenceCase": "app-service-apispecpath-runtime",
       "unsupportedReason": null,
-      "plannedLiveEvidenceCase": "app-service-apispecpath-runtime",
+      "plannedLiveEvidenceCase": null,
       "localOnlyRationale": null
     },
     {
@@ -1020,12 +1026,22 @@
       "route": "opt-in-explicit-https-target",
       "implementationFiles": [
         "src/lib/providers/runtime-declared-routes.ts",
-        "src/lib/fetch/spec-fetcher.ts"
+        "src/lib/fetch/spec-fetcher.ts",
+        "src/lib/spec/native-formats.ts",
+        "src/lib/spec/native-filenames.ts"
       ],
       "contractClass": "authoritative",
       "nativeFormats": [
         "openapi-json",
-        "openapi-yaml"
+        "openapi-yaml",
+        "asyncapi-json",
+        "asyncapi-yaml",
+        "wsdl",
+        "wadl",
+        "xsd",
+        "protobuf",
+        "graphql-sdl",
+        "mcp-json"
       ],
       "requiredCapability": "explicit named runtime target",
       "positiveTests": [

@@ -156,7 +156,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `export-summary-json` | JSON summary of attempted, exported, failed, and skipped candidates. |
 | `candidates-json` | Ranked ambiguous candidates as JSON when resolution is unresolved with at least two candidates; empty otherwise. |
 | `provider-type` | Provider that produced the resolved spec: apim, api-center, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, function-bindings, or runtime-declared. |
-| `spec-format` | Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, or graphql-sdl. |
+| `spec-format` | Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, graphql-sdl, or mcp-json. |
 | `contract-origin` | Compatibility output; always empty in v1. |
 | `contract-metadata-path` | Compatibility output; always empty in v1. |
 | `variant-count` | Compatibility output; always empty in v1. |
@@ -182,33 +182,33 @@ Provider and route support/validation labels are generated from [`coverage/route
 | `apim.http.explicit-api-id` | `apim` | authoritative | live | live:`apim-explicit-api-id` |
 | `apim.http.service-discovery` | `apim` | authoritative | live | live:`apim-discovery` |
 | `apim.http.workspace` | `apim` | authoritative | unit-only | local-only rationale |
-| `apim.revision.current-filter` | `apim` | authoritative | unit-only | planned:`apim-version-set` |
-| `apim.soap.wsdl-export` | `apim` | authoritative | unit-only | planned:`apim-soap-wsdl` |
-| `apim.graphql.sdl` | `apim` | authoritative | unit-only | planned:`apim-graphql-sdl` |
+| `apim.revision.current-filter` | `apim` | authoritative | live | live:`apim-version-set` |
+| `apim.soap.wsdl-export` | `apim` | authoritative | live | live:`apim-soap-wsdl` |
+| `apim.graphql.sdl` | `apim` | authoritative | live | live:`apim-graphql-sdl` |
 | `apim.websocket` | `apim` | unsupported | unsupported | planned:`apim-unsupported-websocket` |
-| `apim.grpc` | `apim` | unsupported | unsupported | planned:`apim-unsupported-grpc` |
+| `apim.grpc` | `apim` | authoritative | unit-only | local-only rationale |
 | `apim.odata` | `apim` | unsupported | unsupported | planned:`apim-unsupported-odata` |
 | `app-service.api-definition-url` | `app-service` | authoritative | live | live:`app-service-api-definition` |
 | `custom-apis.inline-swagger` | `custom-apis` | authoritative | unit-only | planned:`custom-apis-inline-swagger` |
-| `logic-apps.request-trigger-synthesis` | `logic-apps` | partial | unit-only | planned:`logic-apps-reader-synthesis` |
-| `template-specs.embedded-apim` | `template-specs` | partial | unit-only | planned:`template-specs-embedded-apim` |
-| `event-grid.webhook-synthesis` | `event-grid` | partial | unit-only | planned:`event-grid-webhook-partial` |
+| `logic-apps.request-trigger-synthesis` | `logic-apps` | partial | live | live:`logic-apps-reader-synthesis` |
+| `template-specs.embedded-apim` | `template-specs` | partial | live | live:`template-specs-embedded-apim` |
+| `event-grid.webhook-synthesis` | `event-grid` | partial | live | live:`event-grid-webhook-partial` |
 | `service-bus.topic-publish-synthesis` | `service-bus` | partial | unit-only | planned:`service-bus-topic-partial` |
 | `function-bindings.trigger-synthesis` | `function-bindings` | partial | unit-only | local-only rationale |
-| `association.postman-repo-tag` | `association` | association-only | unit-only | planned:`apim-clean-repo-tag` |
-| `association.fox-github-org-repo` | `association` | association-only | unit-only | planned:`apim-clean-repo-fox-pair` |
-| `association.gateway-hostname-hint` | `association` | association-only | unit-only | planned:`apim-gateway-host-path` |
+| `association.postman-repo-tag` | `association` | association-only | live | live:`apim-clean-repo-tag` |
+| `association.fox-github-org-repo` | `association` | association-only | live | live:`apim-clean-repo-fox-pair` |
+| `association.gateway-hostname-hint` | `association` | association-only | live | live:`apim-gateway-host-path` |
 | `association.gateway-api-assignment` | `association` | association-only | unit-only | local-only rationale |
 | `association.exact-binding` | `association` | association-only | unit-only | local-only rationale |
-| `association.clean-repo-host-path` | `association` | association-only | unit-only | planned:`apim-gateway-host-path` |
+| `association.clean-repo-host-path` | `association` | association-only | live | live:`apim-gateway-host-path` |
 | `association.app-service-container-apps-source-control` | `association` | association-only | unit-only | local-only rationale |
 | `mode.discover-many` | `runtime` | authoritative | live | live:`discover-many` |
 | `mode.discover-estate` | `runtime` | association-only | unit-only | local-only rationale |
 | `resolver.ambiguity` | `runtime` | association-only | live | live:`ambiguity` |
 | `api-center.definition-export` | `api-center` | authoritative | unit-only | planned:`api-center-openapi-export` |
 | `repo.spec.native-formats-r3` | `repo` | authoritative | local-only | planned:`local-r3-format-parser-matrix` |
-| `logic-apps.native-list-swagger-r4` | `logic-apps` | reconstructed | unit-only | planned:`logic-apps-list-swagger` |
-| `app-service.documented-scm-spec-r4` | `app-service` | authoritative | unit-only | planned:`app-service-apispecpath-runtime` |
+| `logic-apps.native-list-swagger-r4` | `logic-apps` | reconstructed | live | live:`logic-apps-list-swagger` |
+| `app-service.documented-scm-spec-r4` | `app-service` | authoritative | live | live:`app-service-apispecpath-runtime` |
 | `function-bindings.openapi-extension-r4` | `function-bindings` | authoritative | unit-only | planned:`function-bindings-openapi-extension` |
 | `runtime-declared.explicit-https-r4` | `runtime-declared` | authoritative | unit-only | local-only rationale |
 | `platform.sovereign-cloud` | `platform` | authoritative | unit-only | local-only rationale |

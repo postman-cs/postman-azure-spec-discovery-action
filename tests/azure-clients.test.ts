@@ -307,6 +307,31 @@ describe('azure sdk client wrappers', () => {
     expect(sdk.apiSchema.get).toHaveBeenCalledWith('rg', 'svc', 'graphql-api', 'graphql');
   });
 
+  it('AZ-CLIENT-005d: getProtobufSchema requires text/protobuf and accepts document.value envelope', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as {
+      client: {
+        apiSchema: { listByApi: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
+      };
+    }).client;
+    sdk.apiSchema.listByApi.mockReturnValue((async function* () {
+      yield { name: 'ignored', contentType: 'application/json' };
+      yield { name: 'grpc', contentType: 'text/protobuf' };
+    })());
+    sdk.apiSchema.get.mockResolvedValue({
+      contentType: 'text/protobuf',
+      document: { value: 'syntax = "proto3";\nservice Greeter { rpc Ping (Empty) returns (Empty); }\n' }
+    });
+
+    await expect(client.getProtobufSchema('rg', 'svc', 'grpc-api')).resolves.toContain('service Greeter');
+    expect(sdk.apiSchema.get).toHaveBeenCalledWith('rg', 'svc', 'grpc-api', 'grpc');
+
+    sdk.apiSchema.listByApi.mockReturnValue((async function* () {
+      yield { name: 'grpc', contentType: 'application/octet-stream' };
+    })());
+    await expect(client.getProtobufSchema('rg', 'svc', 'grpc-api')).rejects.toThrow(/text\/protobuf/i);
+  });
+
   it('AZ-APIM-GW-001: listServices + listApis enumerate gateway assignments once per service', async () => {
     const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
     const sdk = (client as unknown as {
@@ -1040,6 +1065,9 @@ describe('identity contract (DefaultAzureCredential / token failure modes)', () 
       listCustomApis: vi.fn(async () => []),
       getSwagger: vi.fn(async () => {
         throw new Error('unused');
+      }),
+      getWsdl: vi.fn(async () => {
+        throw new Error('unused');
       })
     };
     const provider = new CustomApisProvider(deniedClient);
@@ -1056,6 +1084,13 @@ describe('identity contract (DefaultAzureCredential / token failure modes)', () 
           throw new Error('AuthorizationFailed: export denied for selected API');
         }),
         getGraphqlSchema: vi.fn(async () => ''),
+        listApiSchemas: vi.fn(async () => []),
+        getApiSchemaDocument: vi.fn(async () => {
+          throw new Error('schema document unused');
+        }),
+        getProtobufSchema: vi.fn(async () => {
+          throw new Error('protobuf unused');
+        }),
         probeApimReadAccess: vi.fn(async () => undefined)
       },
       { subscriptionId: 'sub-1' }
@@ -1126,6 +1161,7 @@ describe('CustomApisSdkClient', () => {
         name: 'pay',
         resourceGroup: 'rg-pay',
         hasSwagger: true,
+        hasWsdl: false,
         backendServiceUrl: 'https://api.contoso.com/pay',
         originalSwaggerUrl: 'https://example.com/orig.json'
       });
@@ -1134,6 +1170,40 @@ describe('CustomApisSdkClient', () => {
       const url = String(fetchSpy.mock.calls[0]?.[0]);
       expect(url).toContain('/subscriptions/sub-1/providers/Microsoft.Web/customApis');
       expect(url).toContain('api-version=2016-06-01');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('AZ-CAPI-010b: listCustomApis projects wsdlDefinition.content presence without secrets', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const armEntry = {
+      id: '/subscriptions/sub-1/resourceGroups/rg-pay/providers/Microsoft.Web/customApis/pay-soap',
+      name: 'pay-soap',
+      tags: {},
+      properties: {
+        wsdlDefinition: {
+          content: '<definitions xmlns="http://schemas.xmlsoap.org/wsdl/" name="Pay"/>',
+          importMethod: 'SoapPassThrough',
+          url: 'https://example.com/secret-wsdl?sig=secret'
+        },
+        connectionParameters: { token: { oAuthSettings: { clientSecret: 'SUPER-SECRET-VALUE' } } }
+      }
+    };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ value: [armEntry] }), { status: 200 })
+    );
+    try {
+      const summaries = await client.listCustomApis();
+      expect(summaries[0]).toMatchObject({
+        hasWsdl: true,
+        hasSwagger: false,
+        wsdlImportMethod: 'SoapPassThrough'
+      });
+      const serialized = JSON.stringify(summaries[0]);
+      expect(serialized).not.toContain('SUPER-SECRET-VALUE');
+      expect(serialized).not.toContain('sig=secret');
+      expect(serialized).not.toContain('<definitions');
     } finally {
       fetchSpy.mockRestore();
     }
@@ -1175,6 +1245,37 @@ describe('CustomApisSdkClient', () => {
     );
     try {
       await expect(client.getSwagger('rg-pay', 'pay')).rejects.toThrow('no inline swagger');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('AZ-CAPI-012b: getWsdl returns only wsdlDefinition.content (+ importMethod), never secrets', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const wsdl = '<definitions xmlns="http://schemas.xmlsoap.org/wsdl/" name="Pay"><portType name="P"/></definitions>';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: '/subscriptions/sub-1/resourceGroups/rg-pay/providers/Microsoft.Web/customApis/pay',
+          name: 'pay',
+          properties: {
+            wsdlDefinition: {
+              content: wsdl,
+              importMethod: 'SoapToRest',
+              url: 'https://example.com/wsdl?sig=secret'
+            },
+            connectionParameters: { token: { oAuthSettings: { clientSecret: 'SUPER-SECRET-VALUE' } } }
+          }
+        }),
+        { status: 200 }
+      )
+    );
+    try {
+      const result = await client.getWsdl('rg-pay', 'pay');
+      expect(result.content).toBe(wsdl);
+      expect(result.importMethod).toBe('SoapToRest');
+      expect(JSON.stringify(result)).not.toContain('SUPER-SECRET-VALUE');
+      expect(JSON.stringify(result)).not.toContain('sig=secret');
     } finally {
       fetchSpy.mockRestore();
     }
