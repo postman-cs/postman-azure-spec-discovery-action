@@ -590,18 +590,22 @@
       "provider": "association",
       "route": "apim-gateway-hostname-service-hint",
       "implementationFiles": [
-        "src/lib/repo/signals.ts"
+        "src/lib/repo/signals.ts",
+        "src/lib/resolve/narrowing-pipeline.ts",
+        "src/lib/providers/apim.ts"
       ],
       "contractClass": "association-only",
       "nativeFormats": [],
-      "requiredCapability": "none (local filesystem)",
+      "requiredCapability": "none (local filesystem) for URL evidence; API Management Service Reader for hostname inventory",
       "positiveTests": [
-        "tests/source-selector.test.ts"
+        "tests/gateway-resolution.test.ts"
       ],
       "negativeTests": [
-        "tests/source-selector.test.ts"
+        "tests/gateway-resolution.test.ts"
       ],
-      "securityTests": [],
+      "securityTests": [
+        "tests/azure-bindings.test.ts"
+      ],
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
@@ -611,17 +615,75 @@
       "id": "association.gateway-api-assignment",
       "provider": "association",
       "route": "self-hosted-or-workspace-gateway-api-assignment",
-      "implementationFiles": [],
-      "contractClass": "unsupported",
+      "implementationFiles": [
+        "src/lib/azure/clients.ts",
+        "src/lib/providers/apim.ts",
+        "src/lib/resolve/narrowing-pipeline.ts"
+      ],
+      "contractClass": "association-only",
       "nativeFormats": [],
       "requiredCapability": "API Management Service Reader",
-      "positiveTests": [],
-      "negativeTests": [],
+      "positiveTests": [
+        "tests/gateway-resolution.test.ts"
+      ],
+      "negativeTests": [
+        "tests/gateway-resolution.test.ts"
+      ],
       "securityTests": [],
       "paginationTests": [],
-      "validationState": "unsupported",
+      "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": "Self-hosted and workspace gateway API assignments are not enumerated; hostname hints alone do not resolve a multi-API gateway to one API path."
+      "unsupportedReason": null
+    },
+    {
+      "id": "association.exact-binding",
+      "provider": "association",
+      "route": "postman-resources-yaml-azure-binding",
+      "implementationFiles": [
+        "src/lib/repo/azure-bindings.ts",
+        "src/runtime.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "none (local filesystem)",
+      "positiveTests": [
+        "tests/azure-bindings.test.ts",
+        "tests/gateway-resolution.test.ts"
+      ],
+      "negativeTests": [
+        "tests/azure-bindings.test.ts"
+      ],
+      "securityTests": [
+        "tests/azure-bindings.test.ts"
+      ],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
+    },
+    {
+      "id": "association.clean-repo-host-path",
+      "provider": "association",
+      "route": "exact-gateway-host-and-api-path-selection",
+      "implementationFiles": [
+        "src/lib/repo/signals.ts",
+        "src/lib/resolve/narrowing-pipeline.ts",
+        "src/lib/providers/apim.ts"
+      ],
+      "contractClass": "association-only",
+      "nativeFormats": [],
+      "requiredCapability": "API Management Service Reader",
+      "positiveTests": [
+        "tests/gateway-resolution.test.ts"
+      ],
+      "negativeTests": [
+        "tests/gateway-resolution.test.ts"
+      ],
+      "securityTests": [],
+      "paginationTests": [],
+      "validationState": "unit-only",
+      "liveEvidenceCase": null,
+      "unsupportedReason": null
     },
     {
       "id": "mode.discover-many",

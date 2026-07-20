@@ -67,9 +67,11 @@ export type ContractClass =
 export type ProviderProbeStatus = 'available' | 'skipped:iam' | 'skipped:error';
 
 export type NarrowingTier =
+  | 'gateway-host-path'
+  | 'tag-prefilter'
+  | 'gateway-assignment'
   | 'iac-fingerprint'
   | 'rg-correlation'
-  | 'tag-prefilter'
   | 'naming-heuristic';
 
 export interface ProviderProbeResult {
@@ -160,7 +162,27 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       default: ''
     },
     'api-id': {
-      description: 'Optional full APIM API ARM resource ID for this service. Use this to bypass broader subscription discovery.',
+      description: 'Optional full APIM API ARM resource ID for this service. Use this to bypass broader subscription discovery. Supports historical revisions via ;rev=N.',
+      required: false,
+      default: ''
+    },
+    environment: {
+      description: 'Optional deployment environment selector used to disambiguate APIs that share a repository association across environments.',
+      required: false,
+      default: ''
+    },
+    'gateway-id': {
+      description: 'Optional self-hosted or workspace gateway id used to narrow APIM API candidates. The value "managed" is rejected.',
+      required: false,
+      default: ''
+    },
+    'api-version': {
+      description: 'Optional APIM API version selector used when multiple versions share the same path or repository association.',
+      required: false,
+      default: ''
+    },
+    'api-revision': {
+      description: 'Optional APIM API revision selector used when multiple revisions remain after other evidence.',
       required: false,
       default: ''
     },
@@ -246,7 +268,7 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
       description: 'JSON array of evidence strings describing how the derived OpenAPI document was produced.'
     },
     'narrowing-strategy': {
-      description: 'Narrowing tier that produced the candidate ordering: iac-fingerprint, rg-correlation, tag-prefilter, naming-heuristic, or none.'
+      description: 'Narrowing tier that produced the candidate ordering: gateway-host-path, tag-prefilter, gateway-assignment, iac-fingerprint, rg-correlation, naming-heuristic, or none.'
     },
     'repos-json': {
       description: 'discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the subscription; empty otherwise.'

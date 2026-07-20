@@ -43,6 +43,9 @@ function clientForApiType(apiType: string): AzureApimClient {
         resourceGroup: 'rg'
       }
     ]),
+    getApi: vi.fn(async () => {
+      throw new Error('getApi must not be called in this test');
+    }),
     exportApi: vi.fn(async () => {
       throw new Error('export must never be attempted for unsupported types');
     }),
