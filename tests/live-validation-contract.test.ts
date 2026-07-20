@@ -932,6 +932,7 @@ describe('R8 harness matrix contract', () => {
           AZURE_RESOURCE_GROUP: 'CSE-Azure-Team',
           AZURE_LIVE_COMMIT_PREFIX: 'f3c7775',
           AZURE_LIVE_PERSISTENT_SUFFIX: 'c5e1feed',
+          AZURE_LIVE_CASE_FILTER: 'apim-explicit-api-id, iac-single',
           AZURE_LIVE_PROVISION_FLAGS: '!apim-multi,!apim-soap,!apim-graphql,!apim-websocket,!apim-grpc,!apim-odata,!api-center,!logic-app,!custom-connector,!template-spec,!event-grid,!function-app'
         },
         deps: {
@@ -939,7 +940,10 @@ describe('R8 harness matrix contract', () => {
           log: () => undefined,
           sleep: async () => undefined,
           fetch: (async () => ({ status: 200 })) as unknown as typeof fetch,
-          runCases: async () => []
+          runCases: async ({ caseFilter }: { caseFilter: string[] }) => {
+            expect(caseFilter).toEqual(['apim-explicit-api-id', 'iac-single']);
+            return [];
+          }
         }
       });
     } finally {
