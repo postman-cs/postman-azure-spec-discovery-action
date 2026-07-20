@@ -2,10 +2,11 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadAzureResolverBinding } from '../src/lib/repo/azure-bindings.js';
 import { execute, resolveInputs, type AzureDependencies, type ReporterLike } from '../src/runtime.js';
+import type { SpecCandidate, SpecProvider } from '../src/lib/providers/types.js';
 
 describe('azure resolver bindings (R1)', () => {
   let root: string;
@@ -140,5 +141,147 @@ describe('azure resolver bindings (R1)', () => {
     };
     const result = await execute(resolveInputs({ INPUT_REPO_ROOT: repo }), dependencies);
     expect(result.resolution).toMatchObject({ status: 'resolved', sourceType: 'repo-spec', specPath: 'contracts/payments-contract.yaml' });
+  });
+
+  it('R2-BIND-001: conflicting api-center-definition-id input and binding refuses to choose', async () => {
+    const repo = await makeRoot();
+    const defA =
+      '/subscriptions/sub/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac/workspaces/default/apis/a/versions/v1/definitions/openapi';
+    const defB =
+      '/subscriptions/sub/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac/workspaces/default/apis/a/versions/v2/definitions/openapi';
+    await writeFile(
+      path.join(repo, '.postman/resources.yaml'),
+      `azure:\n  apiCenterDefinitionId: ${defA}\n`,
+      'utf8'
+    );
+    const reporter: ReporterLike = { group: async (_name, fn) => fn(), info: () => undefined, warning: () => undefined };
+    const dependencies: AzureDependencies = {
+      core: reporter,
+      subscriptions: {
+        get: async (subscriptionId) => ({ subscriptionId, state: 'Enabled' }),
+        list: async () => [{ subscriptionId: 'sub', state: 'Enabled' }]
+      },
+      createApimClient: () => {
+        throw new Error('unused');
+      },
+      createAppServiceClient: () => {
+        throw new Error('unused');
+      },
+      writeSpecFile: async () => undefined,
+      providers: []
+    };
+    await expect(
+      execute(
+        resolveInputs({
+          INPUT_REPO_ROOT: repo,
+          INPUT_SUBSCRIPTION_ID: 'sub',
+          INPUT_API_CENTER_DEFINITION_ID: defB
+        }),
+        dependencies
+      )
+    ).rejects.toThrow(/Conflicting api-center-definition-id/);
+  });
+
+  it('R2-BIND-002: exact apiCenterDefinitionId binding selects and exports the API Center candidate', async () => {
+    const repo = await makeRoot();
+    const defId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac/workspaces/default/apis/echo/versions/v1/definitions/openapi';
+    const otherId =
+      '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac/workspaces/default/apis/echo/versions/v2/definitions/openapi';
+    await writeFile(
+      path.join(repo, '.postman/resources.yaml'),
+      `azure:\n  apiCenterDefinitionId: ${defId}\n`,
+      'utf8'
+    );
+    const openapi = `${JSON.stringify({
+      openapi: '3.0.3',
+      info: { title: 'Echo', version: '1.0.0' },
+      paths: { '/echo': { get: { responses: { '200': { description: 'ok' } } } } }
+    })}\n`;
+    const candidates: SpecCandidate[] = [
+      {
+        id: defId,
+        name: 'echo-v1',
+        providerType: 'api-center',
+        apiId: defId,
+        resourceGroup: 'rg',
+        tags: {},
+        supported: true,
+        evidence: ['definition v1'],
+        meta: {
+          serviceName: 'ac',
+          resourceGroup: 'rg',
+          workspaceName: 'default',
+          apiName: 'echo',
+          versionName: 'v1',
+          definitionName: 'openapi'
+        }
+      },
+      {
+        id: otherId,
+        name: 'echo-v2',
+        providerType: 'api-center',
+        apiId: otherId,
+        resourceGroup: 'rg',
+        tags: {},
+        supported: true,
+        evidence: ['definition v2'],
+        meta: {
+          serviceName: 'ac',
+          resourceGroup: 'rg',
+          workspaceName: 'default',
+          apiName: 'echo',
+          versionName: 'v2',
+          definitionName: 'openapi'
+        }
+      }
+    ];
+    const exportSpec = vi.fn(async (candidate: SpecCandidate) => ({
+      content: openapi,
+      format: 'openapi-json' as const,
+      filename: 'index.json',
+      contractClass: 'authoritative' as const,
+      evidence: [`exported ${candidate.id}`]
+    }));
+    const provider: SpecProvider = {
+      type: 'api-center',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates: vi.fn(async () => candidates),
+      exportSpec
+    };
+    const reporter: ReporterLike = { group: async (_name, fn) => fn(), info: () => undefined, warning: () => undefined };
+    const dependencies: AzureDependencies = {
+      core: reporter,
+      subscriptions: {
+        get: async (subscriptionId) => ({ subscriptionId, state: 'Enabled' }),
+        list: async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }]
+      },
+      createApimClient: () => {
+        throw new Error('unused');
+      },
+      createAppServiceClient: () => {
+        throw new Error('unused');
+      },
+      writeSpecFile: async (outputPath, content) => {
+        const { mkdir: mk, writeFile: wf } = await import('node:fs/promises');
+        await mk(path.dirname(outputPath), { recursive: true });
+        await wf(outputPath, content, 'utf8');
+      },
+      providers: [provider]
+    };
+    const result = await execute(
+      resolveInputs({ INPUT_REPO_ROOT: repo, INPUT_SUBSCRIPTION_ID: 'sub-1' }),
+      dependencies
+    );
+    expect(result.resolution).toMatchObject({
+      status: 'resolved',
+      sourceType: 'api-center-export',
+      providerType: 'api-center',
+      apiId: defId,
+      contractClass: 'authoritative',
+      confidence: 100
+    });
+    expect(exportSpec).toHaveBeenCalledTimes(1);
+    expect(exportSpec.mock.calls[0]?.[0]?.id).toBe(defId);
   });
 });

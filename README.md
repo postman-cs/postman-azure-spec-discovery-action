@@ -107,6 +107,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `gateway-id` | Optional self-hosted or workspace gateway id used to narrow APIM API candidates. The value "managed" is rejected. | no | n/a |
 | `api-version` | Optional APIM API version selector used when multiple versions share the same path or repository association. | no | n/a |
 | `api-revision` | Optional APIM API revision selector used when multiple revisions remain after other evidence. | no | n/a |
+| `api-center-definition-id` | Optional full Azure API Center definition ARM resource ID. Exact match only; conflicts with a different .postman apiCenterDefinitionId binding. | no | n/a |
 | `output-dir` | Directory under the repository root where generated specs are written. | no | `discovered-specs` |
 | `postman-api-key` | Optional service-account PMAK used to mint or re-mint a postman-access-token for telemetry enrichment (account_type). Not used for any Azure or Postman asset operation. | no | n/a |
 | `postman-access-token` | Optional Postman service-account access token, used only to enrich anonymous telemetry with the session account_type. When omitted, postman-api-key alone can mint one for the same purpose. Not used for any Azure or Postman asset operation. | no | n/a |
@@ -119,17 +120,17 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | --- | --- |
 | `resolution-json` | JSON resolution result describing status, source type, confidence, and evidence. |
 | `resolution-status` | Resolution status: resolved or unresolved. |
-| `source-type` | Resolved source type: repo-spec, apim-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, discover-many, or discover-estate. |
+| `source-type` | Resolved source type: repo-spec, apim-export, api-center-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, manual-review, discover-many, or discover-estate. |
 | `mapping-confidence` | Numeric confidence score for the selected service candidate. |
 | `spec-path` | Path to the resolved or generated specification when available. |
-| `api-id` | Full APIM API ARM resource ID for APIM resolutions; empty for App Service or IaC-local resolutions. |
+| `api-id` | Full APIM API ARM resource ID or API Center definition ARM resource ID when those providers resolve; empty for App Service or IaC-local resolutions. |
 | `service-name` | Resolved service name. |
 | `services-json` | discover-many output: JSON array of exported services. |
 | `service-count` | discover-many output: number of exported services. |
 | `export-summary-json` | JSON summary of attempted, exported, failed, and skipped candidates. |
 | `candidates-json` | Ranked ambiguous candidates as JSON when resolution is unresolved with at least two candidates; empty otherwise. |
-| `provider-type` | Provider that produced the resolved spec: apim, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings. |
-| `spec-format` | Format of the resolved spec: openapi-yaml, openapi-json, wsdl, or graphql-sdl. |
+| `provider-type` | Provider that produced the resolved spec: apim, api-center, app-service, iac-local, custom-apis, logic-apps, template-specs, event-grid, service-bus, or function-bindings. |
+| `spec-format` | Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, or graphql-sdl. |
 | `contract-origin` | Compatibility output; always empty in v1. |
 | `contract-metadata-path` | Compatibility output; always empty in v1. |
 | `variant-count` | Compatibility output; always empty in v1. |
@@ -157,7 +158,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `function-bindings` | Azure Functions trigger bindings (`sites/functions` config.bindings) | OpenAPI 3.0 JSON (partial) |
 | `iac-local` | OpenAPI embedded in repo ARM/Bicep templates or referenced by `azure.yaml` | OpenAPI JSON or YAML |
 
-APIM SOAP and GraphQL APIs are exportable; WebSocket, gRPC, and OData remain visible-unsupported candidates routed to manual review. Service- and workspace-scoped APIM APIs are both enumerated. Custom connectors without an inline swagger document stay visible as manual-review candidates. Azure API Center, Container Apps, and management-group enumeration are out of scope for now.
+APIM SOAP and GraphQL APIs are exportable; WebSocket, gRPC, and OData remain visible-unsupported candidates routed to manual review. Service- and workspace-scoped APIM APIs are both enumerated. Azure API Center definitions are discovered and exported as authoritative native contracts; exact definition ARM IDs export directly without broad inventory. Custom connectors without an inline swagger document stay visible as manual-review candidates. Container Apps and management-group enumeration are out of scope for now.
 
 ## How it works
 

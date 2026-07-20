@@ -48,6 +48,7 @@ const LOCKED_INPUT_ORDER = [
   'gateway-id',
   'api-version',
   'api-revision',
+  'api-center-definition-id',
   'output-dir',
   'postman-api-key',
   'postman-access-token'

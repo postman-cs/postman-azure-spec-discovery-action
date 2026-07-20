@@ -22,6 +22,7 @@ import type {
   AzureServiceBusClient,
   AzureFunctionsClient
 } from './lib/azure/clients.js';
+import type { AzureApiCenterClient } from './lib/azure/api-center-client.js';
 import { sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
 import { findExistingRepoSpecTyped } from './lib/repo/specs.js';
@@ -42,6 +43,7 @@ import { enumerateEstate, type EstateRepo } from './lib/estate/enumerate.js';
 import { deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
 import { parseAndValidateOpenApi } from './lib/spec/validate-openapi.js';
 import { ApimProvider, parseApimApiArmId } from './lib/providers/apim.js';
+import { ApiCenterProvider } from './lib/providers/api-center.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
 import { CustomApisProvider } from './lib/providers/custom-apis.js';
 import { LogicAppsProvider } from './lib/providers/logic-apps.js';
@@ -68,6 +70,7 @@ export interface ResolvedInputs {
   subscriptionId?: string;
   resourceGroup?: string;
   apiId?: string;
+  apiCenterDefinitionId?: string;
   environment?: string;
   gatewayId?: string;
   apiVersion?: string;
@@ -94,6 +97,7 @@ export interface AzureDependencies {
   subscriptions: AzureSubscriptionsClient;
   createApimClient: (subscriptionId: string) => AzureApimClient;
   createAppServiceClient: (subscriptionId: string) => AzureAppServiceClient;
+  createApiCenterClient?: (subscriptionId: string) => AzureApiCenterClient;
   createCustomApisClient?: (subscriptionId: string) => AzureCustomApisClient;
   createLogicWorkflowsClient?: (subscriptionId: string) => AzureLogicWorkflowsClient;
   createTemplateSpecsClient?: (subscriptionId: string) => AzureTemplateSpecsClient;
@@ -193,6 +197,7 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
   const subscriptionId = getInput('subscription-id', env);
   const resourceGroup = getInput('resource-group', env);
   const apiId = getInput('api-id', env);
+  const apiCenterDefinitionId = getInput('api-center-definition-id', env);
   const repoRoot =
     getInput('repo-root', env) ??
     normalizeInputValue(env.GITHUB_WORKSPACE) ??
@@ -244,6 +249,7 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
     subscriptionId,
     resourceGroup,
     apiId,
+    apiCenterDefinitionId,
     environment,
     gatewayId,
     apiVersion,
@@ -272,6 +278,7 @@ export function readActionInputs(inputReader: InputReaderLike): ResolvedInputs {
     INPUT_SUBSCRIPTION_ID: normalizeInputValue(inputReader.getInput('subscription-id')),
     INPUT_RESOURCE_GROUP: normalizeInputValue(inputReader.getInput('resource-group')),
     INPUT_API_ID: normalizeInputValue(inputReader.getInput('api-id')),
+    INPUT_API_CENTER_DEFINITION_ID: normalizeInputValue(inputReader.getInput('api-center-definition-id')),
     INPUT_ENVIRONMENT: normalizeInputValue(inputReader.getInput('environment')),
     INPUT_GATEWAY_ID: normalizeInputValue(inputReader.getInput('gateway-id')),
     INPUT_API_VERSION: normalizeInputValue(inputReader.getInput('api-version')),
@@ -314,6 +321,7 @@ function mergeBindingSelectors(
   binding: AzureResolverBinding | undefined
 ): {
   apiId?: string;
+  apiCenterDefinitionId?: string;
   environment?: string;
   gatewayId?: string;
   apiVersion?: string;
@@ -323,6 +331,7 @@ function mergeBindingSelectors(
   if (!binding) {
     return {
       apiId: inputs.apiId,
+      apiCenterDefinitionId: inputs.apiCenterDefinitionId,
       environment: inputs.environment,
       gatewayId: inputs.gatewayId,
       apiVersion: inputs.apiVersion,
@@ -333,11 +342,21 @@ function mergeBindingSelectors(
   if (inputs.apiId && binding.apimApiId && inputs.apiId !== binding.apimApiId) {
     throw new Error('Conflicting api-id input and .postman Azure resolver binding; refusing to choose');
   }
+  if (
+    inputs.apiCenterDefinitionId &&
+    binding.apiCenterDefinitionId &&
+    inputs.apiCenterDefinitionId !== binding.apiCenterDefinitionId
+  ) {
+    throw new Error(
+      'Conflicting api-center-definition-id input and .postman Azure resolver binding; refusing to choose'
+    );
+  }
   if (inputs.gatewayId && binding.gatewayId && inputs.gatewayId !== binding.gatewayId) {
     throw new Error('Conflicting gateway-id input and .postman Azure resolver binding; refusing to choose');
   }
   return {
     apiId: inputs.apiId ?? binding.apimApiId,
+    apiCenterDefinitionId: inputs.apiCenterDefinitionId ?? binding.apiCenterDefinitionId,
     environment: inputs.environment ?? binding.environment,
     gatewayId: inputs.gatewayId ?? binding.gatewayId,
     apiVersion: inputs.apiVersion ?? binding.apiVersion,
@@ -564,6 +583,14 @@ function buildProviders(inputs: ResolvedInputs, subscriptionId: string, dependen
       subscriptionId,
       resourceGroup: inputs.resourceGroup
     }),
+    ...(dependencies.createApiCenterClient
+      ? [
+          new ApiCenterProvider(dependencies.createApiCenterClient(subscriptionId), {
+            subscriptionId,
+            resourceGroup: inputs.resourceGroup
+          })
+        ]
+      : []),
     new AppServiceProvider(dependencies.createAppServiceClient(subscriptionId), {
       subscriptionId,
       resourceGroup: inputs.resourceGroup,
@@ -781,6 +808,108 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     repoSlug: inputs.repoContext.repoSlug
   });
 
+  if (selectors.apiId && selectors.apiCenterDefinitionId) {
+    throw new Error(
+      'Conflicting api-id and api-center-definition-id selectors; refuse to choose between APIM and API Center exact sources'
+    );
+  }
+
+  // 3a0. Exact API Center definition ID / binding wins over cloud ranking.
+  if (selectors.apiCenterDefinitionId) {
+    const requestedDefinitionId = selectors.apiCenterDefinitionId;
+    const apiCenter = availableProviders.find(
+      (provider): provider is ApiCenterProvider => provider instanceof ApiCenterProvider
+    );
+    // A complete definition ARM id supplies every export coordinate.  Resolve it
+    // directly rather than inventorying all services/versions and risking a
+    // first/latest selection among otherwise ambiguous definitions.
+    // Test/injected providers only implement the public SpecProvider seam, so
+    // retain exact-id filtering there. Production ApiCenterProvider never needs
+    // broad inventory for a complete definition ARM id.
+    const injectedApiCenter = !apiCenter
+      ? availableProviders.find((provider) => provider.type === 'api-center')
+      : undefined;
+    const target = apiCenter
+      ? apiCenter.resolveExplicitDefinition(requestedDefinitionId)
+      : (await collectCandidates(injectedApiCenter ? [injectedApiCenter] : [], core)).find(
+          (candidate) => candidate.id === requestedDefinitionId || candidate.apiId === requestedDefinitionId
+        );
+    if (!target) {
+      const resolution: ResolutionResult = {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName: inputs.expectedServiceName ?? 'unknown-service',
+        confidence: 0,
+        providerProbes: probes,
+        evidence: [
+          ...selectors.bindingEvidence,
+          'Requested api-center-definition-id is invalid, outside the selected scope, or API Center is unavailable'
+        ]
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+    const provider = apiCenter ?? injectedApiCenter;
+    if (!provider) {
+      const resolution: ResolutionResult = {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName: resolveServiceName(target, inputs.serviceMapping),
+        confidence: 0,
+        providerProbes: probes,
+        evidence: [
+          ...selectors.bindingEvidence,
+          'API Center provider is unavailable; cannot export the requested definition'
+        ]
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+    const exportResult = await provider.exportSpec(target);
+    const serviceName = resolveServiceName(target, inputs.serviceMapping);
+    const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+    const selectionEvidence =
+      selectors.bindingEvidence.length > 0
+        ? selectors.bindingEvidence
+        : ['Caller-selected API Center definition ID'];
+    const resolution: ResolutionResult = {
+      status: 'resolved',
+      sourceType: 'api-center-export',
+      serviceName,
+      confidence: 100,
+      specPath: written.specPath,
+      ...(target.apiId ? { apiId: target.apiId } : {}),
+      providerType: 'api-center',
+      specFormat: written.specFormat,
+      ...(exportResult.contractClass ? { contractClass: exportResult.contractClass } : {}),
+      ...(written.derived
+        ? {
+            derivedOpenApiPath: written.derived.path,
+            derivedOpenApiVersion: written.derived.version,
+            derivedOpenApiCompleteness: written.derived.completeness,
+            derivedOpenApiFormat: written.derived.format,
+            derivedOpenApiEvidence: written.derived.evidence
+          }
+        : {}),
+      providerProbes: probes,
+      evidence: [...selectionEvidence, ...target.evidence, ...exportResult.evidence]
+    };
+    return {
+      mode: inputs.mode,
+      discovered: [],
+      resolution,
+      outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+    };
+  }
+
   const enumerated = applyApiFilter(
     enrichCandidatesFromGraph(await collectCandidates(availableProviders, core), graphRows),
     inputs.apiFilter
@@ -897,6 +1026,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           ...(target.apiId ? { apiId: target.apiId } : {}),
           providerType: target.providerType,
           specFormat: written.specFormat,
+          ...(exportResult.contractClass ? { contractClass: exportResult.contractClass } : {}),
           ...(written.derived
             ? {
                 derivedOpenApiPath: written.derived.path,

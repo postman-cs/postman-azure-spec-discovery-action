@@ -4,6 +4,7 @@
   "description": "Machine-readable coverage claim manifest for Azure spec discovery. Source of truth for every currently advertised route and every planned explicit unsupported route. validationState=live requires a matching passing case in validation/evidence/live-azure-surfaces.json; unit tests alone never promote a route to live.",
   "advertisedProviders": [
     "apim",
+    "api-center",
     "app-service",
     "custom-apis",
     "logic-apps",
@@ -768,20 +769,44 @@
       "unsupportedReason": null
     },
     {
-      "id": "platform.api-center",
-      "provider": "platform",
+      "id": "api-center.definition-export",
+      "provider": "api-center",
       "route": "api-center-definition-inventory-export",
-      "implementationFiles": [],
-      "contractClass": "unsupported",
-      "nativeFormats": [],
-      "requiredCapability": "Azure API Center Reader (when implemented)",
-      "positiveTests": [],
-      "negativeTests": [],
-      "securityTests": [],
-      "paginationTests": [],
-      "validationState": "unsupported",
+      "implementationFiles": [
+        "src/lib/azure/api-center-client.ts",
+        "src/lib/providers/api-center.ts",
+        "src/runtime.ts"
+      ],
+      "contractClass": "authoritative",
+      "nativeFormats": [
+        "openapi-json",
+        "openapi-yaml",
+        "asyncapi-json",
+        "asyncapi-yaml",
+        "wsdl",
+        "wadl",
+        "xsd",
+        "protobuf",
+        "graphql-sdl"
+      ],
+      "requiredCapability": "Microsoft.ApiCenter read + definitions/exportSpecification/action (Service Reader); data-plane inventory optional and unused",
+      "positiveTests": [
+        "tests/api-center-client.test.ts",
+        "tests/api-center-provider.test.ts"
+      ],
+      "negativeTests": [
+        "tests/api-center-client.test.ts",
+        "tests/api-center-provider.test.ts"
+      ],
+      "securityTests": [
+        "tests/api-center-client.test.ts"
+      ],
+      "paginationTests": [
+        "tests/api-center-client.test.ts"
+      ],
+      "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": "API Center inventory and authoritative definition export are not implemented (P0 gap; POS-394)."
+      "unsupportedReason": null
     },
     {
       "id": "platform.sovereign-cloud",
