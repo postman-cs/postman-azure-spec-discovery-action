@@ -28,11 +28,29 @@ export interface AzureSdkOptions {
   random?: () => number;
 }
 
+export interface ApimGatewayAssignment {
+  gatewayId: string;
+  apiIds: string[];
+}
+
+export interface ApimWorkspaceGatewayLink {
+  workspaceId: string;
+  gatewayIds: string[];
+}
+
 export interface ApimServiceSummary {
   name: string;
   resourceGroup: string;
   location?: string;
   tags: Record<string, string>;
+  /** Hostname from the managed gatewayUrl (typically *.azure-api.net). */
+  gatewayHostname?: string;
+  /** Custom Proxy hostnames configured on the service. */
+  customHostnames?: string[];
+  /** Self-hosted gateway → API assignments (gateway id "managed" is never emitted). */
+  gatewayAssignments?: ApimGatewayAssignment[];
+  /** Documented workspace ↔ gateway identity links. */
+  workspaceGateways?: ApimWorkspaceGatewayLink[];
 }
 
 export interface ApimApiSummary {
@@ -47,6 +65,8 @@ export interface ApimApiSummary {
   serviceName: string;
   resourceGroup: string;
   workspaceId?: string;
+  /** Self-hosted / workspace gateway ids this API is assigned to. */
+  assignedGatewayIds?: string[];
 }
 
 export interface AppServiceSiteSummary {
@@ -85,6 +105,11 @@ export function createAzureCredential(): TokenCredential {
 export interface AzureApimClient {
   listServices(resourceGroup?: string): Promise<ApimServiceSummary[]>;
   listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]>;
+  /**
+   * Fetch one API by id, including historical `;rev=N` revisions that implicit
+   * discovery omits. Used only for explicit full ARM ID / binding selection.
+   */
+  getApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<ApimApiSummary>;
   exportApi(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string, format?: ApimExportFormat): Promise<string>;
   getGraphqlSchema(resourceGroup: string, serviceName: string, apiId: string, workspaceId?: string): Promise<string>;
   probeApimReadAccess(resourceGroup?: string, signal?: AbortSignal): Promise<void>;
@@ -418,7 +443,22 @@ export class ApimSdkClient implements AzureApimClient {
       ? this.client.apiManagementService.listByResourceGroup(resourceGroup)
       : this.client.apiManagementService.list();
     const services = await collectBounded(iterator, 'APIM service list');
-    return services.map((service) => toServiceSummary(service));
+    const summaries: ApimServiceSummary[] = [];
+    for (const service of services) {
+      const base = toServiceSummary(service);
+      const name = base.name;
+      const rg = base.resourceGroup;
+      if (!name || !rg) {
+        summaries.push(base);
+        continue;
+      }
+      const [gatewayAssignments, workspaceGateways] = await Promise.all([
+        this.listSelfHostedGatewayAssignments(rg, name),
+        this.listWorkspaceGatewayLinks(rg, name)
+      ]);
+      summaries.push({ ...base, gatewayAssignments, workspaceGateways });
+    }
+    return summaries;
   }
 
   public async listApis(resourceGroup: string, serviceName: string): Promise<ApimApiSummary[]> {
@@ -446,7 +486,109 @@ export class ApimSdkClient implements AzureApimClient {
     } catch (error) {
       if (!isUnsupportedWorkspaceTierError(error)) throw error;
     }
-    return retainCurrentApis(summaries);
+    const current = retainCurrentApis(summaries);
+    const assignments = await this.listSelfHostedGatewayAssignments(resourceGroup, serviceName);
+    const byApi = new Map<string, string[]>();
+    for (const assignment of assignments) {
+      for (const apiId of assignment.apiIds) {
+        const key = apiId.toLowerCase();
+        const existing = byApi.get(key) ?? [];
+        existing.push(assignment.gatewayId);
+        byApi.set(key, existing);
+      }
+    }
+    return current.map((api) => {
+      const assigned = byApi.get(api.apiId.toLowerCase()) ?? byApi.get(api.apiId.replace(/;rev=.*$/i, '').toLowerCase());
+      return assigned && assigned.length > 0
+        ? { ...api, assignedGatewayIds: [...new Set(assigned)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) }
+        : api;
+    });
+  }
+
+  public async getApi(
+    resourceGroup: string,
+    serviceName: string,
+    apiId: string,
+    workspaceId?: string
+  ): Promise<ApimApiSummary> {
+    const api = workspaceId
+      ? await this.client.workspaceApi.get(resourceGroup, serviceName, workspaceId, apiId)
+      : await this.client.api.get(resourceGroup, serviceName, apiId);
+    return toApiSummary(api, serviceName, resourceGroup, workspaceId);
+  }
+
+  /**
+   * Enumerate self-hosted gateways and their API assignments. Fail-soft on
+   * SKU/feature unsupported errors; other failures propagate. Never treats
+   * "managed" as a self-hosted gateway id.
+   */
+  private async listSelfHostedGatewayAssignments(
+    resourceGroup: string,
+    serviceName: string
+  ): Promise<ApimGatewayAssignment[]> {
+    let gateways;
+    try {
+      gateways = await collectBounded(this.client.gateway.listByService(resourceGroup, serviceName), 'APIM gateway list');
+    } catch (error) {
+      if (isUnsupportedGatewayFeatureError(error)) return [];
+      throw error;
+    }
+    const assignments: ApimGatewayAssignment[] = [];
+    for (const gateway of gateways) {
+      const gatewayId = (gateway.name ?? '').trim();
+      if (!gatewayId || gatewayId.toLowerCase() === 'managed') continue;
+      let apis;
+      try {
+        apis = await collectBounded(
+          this.client.gatewayApi.listByService(resourceGroup, serviceName, gatewayId),
+          `APIM gateway ${gatewayId} API list`
+        );
+      } catch (error) {
+        if (isUnsupportedGatewayFeatureError(error)) continue;
+        throw error;
+      }
+      const apiIds = [
+        ...new Set(
+          apis
+            .map((entry) => (entry.name ?? '').trim())
+            .filter((id) => id.length > 0)
+        )
+      ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      assignments.push({ gatewayId, apiIds });
+    }
+    assignments.sort((a, b) => (a.gatewayId < b.gatewayId ? -1 : a.gatewayId > b.gatewayId ? 1 : 0));
+    return assignments;
+  }
+
+  /** Documented workspace gateway identity via workspace links. Fail-soft on unsupported tiers. */
+  private async listWorkspaceGatewayLinks(
+    resourceGroup: string,
+    serviceName: string
+  ): Promise<ApimWorkspaceGatewayLink[]> {
+    try {
+      const links = await collectBounded(
+        this.client.apiManagementWorkspaceLinks.listByService(resourceGroup, serviceName),
+        'APIM workspace gateway links'
+      );
+      const result: ApimWorkspaceGatewayLink[] = [];
+      for (const link of links) {
+        const workspaceId = extractWorkspaceIdFromLink(link.workspaceId) || (link.name ?? '').trim();
+        if (!workspaceId) continue;
+        const gatewayIds = [
+          ...new Set(
+            (link.gateways ?? [])
+              .map((gateway) => extractGatewayIdFromArm(gateway.id))
+              .filter((id): id is string => typeof id === 'string' && id.length > 0 && id.toLowerCase() !== 'managed')
+          )
+        ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+        result.push({ workspaceId, gatewayIds });
+      }
+      result.sort((a, b) => (a.workspaceId < b.workspaceId ? -1 : a.workspaceId > b.workspaceId ? 1 : 0));
+      return result;
+    } catch (error) {
+      if (isUnsupportedWorkspaceTierError(error) || isUnsupportedGatewayFeatureError(error)) return [];
+      throw error;
+    }
   }
 
   /**
@@ -517,12 +659,62 @@ export class ApimSdkClient implements AzureApimClient {
   }
 }
 
+function hostnameFromGatewayUrl(gatewayUrl: string | undefined): string | undefined {
+  if (!gatewayUrl) return undefined;
+  try {
+    const host = new URL(gatewayUrl).hostname.trim().toLowerCase();
+    return host || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function customProxyHostnames(
+  configurations: ApiManagementServiceResource['hostnameConfigurations']
+): string[] {
+  const hosts = new Set<string>();
+  for (const config of configurations ?? []) {
+    const type = String(config.type ?? '').toLowerCase();
+    if (type && type !== 'proxy') continue;
+    const host = (config.hostName ?? '').trim().toLowerCase();
+    if (host) hosts.add(host);
+  }
+  return [...hosts].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function extractGatewayIdFromArm(resourceId: string | undefined): string | undefined {
+  if (!resourceId) return undefined;
+  const match = /\/(?:gateways|gateWays)\/([^/]+)/i.exec(resourceId);
+  const id = (match?.[1] ?? resourceId.split('/').pop() ?? '').trim();
+  return id || undefined;
+}
+
+function extractWorkspaceIdFromLink(workspaceId: string | undefined): string {
+  if (!workspaceId) return '';
+  const match = /\/workspaces\/([^/]+)/i.exec(workspaceId);
+  return (match?.[1] ?? workspaceId.split('/').pop() ?? '').trim();
+}
+
+function isUnsupportedGatewayFeatureError(error: unknown): boolean {
+  const text = azureErrorText(error);
+  if (/MethodNotAllowedInPricingTier/i.test(text)) return true;
+  if (/method not allowed in .*(pricing tier|sku)/i.test(text)) return true;
+  if (/gateway/i.test(text) && /not supported|unsupported|not available|pricing tier|\bsku\b/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
 function toServiceSummary(service: ApiManagementServiceResource): ApimServiceSummary {
   return {
     name: service.name ?? '',
     resourceGroup: extractResourceGroup(service.id),
     location: service.location,
-    tags: (service.tags ?? {}) as Record<string, string>
+    tags: (service.tags ?? {}) as Record<string, string>,
+    gatewayHostname: hostnameFromGatewayUrl(service.gatewayUrl),
+    customHostnames: customProxyHostnames(service.hostnameConfigurations),
+    gatewayAssignments: [],
+    workspaceGateways: []
   };
 }
 

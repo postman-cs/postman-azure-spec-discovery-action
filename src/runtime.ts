@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import {
   actionContract,
@@ -25,6 +26,7 @@ import { sanitizeLogMessage } from './lib/logging/sanitize.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
 import { findExistingRepoSpecTyped } from './lib/repo/specs.js';
 import { collectRepoSignals, type RepoSignals } from './lib/repo/signals.js';
+import { loadAzureResolverBinding, type AzureResolverBinding } from './lib/repo/azure-bindings.js';
 import { scanAzureIac, type IacScanResult } from './lib/repo/azure-iac-scanner.js';
 import { chooseSource, sourceTypeFor } from './lib/resolve/source-selector.js';
 import {
@@ -38,7 +40,8 @@ import { runNarrowingPipeline, type NarrowingCandidate, type NarrowingResult } f
 import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
 import { enumerateEstate, type EstateRepo } from './lib/estate/enumerate.js';
 import { deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
-import { ApimProvider } from './lib/providers/apim.js';
+import { parseAndValidateOpenApi } from './lib/spec/validate-openapi.js';
+import { ApimProvider, parseApimApiArmId } from './lib/providers/apim.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
 import { CustomApisProvider } from './lib/providers/custom-apis.js';
 import { LogicAppsProvider } from './lib/providers/logic-apps.js';
@@ -65,6 +68,10 @@ export interface ResolvedInputs {
   subscriptionId?: string;
   resourceGroup?: string;
   apiId?: string;
+  environment?: string;
+  gatewayId?: string;
+  apiVersion?: string;
+  apiRevision?: string;
   repoRoot: string;
   repoContext: RepoContext;
   expectedServiceName?: string;
@@ -224,12 +231,23 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
   );
 
   const repoTagKeysRaw = getInput('repo-tag-keys-json', env) ?? '[]';
+  const environment = getInput('environment', env);
+  const gatewayId = getInput('gateway-id', env);
+  if (gatewayId && gatewayId.toLowerCase() === 'managed') {
+    throw new Error('gateway-id "managed" is not a self-hosted gateway identity; omit it or supply a real gateway id');
+  }
+  const apiVersion = getInput('api-version', env);
+  const apiRevision = getInput('api-revision', env);
 
   return {
     mode,
     subscriptionId,
     resourceGroup,
     apiId,
+    environment,
+    gatewayId,
+    apiVersion,
+    apiRevision,
     repoRoot,
     repoContext,
     expectedServiceName,
@@ -254,8 +272,104 @@ export function readActionInputs(inputReader: InputReaderLike): ResolvedInputs {
     INPUT_SUBSCRIPTION_ID: normalizeInputValue(inputReader.getInput('subscription-id')),
     INPUT_RESOURCE_GROUP: normalizeInputValue(inputReader.getInput('resource-group')),
     INPUT_API_ID: normalizeInputValue(inputReader.getInput('api-id')),
+    INPUT_ENVIRONMENT: normalizeInputValue(inputReader.getInput('environment')),
+    INPUT_GATEWAY_ID: normalizeInputValue(inputReader.getInput('gateway-id')),
+    INPUT_API_VERSION: normalizeInputValue(inputReader.getInput('api-version')),
+    INPUT_API_REVISION: normalizeInputValue(inputReader.getInput('api-revision')),
     INPUT_OUTPUT_DIR: normalizeInputValue(inputReader.getInput('output-dir')) ?? actionContract.inputs['output-dir'].default
   });
+}
+
+function toNarrowingCandidate(candidate: SpecCandidate): NarrowingCandidate {
+  const hostnames = (candidate.meta.hostnames ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const assignedGatewayIds = (candidate.meta.assignedGatewayIds ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const tagSource =
+    candidate.meta.tagSource === 'api' || candidate.meta.tagSource === 'service-inherited'
+      ? candidate.meta.tagSource
+      : undefined;
+  return {
+    id: candidate.id,
+    name: candidate.name,
+    resourceGroup: candidate.resourceGroup,
+    tags: candidate.tags,
+    tagSource,
+    apiPath: candidate.meta.path,
+    apiVersion: candidate.meta.apiVersion,
+    apiRevision: candidate.meta.apiRevision,
+    hostnames,
+    assignedGatewayIds,
+    serviceName: candidate.meta.serviceName,
+    workspaceId: candidate.meta.workspaceId
+  };
+}
+
+function mergeBindingSelectors(
+  inputs: ResolvedInputs,
+  binding: AzureResolverBinding | undefined
+): {
+  apiId?: string;
+  environment?: string;
+  gatewayId?: string;
+  apiVersion?: string;
+  apiRevision?: string;
+  bindingEvidence: string[];
+} {
+  if (!binding) {
+    return {
+      apiId: inputs.apiId,
+      environment: inputs.environment,
+      gatewayId: inputs.gatewayId,
+      apiVersion: inputs.apiVersion,
+      apiRevision: inputs.apiRevision,
+      bindingEvidence: []
+    };
+  }
+  if (inputs.apiId && binding.apimApiId && inputs.apiId !== binding.apimApiId) {
+    throw new Error('Conflicting api-id input and .postman Azure resolver binding; refusing to choose');
+  }
+  if (inputs.gatewayId && binding.gatewayId && inputs.gatewayId !== binding.gatewayId) {
+    throw new Error('Conflicting gateway-id input and .postman Azure resolver binding; refusing to choose');
+  }
+  return {
+    apiId: inputs.apiId ?? binding.apimApiId,
+    environment: inputs.environment ?? binding.environment,
+    gatewayId: inputs.gatewayId ?? binding.gatewayId,
+    apiVersion: inputs.apiVersion ?? binding.apiVersion,
+    apiRevision: inputs.apiRevision ?? binding.apiRevision,
+    bindingEvidence: binding.evidence
+  };
+}
+
+async function resolveBoundNativeSpec(
+  inputs: ResolvedInputs,
+  binding: AzureResolverBinding | undefined
+): Promise<ResolutionResult | undefined> {
+  if (!binding?.nativeSpecPath) return undefined;
+  const relativePath = binding.nativeSpecPath.replace(/\\/g, '/');
+  const absolutePath = resolvePathWithinRoot(inputs.repoRoot, relativePath, 'nativeSpecPath');
+  let content: string;
+  try {
+    content = await readFile(absolutePath, 'utf8');
+    parseAndValidateOpenApi(content);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(sanitizeLogMessage(`Exact .postman nativeSpecPath could not be read as an OpenAPI document: ${detail}`));
+  }
+  return {
+    status: 'resolved',
+    sourceType: 'repo-spec',
+    serviceName: inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop() ?? 'repository-spec',
+    confidence: 100,
+    specPath: relativePath,
+    specFormat: relativePath.toLowerCase().endsWith('.json') ? 'openapi-json' : 'openapi-yaml',
+    evidence: [...binding.evidence, `Resolved exact native repository specification ${relativePath}`]
+  };
 }
 
 /**
@@ -574,6 +688,25 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     };
   }
 
+  // Exact repository state is loaded before any broad local or cloud discovery.
+  // A malformed, conflicting, or escaping binding is a configuration error, not
+  // evidence to silently ignore.
+  const bindingResult = await loadAzureResolverBinding(inputs.repoRoot);
+  if (bindingResult.status === 'error') {
+    throw new Error(sanitizeLogMessage(bindingResult.reason));
+  }
+  const binding = bindingResult.status === 'ok' ? bindingResult.binding : undefined;
+  const selectors = mergeBindingSelectors(inputs, binding);
+  const boundNativeSpec = await resolveBoundNativeSpec(inputs, binding);
+  if (boundNativeSpec) {
+    return {
+      mode: inputs.mode,
+      discovered: [],
+      resolution: boundNativeSpec,
+      outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution: boundNativeSpec })
+    };
+  }
+
   // 2. Repo-local IaC scan (fingerprint + inline candidates).
   const iacScan = await scanAzureIac(inputs.repoRoot, inputs.outputDir);
   const iacCandidates = iacScan.candidates;
@@ -644,7 +777,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   const signals = await collectRepoSignals({
     repoRoot: inputs.repoRoot,
     expectedServiceName: inputs.expectedServiceName,
-    expectedApiIds: inputs.expectedApiIds,
+    expectedApiIds: selectors.apiId ? [...inputs.expectedApiIds, selectors.apiId] : inputs.expectedApiIds,
     repoSlug: inputs.repoContext.repoSlug
   });
 
@@ -653,18 +786,22 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     inputs.apiFilter
   );
 
-  // 3a. Explicit api-id is a caller selection with confidence 100.
-  if (inputs.apiId) {
-    const requestedApiId = inputs.apiId;
-    // A full ARM ID identifies exactly one API; matching it on the terminal
-    // segment alone would let a same-named API in another service/RG win. Only
-    // a bare name may match on short segment, and only when it is unique.
+  // 3a. Explicit api-id / exact binding is a caller selection with confidence 100.
+  if (selectors.apiId) {
+    const requestedApiId = selectors.apiId;
     const isFullArmId = requestedApiId.startsWith('/subscriptions/');
     let target: SpecCandidate | undefined;
     if (isFullArmId) {
       target = enumerated.find(
         (candidate) => candidate.apiId === requestedApiId || candidate.id === requestedApiId
       );
+      // Historical ;rev=N may be absent from current-revision enumeration.
+      if (!target && /;rev=\d+/i.test(requestedApiId) && parseApimApiArmId(requestedApiId)) {
+        const apim = availableProviders.find((provider): provider is ApimProvider => provider instanceof ApimProvider);
+        if (apim) {
+          target = await apim.resolveExplicitApi(requestedApiId);
+        }
+      }
     } else {
       const requestedShort = requestedApiId.split('/').pop();
       const shortMatches = enumerated.filter(
@@ -683,7 +820,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           confidence: ambiguousRanked[0]?.confidence ?? 0,
           providerProbes: probes,
           rankedCandidates: toAmbiguousViews(ambiguousRanked),
-          evidence: [`Requested api-id "${requestedApiId}" matched ${shortMatches.length} APIs by short name; refusing to guess between them`]
+          evidence: [`Requested api-id matched ${shortMatches.length} APIs by short name; refusing to guess between them`]
         };
         return {
           mode: inputs.mode,
@@ -701,7 +838,35 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
         confidence: 100,
         providerProbes: probes,
         rankedCandidates: toAmbiguousViews(rankServiceCandidates([toCandidateInput(target)], signals)),
-        evidence: target.evidence
+        evidence: [...selectors.bindingEvidence, ...target.evidence]
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+    if (
+      target &&
+      ((selectors.apiVersion && target.meta.apiVersion !== selectors.apiVersion) ||
+        (selectors.apiRevision && String(target.meta.apiRevision ?? '') !== String(selectors.apiRevision)))
+    ) {
+      const requested = [
+        ...(selectors.apiVersion ? [`api-version=${selectors.apiVersion}`] : []),
+        ...(selectors.apiRevision ? [`api-revision=${selectors.apiRevision}`] : [])
+      ].join(', ');
+      const resolution: ResolutionResult = {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName: resolveServiceName(target, inputs.serviceMapping),
+        confidence: 0,
+        providerProbes: probes,
+        rankedCandidates: toAmbiguousViews(rankServiceCandidates([toCandidateInput(target)], signals)),
+        evidence: [
+          ...selectors.bindingEvidence,
+          `Caller-selected API does not match requested ${requested}; refusing to export a different version or revision`
+        ]
       };
       return {
         mode: inputs.mode,
@@ -711,11 +876,18 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       };
     }
     if (target) {
-      const provider = availableProviders.find((p) => p.type === target.providerType);
+      const provider =
+        availableProviders.find((p) => p.type === target!.providerType) ??
+        (target.providerType === 'apim'
+          ? availableProviders.find((p): p is ApimProvider => p instanceof ApimProvider)
+          : undefined);
       if (provider) {
         const exportResult = await provider.exportSpec(target);
         const serviceName = resolveServiceName(target, inputs.serviceMapping);
         const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile);
+        const selectionEvidence = selectors.bindingEvidence.length > 0
+          ? selectors.bindingEvidence
+          : [`Caller-selected API ID`];
         const resolution: ResolutionResult = {
           status: 'resolved',
           sourceType: sourceTypeFor(target.providerType),
@@ -735,7 +907,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
               }
             : {}),
           providerProbes: probes,
-          evidence: [`Caller-selected API ID ${inputs.apiId}`, ...target.evidence, ...exportResult.evidence]
+          evidence: [...selectionEvidence, ...target.evidence, ...exportResult.evidence]
         };
         return {
           mode: inputs.mode,
@@ -751,7 +923,10 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       serviceName: inputs.expectedServiceName ?? 'unknown-service',
       confidence: 0,
       providerProbes: probes,
-      evidence: [`Requested api-id was not found among ${enumerated.length} enumerated candidate(s)`]
+      evidence: [
+        ...selectors.bindingEvidence,
+        `Requested api-id was not found among ${enumerated.length} enumerated candidate(s)`
+      ]
     };
     return {
       mode: inputs.mode,
@@ -768,16 +943,15 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
       subscriptionId,
       resourceGroup: inputs.resourceGroup,
       repoTagKeys: inputs.repoTagKeys,
+      environment: selectors.environment,
+      gatewayId: selectors.gatewayId,
+      apiVersion: selectors.apiVersion,
+      apiRevision: selectors.apiRevision,
       serviceHints: signals.serviceHints,
       signals,
       resourceGraphClient: dependencies.createResourceGraphClient?.()
     },
-    enumerated.map((candidate): NarrowingCandidate => ({
-      id: candidate.id,
-      name: candidate.name,
-      resourceGroup: candidate.resourceGroup,
-      tags: candidate.tags
-    }))
+    enumerated.map(toNarrowingCandidate)
   );
 
   const partitioned = partitionCandidates(enumerated, narrowing);
@@ -905,16 +1079,15 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
       subscriptionId,
       resourceGroup: inputs.resourceGroup,
       repoTagKeys: inputs.repoTagKeys,
+      environment: inputs.environment,
+      gatewayId: inputs.gatewayId,
+      apiVersion: inputs.apiVersion,
+      apiRevision: inputs.apiRevision,
       serviceHints: signals.serviceHints,
       signals,
       resourceGraphClient: dependencies.createResourceGraphClient?.()
     },
-    enumerated.map((candidate): NarrowingCandidate => ({
-      id: candidate.id,
-      name: candidate.name,
-      resourceGroup: candidate.resourceGroup,
-      tags: candidate.tags
-    }))
+    enumerated.map(toNarrowingCandidate)
   );
   const partitioned = partitionCandidates(enumerated, narrowing);
   const capped = partitioned.slice(0, inputs.maxCandidates);

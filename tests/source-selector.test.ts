@@ -6,7 +6,14 @@ import type { AzureCandidateInput } from '../src/lib/resolve/service-resolver.js
 import type { RepoSignals } from '../src/lib/repo/signals.js';
 
 function signals(overrides: Partial<RepoSignals> = {}): RepoSignals {
-  return { serviceHints: [], explicitApiIdHints: [], inferredApiIdHints: [], evidence: [], ...overrides };
+  return {
+    serviceHints: [],
+    explicitApiIdHints: [],
+    inferredApiIdHints: [],
+    gatewayUrls: [],
+    evidence: [],
+    ...overrides
+  };
 }
 
 function input(id: string, overrides: Partial<AzureCandidateInput> = {}): AzureCandidateInput {

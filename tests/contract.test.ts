@@ -44,6 +44,10 @@ const LOCKED_INPUT_ORDER = [
   'subscription-id',
   'resource-group',
   'api-id',
+  'environment',
+  'gateway-id',
+  'api-version',
+  'api-revision',
   'output-dir',
   'postman-api-key',
   'postman-access-token'

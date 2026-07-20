@@ -62,6 +62,9 @@ describe('APIM provider', () => {
           workspaceId: 'team-a'
         }
       ]),
+      getApi: vi.fn(async () => {
+        throw new Error('getApi unused');
+      }),
       exportApi: vi.fn(async () => VALID_OPENAPI),
       getGraphqlSchema: vi.fn(async () => 'type Query { ping: String! }'),
       probeApimReadAccess: vi.fn(async () => undefined),

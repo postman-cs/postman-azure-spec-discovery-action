@@ -13,13 +13,16 @@ const { apimCtorSpy, appServiceCtorSpy, eventGridCtorSpy, serviceBusCtorSpy, gra
 vi.mock('@azure/arm-apimanagement', () => ({
   ApiManagementClient: class {
     public apiManagementService = { list: vi.fn(), listByResourceGroup: vi.fn() };
-    public api = { listByService: vi.fn() };
+    public api = { listByService: vi.fn(), get: vi.fn() };
     public apiExport = { get: vi.fn() };
     public workspace = { listByService: vi.fn() };
-    public workspaceApi = { listByService: vi.fn() };
+    public workspaceApi = { listByService: vi.fn(), get: vi.fn() };
     public workspaceApiExport = { get: vi.fn() };
     public apiSchema = { listByApi: vi.fn(), get: vi.fn() };
     public workspaceApiSchema = { listByApi: vi.fn(), get: vi.fn() };
+    public gateway = { listByService: vi.fn(async function* () {}) };
+    public gatewayApi = { listByService: vi.fn(async function* () {}) };
+    public apiManagementWorkspaceLinks = { listByService: vi.fn(async function* () {}) };
     public constructor(...args: unknown[]) {
       apimCtorSpy(...args);
     }

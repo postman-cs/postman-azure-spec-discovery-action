@@ -1,9 +1,11 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
-import type { AzureApimClient } from '../azure/clients.js';
+import type { AzureApimClient, ApimApiSummary, ApimServiceSummary } from '../azure/clients.js';
+import { normalizeApiBasePath, normalizeHostname } from '../repo/signals.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import type { SpecCandidate, SpecExportResult, SpecProvider } from './types.js';
 
 const APIM_API_TYPES = new Set(['http', 'soap', 'graphql', 'websocket', 'grpc', 'odata']);
+const SELECT_GRADE_TAG_KEYS = new Set(['postman:repo', 'githuborg', 'githubrepo']);
 
 export interface ApimProviderOptions {
   subscriptionId: string;
@@ -28,9 +30,57 @@ export function buildApimApiArmId(
     : `${serviceRoot}/apis/${apiId}`;
 }
 
+function serviceHostnames(service: ApimServiceSummary): string[] {
+  const hosts = new Set<string>();
+  const gatewayHost = normalizeHostname(service.gatewayHostname);
+  if (gatewayHost) hosts.add(gatewayHost);
+  // Default managed hostname when SDK omits gatewayUrl but service name is known.
+  if (!gatewayHost && service.name) {
+    hosts.add(`${service.name.toLowerCase()}.azure-api.net`);
+  }
+  for (const host of service.customHostnames ?? []) {
+    const normalized = normalizeHostname(host);
+    if (normalized) hosts.add(normalized);
+  }
+  return [...hosts].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function assignedGatewaysForApi(service: ApimServiceSummary, api: ApimApiSummary): string[] {
+  const ids = new Set<string>();
+  for (const id of api.assignedGatewayIds ?? []) {
+    if (id && id.toLowerCase() !== 'managed') ids.add(id);
+  }
+  for (const assignment of service.gatewayAssignments ?? []) {
+    if (assignment.gatewayId.toLowerCase() === 'managed') continue;
+    const apiBase = api.apiId.replace(/;rev=.*$/i, '').toLowerCase();
+    if (assignment.apiIds.some((id) => id.toLowerCase() === api.apiId.toLowerCase() || id.toLowerCase() === apiBase)) {
+      ids.add(assignment.gatewayId);
+    }
+  }
+  if (api.workspaceId) {
+    for (const link of service.workspaceGateways ?? []) {
+      if (link.workspaceId === api.workspaceId) {
+        for (const gatewayId of link.gatewayIds) {
+          if (gatewayId && gatewayId.toLowerCase() !== 'managed') ids.add(gatewayId);
+        }
+      }
+    }
+  }
+  return [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function tagsForApi(service: ApimServiceSummary, eligibleApiCount: number): { tags: Record<string, string>; tagSource: 'api' | 'service-inherited' } {
+  const tags = { ...(service.tags ?? {}) };
+  // A service tag is effective ownership only when this service contributes one
+  // eligible API to discovery. APIs excluded for being historical or unsupported
+  // must not turn a single eligible API into an ambiguous inherited tag.
+  return { tags, tagSource: eligibleApiCount <= 1 ? 'api' : 'service-inherited' };
+}
+
 /**
  * APIM provider: exports current HTTP revisions as OpenAPI, SOAP as native WSDL,
  * and GraphQL as native SDL. Remaining API types stay visible for manual review.
+ * Explicit `;rev=N` ids are addressable via getApi even when not current.
  */
 export class ApimProvider implements SpecProvider {
   public readonly type = 'apim' as const;
@@ -57,6 +107,11 @@ export class ApimProvider implements SpecProvider {
     const services = await this.client.listServices(this.options.resourceGroup);
     for (const service of services) {
       const apis = await this.client.listApis(service.resourceGroup, service.name);
+      const eligibleApiCount = apis.filter((api) =>
+        api.isCurrent !== false && APIM_API_TYPES.has((api.apiType || 'http').toLowerCase())
+      ).length;
+      const { tags, tagSource } = tagsForApi(service, eligibleApiCount);
+      const hostnames = serviceHostnames(service);
       for (const api of apis) {
         if (api.isCurrent === false) continue;
         const apiType = (api.apiType || 'http').toLowerCase();
@@ -69,29 +124,108 @@ export class ApimProvider implements SpecProvider {
           api.apiId,
           api.workspaceId
         );
+        const assignedGatewayIds = assignedGatewaysForApi(service, api);
         candidates.push({
           id: armId,
           name: api.displayName || api.apiId,
           providerType: 'apim',
           apiId: armId,
           resourceGroup: service.resourceGroup,
-          tags: service.tags,
+          tags,
           supported,
           evidence: [
             `APIM service ${service.name} exposes ${apiType.toUpperCase()} API ${api.displayName || api.apiId}`,
-            ...(supported ? [] : [`APIM API type ${apiType} has no supported discovery export path`])
+            ...(supported ? [] : [`APIM API type ${apiType} has no supported discovery export path`]),
+            ...(hostnames.length > 0 ? [`Service hostnames: ${hostnames.join(', ')}`] : []),
+            ...(assignedGatewayIds.length > 0
+              ? [`Assigned gateways: ${assignedGatewayIds.join(', ')}`]
+              : [])
           ],
           meta: {
             serviceName: service.name,
             resourceGroup: service.resourceGroup,
             apiId: api.apiId,
             apiType,
-            ...(api.workspaceId ? { workspaceId: api.workspaceId } : {})
+            tagSource,
+            path: normalizeApiBasePath(api.path),
+            hostnames: hostnames.join(','),
+            ...(api.apiVersion ? { apiVersion: api.apiVersion } : {}),
+            ...(api.apiRevision ? { apiRevision: api.apiRevision } : {}),
+            ...(api.apiVersionSetId ? { apiVersionSetId: api.apiVersionSetId } : {}),
+            ...(api.workspaceId ? { workspaceId: api.workspaceId } : {}),
+            ...(assignedGatewayIds.length > 0 ? { assignedGatewayIds: assignedGatewayIds.join(',') } : {}),
+            // Preserve select-grade key presence for tests/docs without claiming API ownership.
+            ...(apis.length > 1 && Object.keys(tags).some((key) => SELECT_GRADE_TAG_KEYS.has(key.toLowerCase()))
+              ? { inheritedSelectGradeTags: 'true' }
+              : {})
           }
         });
       }
     }
     return candidates;
+  }
+
+  /**
+   * Resolve an explicit API (including historical `;rev=N`) that may be absent
+   * from the current-revision candidate list.
+   */
+  public async resolveExplicitApi(apiArmOrName: string): Promise<SpecCandidate | undefined> {
+    const parsed = parseApimApiArmId(apiArmOrName);
+    if (!parsed) return undefined;
+    if (
+      this.options.resourceGroup &&
+      parsed.resourceGroup.toLowerCase() !== this.options.resourceGroup.toLowerCase()
+    ) {
+      return undefined;
+    }
+    const api = await this.client.getApi(parsed.resourceGroup, parsed.serviceName, parsed.apiId, parsed.workspaceId);
+    const services = await this.client.listServices(parsed.resourceGroup);
+    const service =
+      services.find((entry) => entry.name === parsed.serviceName) ??
+      ({
+        name: parsed.serviceName,
+        resourceGroup: parsed.resourceGroup,
+        tags: {},
+        customHostnames: [],
+        gatewayAssignments: [],
+        workspaceGateways: []
+      } satisfies ApimServiceSummary);
+    const armId = buildApimApiArmId(
+      this.options.subscriptionId,
+      parsed.resourceGroup,
+      parsed.serviceName,
+      api.apiId,
+      api.workspaceId ?? parsed.workspaceId
+    );
+    const apiType = (api.apiType || 'http').toLowerCase();
+    const supported = apiType === 'http' || apiType === 'soap' || apiType === 'graphql';
+    const hostnames = serviceHostnames(service);
+    const assignedGatewayIds = assignedGatewaysForApi(service, api);
+    return {
+      id: armId,
+      name: api.displayName || api.apiId,
+      providerType: 'apim',
+      apiId: armId,
+      resourceGroup: parsed.resourceGroup,
+      tags: service.tags ?? {},
+      supported,
+      evidence: [`Explicit APIM API ${api.apiId} resolved from service ${parsed.serviceName}`],
+      meta: {
+        serviceName: parsed.serviceName,
+        resourceGroup: parsed.resourceGroup,
+        apiId: api.apiId,
+        apiType,
+        tagSource: 'api',
+        path: normalizeApiBasePath(api.path),
+        hostnames: hostnames.join(','),
+        ...(api.apiVersion ? { apiVersion: api.apiVersion } : {}),
+        ...(api.apiRevision ? { apiRevision: String(api.apiRevision) } : {}),
+        ...(api.workspaceId || parsed.workspaceId
+          ? { workspaceId: api.workspaceId ?? parsed.workspaceId ?? '' }
+          : {}),
+        ...(assignedGatewayIds.length > 0 ? { assignedGatewayIds: assignedGatewayIds.join(',') } : {})
+      }
+    };
   }
 
   public async exportSpec(candidate: SpecCandidate): Promise<SpecExportResult> {
@@ -110,7 +244,7 @@ export class ApimProvider implements SpecProvider {
         content,
         format: 'wsdl',
         filename: 'service.wsdl',
-        evidence: [`Exported current revision of APIM SOAP API ${apiId} from service ${serviceName} as WSDL`]
+        evidence: [`Exported revision of APIM SOAP API ${apiId} from service ${serviceName} as WSDL`]
       };
     }
     if (candidate.meta.apiType === 'graphql') {
@@ -119,7 +253,7 @@ export class ApimProvider implements SpecProvider {
         content,
         format: 'graphql-sdl',
         filename: 'schema.graphql',
-        evidence: [`Read GraphQL SDL for current APIM API ${apiId} from service ${serviceName}`]
+        evidence: [`Read GraphQL SDL for APIM API ${apiId} from service ${serviceName}`]
       };
     }
     const content = await this.client.exportApi(resourceGroup, serviceName, apiId, candidate.meta.workspaceId);
@@ -129,7 +263,43 @@ export class ApimProvider implements SpecProvider {
       content: normalized,
       format: 'openapi-json',
       filename: 'index.json',
-      evidence: [`Exported current revision of APIM API ${apiId} from service ${serviceName} as OpenAPI JSON`]
+      evidence: [`Exported revision of APIM API ${apiId} from service ${serviceName} as OpenAPI JSON`]
     };
   }
+}
+
+export function parseApimApiArmId(value: string): {
+  subscriptionId: string;
+  resourceGroup: string;
+  serviceName: string;
+  apiId: string;
+  workspaceId?: string;
+} | undefined {
+  const trimmed = value.trim();
+  const withWorkspace =
+    /^\/subscriptions\/([^/]+)\/resourceGroups\/([^/]+)\/providers\/Microsoft\.ApiManagement\/service\/([^/]+)\/workspaces\/([^/]+)\/apis\/([^/]+)$/i.exec(
+      trimmed
+    );
+  if (withWorkspace) {
+    return {
+      subscriptionId: withWorkspace[1]!,
+      resourceGroup: withWorkspace[2]!,
+      serviceName: withWorkspace[3]!,
+      workspaceId: withWorkspace[4]!,
+      apiId: withWorkspace[5]!
+    };
+  }
+  const serviceScoped =
+    /^\/subscriptions\/([^/]+)\/resourceGroups\/([^/]+)\/providers\/Microsoft\.ApiManagement\/service\/([^/]+)\/apis\/([^/]+)$/i.exec(
+      trimmed
+    );
+  if (serviceScoped) {
+    return {
+      subscriptionId: serviceScoped[1]!,
+      resourceGroup: serviceScoped[2]!,
+      serviceName: serviceScoped[3]!,
+      apiId: serviceScoped[4]!
+    };
+  }
+  return undefined;
 }

@@ -10,6 +10,7 @@ function signals(overrides: Partial<RepoSignals> = {}): RepoSignals {
     serviceHints: [],
     explicitApiIdHints: [],
     inferredApiIdHints: [],
+    gatewayUrls: [],
     evidence: [],
     ...overrides
   };
@@ -34,7 +35,14 @@ function specCandidate(id: string, overrides: Partial<SpecCandidate> = {}): Spec
 
 describe('narrowing pipeline', () => {
   it('AZ-NARROW-001: first non-empty tier wins in locked order', async () => {
-    // iac-fingerprint via inferred API id hint
+    // tag-prefilter precedes weak tiers
+    const tagResult = await runNarrowingPipeline(
+      { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
+      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments' }, tagSource: 'api' }), candidate('/x/b')]
+    );
+    expect(tagResult?.tier).toBe('tag-prefilter');
+
+    // iac-fingerprint when no select-grade tags
     const iacResult = await runNarrowingPipeline(
       { repoSlug: 'org/payments', serviceHints: [], signals: signals({ inferredApiIdHints: ['/x/apis/pay'] }) },
       [candidate('/x/apis/pay'), candidate('/x/apis/other')]
@@ -47,13 +55,6 @@ describe('narrowing pipeline', () => {
       [candidate('/x/a', { resourceGroup: 'payments-rg' }), candidate('/x/b', { resourceGroup: 'unrelated' })]
     );
     expect(rgResult?.tier).toBe('rg-correlation');
-
-    // tag-prefilter when no rg match
-    const tagResult = await runNarrowingPipeline(
-      { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
-      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments' } }), candidate('/x/b')]
-    );
-    expect(tagResult?.tier).toBe('tag-prefilter');
 
     // naming-heuristic fallback
     const nameResult = await runNarrowingPipeline(
@@ -96,15 +97,15 @@ describe('narrowing pipeline', () => {
   it('AZ-NARROW-004: only exactly one exact canonical postman:repo match selects', async () => {
     const single = await runNarrowingPipeline(
       { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
-      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments' } }), candidate('/x/b')]
+      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments' }, tagSource: 'api' }), candidate('/x/b')]
     );
     expect(single?.mode).toBe('select');
 
     const double = await runNarrowingPipeline(
       { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
       [
-        candidate('/x/a', { tags: { 'postman:repo': 'org/payments' } }),
-        candidate('/x/b', { tags: { 'postman:repo': 'org/payments' } })
+        candidate('/x/a', { tags: { 'postman:repo': 'org/payments' }, tagSource: 'api' }),
+        candidate('/x/b', { tags: { 'postman:repo': 'org/payments' }, tagSource: 'api' })
       ]
     );
     expect(double?.mode).toBe('narrow');
@@ -142,7 +143,7 @@ describe('narrowing pipeline', () => {
   it('AZ-NARROW-007: select-grade tags match case-insensitively and tolerate trailing .git', async () => {
     const mixedKeyCase = await runNarrowingPipeline(
       { repoSlug: 'Org/Payments', serviceHints: [], signals: signals() },
-      [candidate('/x/a', { tags: { 'Postman:Repo': 'org/payments' } }), candidate('/x/b')]
+      [candidate('/x/a', { tags: { 'Postman:Repo': 'org/payments' }, tagSource: 'api' }), candidate('/x/b')]
     );
     expect(mixedKeyCase?.tier).toBe('tag-prefilter');
     expect(mixedKeyCase?.mode).toBe('select');
@@ -150,13 +151,13 @@ describe('narrowing pipeline', () => {
 
     const gitSuffix = await runNarrowingPipeline(
       { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
-      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments.git' } }), candidate('/x/b')]
+      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments.git' }, tagSource: 'api' }), candidate('/x/b')]
     );
     expect(gitSuffix?.mode).toBe('select');
 
     const slugSuffix = await runNarrowingPipeline(
       { repoSlug: 'org/payments.git', serviceHints: [], signals: signals() },
-      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments' } }), candidate('/x/b')]
+      [candidate('/x/a', { tags: { 'postman:repo': 'org/payments' }, tagSource: 'api' }), candidate('/x/b')]
     );
     expect(slugSuffix?.mode).toBe('select');
   });
@@ -165,8 +166,8 @@ describe('narrowing pipeline', () => {
     const single = await runNarrowingPipeline(
       { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
       [
-        candidate('/x/a', { tags: { GithubOrg: 'Org', GithubRepo: 'Payments' } }),
-        candidate('/x/b', { tags: { GithubOrg: 'org', GithubRepo: 'other' } })
+        candidate('/x/a', { tags: { GithubOrg: 'Org', GithubRepo: 'Payments' }, tagSource: 'api' }),
+        candidate('/x/b', { tags: { GithubOrg: 'org', GithubRepo: 'other' }, tagSource: 'api' })
       ]
     );
     expect(single?.tier).toBe('tag-prefilter');
@@ -177,8 +178,8 @@ describe('narrowing pipeline', () => {
     const double = await runNarrowingPipeline(
       { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
       [
-        candidate('/x/a', { tags: { GithubOrg: 'org', GithubRepo: 'payments' } }),
-        candidate('/x/b', { tags: { githuborg: 'org', githubrepo: 'payments' } })
+        candidate('/x/a', { tags: { GithubOrg: 'org', GithubRepo: 'payments' }, tagSource: 'api' }),
+        candidate('/x/b', { tags: { githuborg: 'org', githubrepo: 'payments' }, tagSource: 'api' })
       ]
     );
     expect(double?.mode).toBe('narrow');
@@ -195,7 +196,7 @@ describe('narrowing pipeline', () => {
   it('AZ-NARROW-009: caller-supplied repo-tag-keys are select-grade', async () => {
     const custom = await runNarrowingPipeline(
       { repoSlug: 'org/payments', repoTagKeys: ['team:source-repo'], serviceHints: [], signals: signals() },
-      [candidate('/x/a', { tags: { 'Team:Source-Repo': 'org/payments' } }), candidate('/x/b')]
+      [candidate('/x/a', { tags: { 'Team:Source-Repo': 'org/payments' }, tagSource: 'api' }), candidate('/x/b')]
     );
     expect(custom?.tier).toBe('tag-prefilter');
     expect(custom?.mode).toBe('select');
@@ -204,7 +205,7 @@ describe('narrowing pipeline', () => {
     // Without the key registered, the same tag is not select-grade.
     const unregistered = await runNarrowingPipeline(
       { repoSlug: 'org/payments', serviceHints: [], signals: signals() },
-      [candidate('/x/a', { tags: { 'Team:Source-Repo': 'org/payments' } }), candidate('/x/b')]
+      [candidate('/x/a', { tags: { 'Team:Source-Repo': 'org/payments' }, tagSource: 'api' }), candidate('/x/b')]
     );
     expect(unregistered?.mode).not.toBe('select');
   });

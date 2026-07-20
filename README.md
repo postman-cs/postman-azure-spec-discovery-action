@@ -102,7 +102,11 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `mode` | Discovery mode: resolve-one selects the single best service for this repository; discover-many exports every exportable candidate; discover-estate enumerates repo-associated Azure resources across the subscription without exporting specs. | no | `resolve-one` |
 | `subscription-id` | Optional Azure subscription ID used as the discovery enumeration root. When omitted, the single enabled subscription visible to the credential is used; multiple enabled subscriptions require this input. | no | n/a |
 | `resource-group` | Optional resource group that scopes discovery to one group instead of the whole subscription. | no | n/a |
-| `api-id` | Optional full APIM API ARM resource ID for this service. Use this to bypass broader subscription discovery. | no | n/a |
+| `api-id` | Optional full APIM API ARM resource ID for this service. Use this to bypass broader subscription discovery. Supports historical revisions via ;rev=N. | no | n/a |
+| `environment` | Optional deployment environment selector used to disambiguate APIs that share a repository association across environments. | no | n/a |
+| `gateway-id` | Optional self-hosted or workspace gateway id used to narrow APIM API candidates. The value "managed" is rejected. | no | n/a |
+| `api-version` | Optional APIM API version selector used when multiple versions share the same path or repository association. | no | n/a |
+| `api-revision` | Optional APIM API revision selector used when multiple revisions remain after other evidence. | no | n/a |
 | `output-dir` | Directory under the repository root where generated specs are written. | no | `discovered-specs` |
 | `postman-api-key` | Optional service-account PMAK used to mint or re-mint a postman-access-token for telemetry enrichment (account_type). Not used for any Azure or Postman asset operation. | no | n/a |
 | `postman-access-token` | Optional Postman service-account access token, used only to enrich anonymous telemetry with the session account_type. When omitted, postman-api-key alone can mint one for the same purpose. Not used for any Azure or Postman asset operation. | no | n/a |
@@ -134,7 +138,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `derived-openapi-completeness` | Whether the derived OpenAPI document is full or partial. |
 | `derived-openapi-format` | Serialization format of the derived OpenAPI document: openapi-json. |
 | `derived-openapi-evidence-json` | JSON array of evidence strings describing how the derived OpenAPI document was produced. |
-| `narrowing-strategy` | Narrowing tier that produced the candidate ordering: iac-fingerprint, rg-correlation, tag-prefilter, naming-heuristic, or none. |
+| `narrowing-strategy` | Narrowing tier that produced the candidate ordering: gateway-host-path, tag-prefilter, gateway-assignment, iac-fingerprint, rg-correlation, naming-heuristic, or none. |
 | `repos-json` | discover-estate output: JSON array of deduped org/repo associations discovered from repo tags across the subscription; empty otherwise. |
 | `repo-count` | discover-estate output: number of deduped org/repo associations; empty otherwise. |
 <!-- outputs-table:end -->
