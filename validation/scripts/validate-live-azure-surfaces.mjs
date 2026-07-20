@@ -21,13 +21,16 @@
 //   AZURE_LIVE_RESUME_SUFFIX=... AZURE_LIVE_RESUME_MARKER=... \
 //     node validation/scripts/validate-live-azure-surfaces.mjs --teardown --cancel-recover
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
+
+const execFileAsync = promisify(execFile);
 
 const repoRoot = process.cwd();
 export const SUITE_VERSION = 'r8-pos-396-v1';
@@ -39,9 +42,12 @@ export const PIPELINE_ID = 157;
 export const PIPELINE_NAME = 'postman-azure-spec-discovery-live-validation';
 
 const APIM_READY_TIMEOUT_MS = 5 * 60 * 1000;
-const APIM_POLL_INTERVAL_MS = 10 * 1000;
+const APIM_POLL_INTERVAL_MS = 5 * 1000;
 const CLEANUP_READY_TIMEOUT_MS = 5 * 60 * 1000;
-const CLEANUP_POLL_INTERVAL_MS = 10 * 1000;
+const CLEANUP_POLL_INTERVAL_MS = 5 * 1000;
+export const STUB_HEALTH_TIMEOUT_MS = 120_000;
+export const STUB_HEALTH_POLL_INTERVAL_MS = 5_000;
+export const CASE_MATRIX_CONCURRENCY = 4;
 
 /** Exact public-Azure safe matrix size; coverage gate rejects drift. */
 export const EXPECTED_CASE_CATALOG_SIZE = 31;
@@ -185,7 +191,8 @@ export function parseFlags(argv) {
     teardown: argv.includes('--teardown'),
     dryRun: argv.includes('--dry-run'),
     renderPlan: argv.includes('--render-plan'),
-    cancelRecover: argv.includes('--cancel-recover')
+    cancelRecover: argv.includes('--cancel-recover'),
+    keepAlive: argv.includes('--keep-alive')
   };
 }
 
@@ -274,15 +281,18 @@ export function toEvidenceResult(id, status, fields = {}) {
   };
   const reasonCode = sanitizeReasonCode(fields.reasonCode);
   if (reasonCode) result.reasonCode = reasonCode;
+  if (typeof fields.durationMs === 'number' && Number.isFinite(fields.durationMs)) {
+    result.durationMs = Math.max(0, Math.round(fields.durationMs));
+  }
   return result;
 }
 
-export function buildEvidence(results, { suiteVersion = SUITE_VERSION, testedCommitHashPrefix = '' } = {}) {
+export function buildEvidence(results, { suiteVersion = SUITE_VERSION, testedCommitHashPrefix = '', phases } = {}) {
   const passed = results.filter((result) => result.status === 'pass').length;
   const failed = results.filter((result) => result.status === 'fail').length;
   const requiresCapability = results.filter((result) => result.status === 'requires-capability').length;
   const localOnly = results.filter((result) => result.status === 'local-only').length;
-  return {
+  const evidence = {
     schemaVersion: EVIDENCE_SCHEMA_VERSION,
     suiteVersion,
     testedCommitHashPrefix: testedCommitHashPrefix || undefined,
@@ -294,6 +304,33 @@ export function buildEvidence(results, { suiteVersion = SUITE_VERSION, testedCom
     localOnly,
     results
   };
+  if (Array.isArray(phases) && phases.length > 0) {
+    evidence.phases = phases.map((phase) => ({
+      name: String(phase?.name ?? ''),
+      durationMs: Math.max(0, Math.round(Number(phase?.durationMs) || 0))
+    }));
+  }
+  return evidence;
+}
+
+/**
+ * Bounded-concurrency pool that preserves input order in the results array
+ * regardless of completion order.
+ */
+export async function mapPool(items, concurrency, worker) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 /** Coverage helper: only `pass` backs validationState=live. */
@@ -357,9 +394,71 @@ function defaultRunner(command, args, options = {}) {
   });
 }
 
+/** Promisified execFile with stderr folded into Error.message (same shape as sync failures). */
+export async function defaultAsyncRunner(command, args, options = {}) {
+  try {
+    const { stdout } = await execFileAsync(command, args, {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      ...options
+    });
+    return stdout;
+  } catch (error) {
+    const stderr = error?.stderr != null ? String(error.stderr) : '';
+    const stdout = error?.stdout != null ? String(error.stdout) : '';
+    const base = error instanceof Error ? error.message : String(error ?? 'command failed');
+    throw new Error([base, stdout, stderr].filter(Boolean).join('\n'));
+  }
+}
+
 function azJson(runner, args) {
   const stdout = az(runner, [...args, '-o', 'json']);
   return stdout.trim() ? JSON.parse(stdout) : null;
+}
+
+async function azAsync(asyncRunner, args, options = {}) {
+  return asyncRunner('az', args, options);
+}
+
+async function azJsonAsync(asyncRunner, args) {
+  const stdout = await azAsync(asyncRunner, [...args, '-o', 'json']);
+  return stdout.trim() ? JSON.parse(stdout) : null;
+}
+
+/**
+ * Probe stub site /health until HTTP 200 or the bounded ceiling elapses.
+ * Returns true on success; false on timeout (caller classifies capability).
+ */
+export async function waitForStubHealth({
+  url,
+  timeoutMs = STUB_HEALTH_TIMEOUT_MS,
+  intervalMs = STUB_HEALTH_POLL_INTERVAL_MS,
+  fetchImpl = globalThis.fetch,
+  now = () => Date.now(),
+  sleep = delay,
+  log = () => undefined
+} = {}) {
+  if (!url || typeof fetchImpl !== 'function') return false;
+  const deadline = now() + timeoutMs;
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    try {
+      const response = await fetchImpl(url, { method: 'GET', redirect: 'manual' });
+      if (response?.status === 200) {
+        log(`Stub health gate passed after ${attempt} probe(s)`);
+        return true;
+      }
+      log(`Stub health gate probe ${attempt}: HTTP ${response?.status ?? 'unknown'}`);
+    } catch (error) {
+      log(`Stub health gate probe ${attempt}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+    }
+    if (now() >= deadline) {
+      log(`Stub health gate timed out after ${timeoutMs}ms`);
+      return false;
+    }
+    await sleep(intervalMs);
+  }
 }
 
 export function resolveSubscriptionId(env, runner) {
@@ -655,11 +754,25 @@ async function putApimApi(runner, { subscriptionId, resourceGroup, apimName, api
   const url =
     `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}` +
     `/providers/Microsoft.ApiManagement/service/${apimName}/apis/${encodeURIComponent(apiName)}?api-version=2024-05-01`;
-  az(runner, ['rest', '--method', 'put', '--url', url, '--body', JSON.stringify(body)]);
+  await Promise.resolve(az(runner, ['rest', '--method', 'put', '--url', url, '--body', JSON.stringify(body)]));
 }
 
-async function provisionOptionalApimApis({ runner, log, manifest, subscriptionId, provisionFlags, capabilities }) {
+/** Build websocket serviceUrl for the stub site (public Azure default hostname). */
+export function stubWebsocketServiceUrl(siteHostname) {
+  return `wss://${siteHostname}/ws`;
+}
+
+export async function provisionOptionalApimApis({
+  runner,
+  log,
+  manifest,
+  subscriptionId,
+  provisionFlags,
+  capabilities,
+  siteHostname
+}) {
   const { resourceGroup, apimName } = manifest;
+  const host = String(siteHostname || `${manifest.siteName}.azurewebsites.net`).trim();
   const soapWsdl = await readFile(path.join(repoRoot, 'validation/fixtures/azure/apim-apis/soap.wsdl'), 'utf8');
   const graphqlSdl = await readFile(path.join(repoRoot, 'validation/fixtures/azure/apim-apis/schema.graphql'), 'utf8');
 
@@ -693,20 +806,22 @@ async function provisionOptionalApimApis({ runner, log, manifest, subscriptionId
         const schemaUrl =
           `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}` +
           `/providers/Microsoft.ApiManagement/service/${apimName}/apis/payments-graphql/schemas/graphql?api-version=2024-05-01`;
-        az(runner, [
-          'rest',
-          '--method',
-          'put',
-          '--url',
-          schemaUrl,
-          '--body',
-          JSON.stringify({
-            properties: {
-              contentType: 'application/vnd.ms-azure-apim.graphql.schema',
-              document: { value: graphqlSdl }
-            }
-          })
-        ]);
+        await Promise.resolve(
+          az(runner, [
+            'rest',
+            '--method',
+            'put',
+            '--url',
+            schemaUrl,
+            '--body',
+            JSON.stringify({
+              properties: {
+                contentType: 'application/vnd.ms-azure-apim.graphql.schema',
+                document: { value: graphqlSdl }
+              }
+            })
+          ])
+        );
       }
     },
     {
@@ -718,7 +833,7 @@ async function provisionOptionalApimApis({ runner, log, manifest, subscriptionId
           path: 'payments-websocket',
           protocols: ['wss'],
           apiType: 'websocket',
-          serviceUrl: 'wss://example.invalid/ws'
+          serviceUrl: stubWebsocketServiceUrl(host)
         }
       }
     },
@@ -779,14 +894,19 @@ async function provisionOptionalApimApis({ runner, log, manifest, subscriptionId
 
 async function preflightApiCenterProvider(runner, subscriptionId) {
   try {
-    const providers = azJson(runner, [
-      'provider',
-      'show',
-      '--namespace',
-      'Microsoft.ApiCenter',
-      '--subscription',
-      subscriptionId
-    ]);
+    const stdout = await Promise.resolve(
+      az(runner, [
+        'provider',
+        'show',
+        '--namespace',
+        'Microsoft.ApiCenter',
+        '--subscription',
+        subscriptionId,
+        '-o',
+        'json'
+      ])
+    );
+    const providers = String(stdout ?? '').trim() ? JSON.parse(stdout) : null;
     const state = String(providers?.registrationState ?? '').toLowerCase();
     if (state !== 'registered') {
       return { ok: false, reasonCode: 'provider-not-registered' };
@@ -805,98 +925,114 @@ async function provisionApiCenter({ runner, log, manifest, subscriptionId, capab
     return;
   }
   try {
-    az(runner, [
-      'apic',
-      'service',
-      'create',
-      '--name',
-      manifest.apiCenterServiceName,
-      '--resource-group',
-      manifest.resourceGroup,
-      '--location',
-      API_CENTER_LOCATION,
-      '--tags',
-      `${RESOURCE_RUN_MARKER_TAG}=${manifest.runMarker}`
-    ]);
+    await Promise.resolve(
+      az(runner, [
+        'apic',
+        'service',
+        'create',
+        '--name',
+        manifest.apiCenterServiceName,
+        '--resource-group',
+        manifest.resourceGroup,
+        '--location',
+        API_CENTER_LOCATION,
+        '--tags',
+        `${RESOURCE_RUN_MARKER_TAG}=${manifest.runMarker}`
+      ])
+    );
     // Workspace / API / version / definitions (OpenAPI + GraphQL native).
     const base =
       `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
       `/providers/Microsoft.ApiCenter/services/${manifest.apiCenterServiceName}`;
-    az(runner, [
-      'rest',
-      '--method',
-      'put',
-      '--url',
-      `${base}/workspaces/default?api-version=2024-03-01`,
-      '--body',
-      JSON.stringify({ properties: { title: 'default' } })
-    ]);
-    az(runner, [
-      'rest',
-      '--method',
-      'put',
-      '--url',
-      `${base}/workspaces/default/apis/payments-apic?api-version=2024-03-01`,
-      '--body',
-      JSON.stringify({ properties: { title: 'Payments API Center', kind: 'rest' } })
-    ]);
-    az(runner, [
-      'rest',
-      '--method',
-      'put',
-      '--url',
-      `${base}/workspaces/default/apis/payments-apic/versions/v1?api-version=2024-03-01`,
-      '--body',
-      JSON.stringify({ properties: { title: 'v1', lifecycleStage: 'healthy' } })
-    ]);
+    await Promise.resolve(
+      az(runner, [
+        'rest',
+        '--method',
+        'put',
+        '--url',
+        `${base}/workspaces/default?api-version=2024-03-01`,
+        '--body',
+        JSON.stringify({ properties: { title: 'default' } })
+      ])
+    );
+    await Promise.resolve(
+      az(runner, [
+        'rest',
+        '--method',
+        'put',
+        '--url',
+        `${base}/workspaces/default/apis/payments-apic?api-version=2024-03-01`,
+        '--body',
+        JSON.stringify({ properties: { title: 'Payments API Center', kind: 'rest' } })
+      ])
+    );
+    await Promise.resolve(
+      az(runner, [
+        'rest',
+        '--method',
+        'put',
+        '--url',
+        `${base}/workspaces/default/apis/payments-apic/versions/v1?api-version=2024-03-01`,
+        '--body',
+        JSON.stringify({ properties: { title: 'v1', lifecycleStage: 'healthy' } })
+      ])
+    );
     const openapi = await readFile(path.join(repoRoot, 'validation/fixtures/azure/app-service-stub/openapi.json'), 'utf8');
-    az(runner, [
-      'rest',
-      '--method',
-      'put',
-      '--url',
-      `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/openapi?api-version=2024-03-01`,
-      '--body',
-      JSON.stringify({
-        properties: {
-          title: 'openapi',
-          specification: { name: 'openapi', version: '3.0.3' }
-        }
-      })
-    ]);
-    az(runner, [
-      'rest',
-      '--method',
-      'post',
-      '--url',
-      `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/openapi:importSpecification?api-version=2024-03-01`,
-      '--body',
-      JSON.stringify({ format: 'inline', value: openapi, specification: { name: 'openapi', version: '3.0.3' } })
-    ]);
+    await Promise.resolve(
+      az(runner, [
+        'rest',
+        '--method',
+        'put',
+        '--url',
+        `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/openapi?api-version=2024-03-01`,
+        '--body',
+        JSON.stringify({
+          properties: {
+            title: 'openapi',
+            specification: { name: 'openapi', version: '3.0.3' }
+          }
+        })
+      ])
+    );
+    await Promise.resolve(
+      az(runner, [
+        'rest',
+        '--method',
+        'post',
+        '--url',
+        `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/openapi:importSpecification?api-version=2024-03-01`,
+        '--body',
+        JSON.stringify({ format: 'inline', value: openapi, specification: { name: 'openapi', version: '3.0.3' } })
+      ])
+    );
     const gql = await readFile(path.join(repoRoot, 'validation/fixtures/azure/apim-apis/schema.graphql'), 'utf8');
-    az(runner, [
-      'rest',
-      '--method',
-      'put',
-      '--url',
-      `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/graphql?api-version=2024-03-01`,
-      '--body',
-      JSON.stringify({
-        properties: {
-          title: 'graphql',
-          specification: { name: 'graphql', version: 'October2021' }
-        }
-      })
-    ]);
-    az(runner, [
-      'rest',
-      '--method',
-      'post',
-      '--url',
-      `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/graphql:importSpecification?api-version=2024-03-01`,
-      '--body',
-      JSON.stringify({ format: 'inline', value: gql, specification: { name: 'graphql', version: 'October2021' } })
-    ]);
+    await Promise.resolve(
+      az(runner, [
+        'rest',
+        '--method',
+        'put',
+        '--url',
+        `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/graphql?api-version=2024-03-01`,
+        '--body',
+        JSON.stringify({
+          properties: {
+            title: 'graphql',
+            specification: { name: 'graphql', version: 'October2021' }
+          }
+        })
+      ])
+    );
+    await Promise.resolve(
+      az(runner, [
+        'rest',
+        '--method',
+        'post',
+        '--url',
+        `${base}/workspaces/default/apis/payments-apic/versions/v1/definitions/graphql:importSpecification?api-version=2024-03-01`,
+        '--body',
+        JSON.stringify({ format: 'inline', value: gql, specification: { name: 'graphql', version: 'October2021' } })
+      ])
+    );
     capabilities['api-center'] = { ok: true };
     recordManifestResource(manifest, {
       type: 'Microsoft.ApiCenter/services',
@@ -917,46 +1053,52 @@ async function provisionServiceBusIfGuarded({ runner, log, manifest, subscriptio
     return;
   }
   try {
-    az(runner, [
-      'servicebus',
-      'namespace',
-      'create',
-      '--name',
-      manifest.serviceBusNamespaceName,
-      '--resource-group',
-      manifest.resourceGroup,
-      '--location',
-      String(process.env.AZURE_LOCATION || 'eastus2'),
-      '--sku',
-      'Standard',
-      '--tags',
-      `${RESOURCE_RUN_MARKER_TAG}=${manifest.runMarker}`
-    ]);
-    az(runner, [
-      'servicebus',
-      'topic',
-      'create',
-      '--namespace-name',
-      manifest.serviceBusNamespaceName,
-      '--resource-group',
-      manifest.resourceGroup,
-      '--name',
-      manifest.serviceBusTopicName
-    ]);
-    az(runner, [
-      'servicebus',
-      'topic',
-      'subscription',
-      'create',
-      '--namespace-name',
-      manifest.serviceBusNamespaceName,
-      '--resource-group',
-      manifest.resourceGroup,
-      '--topic-name',
-      manifest.serviceBusTopicName,
-      '--name',
-      manifest.serviceBusSubName
-    ]);
+    await Promise.resolve(
+      az(runner, [
+        'servicebus',
+        'namespace',
+        'create',
+        '--name',
+        manifest.serviceBusNamespaceName,
+        '--resource-group',
+        manifest.resourceGroup,
+        '--location',
+        String(process.env.AZURE_LOCATION || 'eastus2'),
+        '--sku',
+        'Standard',
+        '--tags',
+        `${RESOURCE_RUN_MARKER_TAG}=${manifest.runMarker}`
+      ])
+    );
+    await Promise.resolve(
+      az(runner, [
+        'servicebus',
+        'topic',
+        'create',
+        '--namespace-name',
+        manifest.serviceBusNamespaceName,
+        '--resource-group',
+        manifest.resourceGroup,
+        '--name',
+        manifest.serviceBusTopicName
+      ])
+    );
+    await Promise.resolve(
+      az(runner, [
+        'servicebus',
+        'topic',
+        'subscription',
+        'create',
+        '--namespace-name',
+        manifest.serviceBusNamespaceName,
+        '--resource-group',
+        manifest.resourceGroup,
+        '--topic-name',
+        manifest.serviceBusTopicName,
+        '--name',
+        manifest.serviceBusSubName
+      ])
+    );
     capabilities['service-bus-standard'] = { ok: true };
     recordManifestResource(manifest, {
       type: 'Microsoft.ServiceBus/namespaces',
@@ -1260,61 +1402,71 @@ export async function teardownDedicatedResourceGroup({
   log('Dedicated-group teardown complete: group absent and residual audit clean');
 }
 
-async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath, capabilities = {} }) {
-  const results = [];
+async function runDefaultCases({
+  runner,
+  log,
+  manifest,
+  subscriptionId,
+  cliPath,
+  capabilities = {},
+  now = () => Date.now(),
+  caseConcurrency = CASE_MATRIX_CONCURRENCY
+}) {
+  const caseTasks = [];
   const armApiId =
     `/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}/providers/Microsoft.ApiManagement/service/${manifest.apimName}/apis/payments-live`;
   const historicalApiId = `${armApiId};rev=2`;
   const gatewayHostname = `${manifest.apimName}.azure-api.net`;
 
-  async function runCase(id, fn, { allowRequiresCapability = false } = {}) {
+  function defineCase(id, fn, { allowRequiresCapability = false } = {}) {
+    caseTasks.push({ id, fn, allowRequiresCapability });
+  }
+
+  async function executeCase({ id, fn, allowRequiresCapability = false }) {
+    const started = now();
     const workspace = await mkdtemp(path.join(os.tmpdir(), `az-live-${id}-`));
     try {
       const resolution = await fn(workspace);
+      const durationMs = now() - started;
       if (resolution?.__status === 'requires-capability') {
-        results.push(
-          toEvidenceResult(id, 'requires-capability', {
-            reasonCode: resolution.reasonCode,
-            providerType: resolution.providerType,
-            sourceType: resolution.sourceType,
-            specFormat: resolution.specFormat,
-            contractClass: resolution.contractClass
-          })
-        );
         log(`case ${id}: requires-capability (${resolution.reasonCode ?? 'capability-absent'})`);
-        return;
+        return toEvidenceResult(id, 'requires-capability', {
+          reasonCode: resolution.reasonCode,
+          providerType: resolution.providerType,
+          sourceType: resolution.sourceType,
+          specFormat: resolution.specFormat,
+          contractClass: resolution.contractClass,
+          durationMs
+        });
       }
       if (resolution?.__status === 'local-only') {
-        results.push(
-          toEvidenceResult(id, 'local-only', {
-            reasonCode: 'local-only-matrix',
-            providerType: resolution.providerType,
-            sourceType: resolution.sourceType,
-            specFormat: resolution.specFormat
-          })
-        );
         log(`case ${id}: local-only`);
-        return;
+        return toEvidenceResult(id, 'local-only', {
+          reasonCode: 'local-only-matrix',
+          providerType: resolution.providerType,
+          sourceType: resolution.sourceType,
+          specFormat: resolution.specFormat,
+          durationMs
+        });
       }
       const assertOptions = resolution?.__assertOptions ?? {};
       const resolutionFields = { ...resolution };
       delete resolutionFields.__assertOptions;
       delete resolutionFields.__status;
       const asserted = assertExpectedResult(id, resolutionFields, assertOptions);
-      results.push(toEvidenceResult(id, 'pass', asserted));
       log(`case ${id}: pass`);
+      return toEvidenceResult(id, 'pass', { ...asserted, durationMs });
     } catch (error) {
+      const durationMs = now() - started;
       if (allowRequiresCapability) {
-        results.push(
-          toEvidenceResult(id, 'requires-capability', {
-            reasonCode: capabilityReasonFromError(error)
-          })
-        );
         log(`case ${id}: requires-capability (${capabilityReasonFromError(error)})`);
-      } else {
-        results.push(toEvidenceResult(id, 'fail', { reasonCode: 'cli-failed' }));
-        log(`case ${id}: fail (${redactSecrets(error instanceof Error ? error.message : String(error))})`);
+        return toEvidenceResult(id, 'requires-capability', {
+          reasonCode: capabilityReasonFromError(error),
+          durationMs
+        });
       }
+      log(`case ${id}: fail (${redactSecrets(error instanceof Error ? error.message : String(error))})`);
+      return toEvidenceResult(id, 'fail', { reasonCode: 'cli-failed', durationMs });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -1332,7 +1484,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
   }
 
   // --- Baseline six ---
-  await runCase('apim-explicit-api-id', async (workspace) => {
+  defineCase('apim-explicit-api-id', async (workspace) => {
     const result = runCli(
       runner,
       cliPath,
@@ -1357,7 +1509,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('apim-discovery', async (workspace) => {
+  defineCase('apim-discovery', async (workspace) => {
     const result = runCli(
       runner,
       cliPath,
@@ -1382,7 +1534,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('app-service-api-definition', async (workspace) => {
+  defineCase('app-service-api-definition', async (workspace) => {
     const result = runCli(
       runner,
       cliPath,
@@ -1405,7 +1557,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectResolved(result, 'app-service-api-definition');
   });
 
-  await runCase('discover-many', async (workspace) => {
+  defineCase('discover-many', async (workspace) => {
     const result = runCli(
       runner,
       cliPath,
@@ -1437,7 +1589,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('iac-single', async (workspace) => {
+  defineCase('iac-single', async (workspace) => {
     await seedIacSingle(workspace);
     const result = runCli(
       runner,
@@ -1457,7 +1609,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectResolved(result, 'iac-embedded');
   });
 
-  await runCase('ambiguity', async (workspace) => {
+  defineCase('ambiguity', async (workspace) => {
     await seedAmbiguity(workspace);
     const result = runCli(
       runner,
@@ -1480,7 +1632,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
   // --- APIM clean-repo / formats ---
   // No --api-id / --repo-slug: repository context comes from GITHUB_REPOSITORY.
   // Path fixtures isolate canonical vs the customer; inherited service tags alone do not select.
-  await runCase('apim-clean-repo-tag', async (workspace) => {
+  defineCase('apim-clean-repo-tag', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
     await seedCanonicalCleanRepo(workspace, { gatewayHostname });
@@ -1507,7 +1659,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('apim-clean-repo-github-org-repo-pair', async (workspace) => {
+  defineCase('apim-clean-repo-github-org-repo-pair', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
     await seedGithubOrgRepoCleanRepo(workspace, { gatewayHostname });
@@ -1534,7 +1686,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('apim-gateway-host-path', async (workspace) => {
+  defineCase('apim-gateway-host-path', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
     await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'payments-live' });
@@ -1561,7 +1713,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('apim-host-only-ambiguity', async (workspace) => {
+  defineCase('apim-host-only-ambiguity', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
     await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: '', hostOnly: true });
@@ -1585,7 +1737,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectUnresolved(result);
   });
 
-  await runCase('apim-version-revision-ambiguity', async (workspace) => {
+  defineCase('apim-version-revision-ambiguity', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
     // Host-only + version selector with current+historical revisions must stay unresolved.
@@ -1611,7 +1763,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectUnresolved(result);
   });
 
-  await runCase('apim-explicit-historical-revision', async (workspace) => {
+  defineCase('apim-explicit-historical-revision', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
     const result = runCli(
@@ -1638,7 +1790,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('apim-version-set', async (workspace) => {
+  defineCase('apim-version-set', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
     const result = runCli(
@@ -1667,7 +1819,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('apim-soap-wsdl', async (workspace) => {
+  defineCase('apim-soap-wsdl', async (workspace) => {
     const gated = capabilityGate('apim-soap');
     if (gated) return gated;
     const result = runCli(
@@ -1692,7 +1844,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectResolved(result, 'apim-export');
   });
 
-  await runCase('apim-graphql-sdl', async (workspace) => {
+  defineCase('apim-graphql-sdl', async (workspace) => {
     const gated = capabilityGate('apim-graphql');
     if (gated) return gated;
     const result = runCli(
@@ -1722,7 +1874,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     { id: 'apim-unsupported-grpc', flag: 'apim-grpc', filter: 'payments-grpc' },
     { id: 'apim-unsupported-odata', flag: 'apim-odata', filter: 'payments-odata' }
   ]) {
-    await runCase(unsupported.id, async (workspace) => {
+    defineCase(unsupported.id, async (workspace) => {
       const gated = capabilityGate(unsupported.flag);
       if (gated) return gated;
       const result = runCli(
@@ -1757,7 +1909,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     'api-center-exact-binding',
     'api-center-ambiguity'
   ]) {
-    await runCase(apiCenterCase, async (workspace) => {
+    defineCase(apiCenterCase, async (workspace) => {
       const gated = capabilityGate('api-center');
       if (gated) {
         return {
@@ -1825,7 +1977,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
   }
 
   // --- Logic / connector / template / event-grid / service-bus / functions ---
-  await runCase('logic-apps-list-swagger', async (workspace) => {
+  defineCase('logic-apps-list-swagger', async (workspace) => {
     const gated = capabilityGate('logic-app');
     if (gated) return gated;
     const result = runCli(
@@ -1870,7 +2022,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('logic-apps-reader-synthesis', async (workspace) => {
+  defineCase('logic-apps-reader-synthesis', async (workspace) => {
     const gated = capabilityGate('logic-app');
     if (gated) return gated;
     const result = runCli(
@@ -1899,7 +2051,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('custom-apis-inline-swagger', async (workspace) => {
+  defineCase('custom-apis-inline-swagger', async (workspace) => {
     const gated = capabilityGate('custom-connector');
     if (gated) return gated;
     const result = runCli(
@@ -1922,7 +2074,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectResolved(result, 'custom-api-swagger');
   });
 
-  await runCase('template-specs-embedded-apim', async (workspace) => {
+  defineCase('template-specs-embedded-apim', async (workspace) => {
     const gated = capabilityGate('template-spec');
     if (gated) return gated;
     const result = runCli(
@@ -1945,7 +2097,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectResolved(result, 'template-spec-embedded');
   });
 
-  await runCase('event-grid-webhook-partial', async (workspace) => {
+  defineCase('event-grid-webhook-partial', async (workspace) => {
     const gated = capabilityGate('event-grid');
     if (gated) return gated;
     const result = runCli(
@@ -1968,7 +2120,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectResolved(result, 'event-grid-webhook');
   });
 
-  await runCase('service-bus-topic-partial', async (workspace) => {
+  defineCase('service-bus-topic-partial', async (workspace) => {
     const gated = capabilityGate('service-bus-standard');
     if (gated) return gated;
     const result = runCli(
@@ -1991,7 +2143,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     return expectResolved(result, 'service-bus-topic');
   });
 
-  await runCase('function-bindings-openapi-extension', async (workspace) => {
+  defineCase('function-bindings-openapi-extension', async (workspace) => {
     const gated = capabilityGate('function-app');
     if (gated) return gated;
     if (!manifest.functionOpenApiExtensionSeeded) {
@@ -2051,7 +2203,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     };
   });
 
-  await runCase('app-service-apispecpath-runtime', async (workspace) => {
+  defineCase('app-service-apispecpath-runtime', async (workspace) => {
     const gated = capabilityGate('app-service');
     if (gated) return gated;
     // Seed ApiSpecPath and clear public apiDefinition so the case cannot pass on URL fallback.
@@ -2167,7 +2319,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     }
   });
 
-  await runCase('local-r3-format-parser-matrix', async (workspace) => {
+  defineCase('local-r3-format-parser-matrix', async (workspace) => {
     await seedLocalR3(workspace);
     const result = runCli(
       runner,
@@ -2200,7 +2352,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     throw new Error('local R3 matrix did not exercise compiled CLI repo discovery');
   });
 
-  return results;
+  return mapPool(caseTasks, caseConcurrency, (task) => executeCase(task));
 }
 
 /**
@@ -2208,10 +2360,20 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
  */
 export async function runLiveValidation({ argv = process.argv.slice(2), env = process.env, deps = {} } = {}) {
   const runner = deps.runner ?? defaultRunner;
+  // Parallel groups use an async runner. When tests inject a sync runner, wrap it
+  // so unit tests stay deterministic (no real child_process concurrency) unless
+  // deps.asyncRunner is provided explicitly.
+  const asyncRunner =
+    deps.asyncRunner ??
+    (deps.runner
+      ? async (command, args, options) => runner(command, args, options)
+      : defaultAsyncRunner);
   const log = deps.log ?? ((line) => console.error(line));
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? delay;
+  const fetchImpl = deps.fetch ?? globalThis.fetch;
   const runCases = deps.runCases ?? runDefaultCases;
+  const phases = [];
 
   const flags = parseFlags(argv);
   const provisionFlags = parseProvisionFlags(env);
@@ -2259,8 +2421,17 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   if (Boolean(resumeSuffix) !== Boolean(resumeMarker)) {
     throw new Error('AZURE_LIVE_RESUME_SUFFIX and AZURE_LIVE_RESUME_MARKER must be set together');
   }
-  const suffix = resumeSuffix || randomBytes(4).toString('hex');
-  const runMarker = resumeMarker || `run-${now()}-${suffix}`;
+  const persistentSuffix = String(env.AZURE_LIVE_PERSISTENT_SUFFIX ?? '').trim();
+  if (flags.keepAlive) {
+    if (!/^[0-9a-f]{4,8}$/.test(persistentSuffix)) {
+      throw new Error('--keep-alive requires AZURE_LIVE_PERSISTENT_SUFFIX (4-8 lowercase hex chars) for stable resource names');
+    }
+    if (flags.teardown) {
+      throw new Error('--keep-alive and --teardown are mutually exclusive; tear persistent stacks down explicitly with --cancel-recover');
+    }
+  }
+  const suffix = resumeSuffix || (flags.keepAlive ? persistentSuffix : randomBytes(4).toString('hex'));
+  const runMarker = resumeMarker || (flags.keepAlive ? `persistent-${suffix}` : `run-${now()}-${suffix}`);
   const resourceGroup = sharedResourceGroup || `postman-azure-spec-live-${suffix}`;
   const ownsResourceGroup = !sharedResourceGroup;
   const manifest = buildManifestNames({
@@ -2280,6 +2451,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   let evidence;
   let cleanupFailure;
   let validationFailure;
+  let stubUrl = '';
   try {
     if (flags.provision) {
       if (ownsResourceGroup) {
@@ -2309,6 +2481,28 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
         'utf8'
       );
 
+      const liveStackStarted = now();
+      let liveStackCurrent = false;
+      if (flags.keepAlive) {
+        try {
+          const existing = azJson(runner, [
+            'resource',
+            'show',
+            '--resource-group',
+            resourceGroup,
+            '--resource-type',
+            'Microsoft.ApiManagement/service',
+            '--name',
+            manifest.apimName
+          ]);
+          liveStackCurrent = existing?.tags?.[RUN_MARKER_TAG] === runMarker;
+        } catch (error) {
+          if (!isResourceNotFoundError(error)) throw error;
+        }
+      }
+      if (liveStackCurrent) {
+        log('Persistent live stack already provisioned; skipping live-stack.bicep deploy');
+      } else {
       log('Deploying live-stack.bicep (APIM Consumption + App Service + optional multi-API)');
       az(runner, [
         'deployment',
@@ -2328,59 +2522,183 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
         `repoSlug=${manifest.repoSlug}`,
         `provisionMultiApi=${provisionFlags['apim-multi'] ? 'true' : 'false'}`
       ]);
+      }
       recordManifestResource(manifest, { type: 'Microsoft.ApiManagement/service', name: manifest.apimName });
       recordManifestResource(manifest, { type: 'Microsoft.Web/serverfarms', name: manifest.planName });
       recordManifestResource(manifest, { type: 'Microsoft.Web/sites', name: manifest.siteName });
+      phases.push({ name: 'live-stack-deploy', durationMs: now() - liveStackStarted });
 
-      log('Deploying App Service stub zip');
-      const stubDir = path.join(repoRoot, 'validation/fixtures/azure/app-service-stub');
-      const zipDir = await mkdtemp(path.join(os.tmpdir(), 'az-stub-zip-'));
-      const zipPath = path.join(zipDir, 'stub.zip');
-      runner('zip', [
-        '-j',
-        zipPath,
-        path.join(stubDir, 'package.json'),
-        path.join(stubDir, 'server.mjs'),
-        path.join(stubDir, 'openapi.json')
-      ]);
-      az(runner, [
-        'webapp',
-        'deploy',
-        '--resource-group',
-        resourceGroup,
-        '--name',
-        manifest.siteName,
-        '--src-path',
-        zipPath,
-        '--type',
-        'zip'
-      ]);
-      await rm(zipDir, { recursive: true, force: true });
+      const siteHostname = `${manifest.siteName}.azurewebsites.net`;
+      let apimExportReadyMs = 0;
 
-      const site = azJson(runner, ['webapp', 'show', '--resource-group', resourceGroup, '--name', manifest.siteName]);
-      const stubUrl = `https://${site.defaultHostName}/openapi.json`;
-      // Public apiDefinition.url only — no secret query parameters.
-      log('Setting siteConfig.apiDefinition.url');
-      az(runner, [
-        'rest',
-        '--method',
-        'patch',
-        '--url',
-        `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.Web/sites/${manifest.siteName}/config/web?api-version=2023-12-01`,
-        '--body',
-        JSON.stringify({ properties: { apiDefinition: { url: stubUrl } } })
-      ]);
+      const parallelStarted = now();
+      log('Starting parallel provision units (stub deploy, optional APIM APIs, API Center, Service Bus, APIM export poll)');
+      const parallelUnits = [
+        {
+          name: 'stub-deploy',
+          fatal: true,
+          run: async () => {
+            log('Deploying App Service stub zip');
+            const stubDir = path.join(repoRoot, 'validation/fixtures/azure/app-service-stub');
+            const zipDir = await mkdtemp(path.join(os.tmpdir(), 'az-stub-zip-'));
+            const zipPath = path.join(zipDir, 'stub.zip');
+            await asyncRunner('zip', [
+              '-j',
+              zipPath,
+              path.join(stubDir, 'package.json'),
+              path.join(stubDir, 'server.mjs'),
+              path.join(stubDir, 'openapi.json')
+            ]);
+            await azAsync(asyncRunner, [
+              'webapp',
+              'deploy',
+              '--resource-group',
+              resourceGroup,
+              '--name',
+              manifest.siteName,
+              '--src-path',
+              zipPath,
+              '--type',
+              'zip'
+            ]);
+            await rm(zipDir, { recursive: true, force: true });
 
-      await provisionOptionalApimApis({
-        runner,
-        log,
-        manifest,
-        subscriptionId,
-        provisionFlags,
-        capabilities
-      });
+            const site = await azJsonAsync(asyncRunner, [
+              'webapp',
+              'show',
+              '--resource-group',
+              resourceGroup,
+              '--name',
+              manifest.siteName
+            ]);
+            const host = String(site?.defaultHostName || siteHostname).trim();
+            stubUrl = `https://${host}/openapi.json`;
+            // Public apiDefinition.url only — no secret query parameters.
+            log('Setting siteConfig.apiDefinition.url');
+            await azAsync(asyncRunner, [
+              'rest',
+              '--method',
+              'patch',
+              '--url',
+              `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.Web/sites/${manifest.siteName}/config/web?api-version=2023-12-01`,
+              '--body',
+              JSON.stringify({ properties: { apiDefinition: { url: stubUrl } } })
+            ]);
+          }
+        },
+        {
+          name: 'optional-apim-apis',
+          fatal: false,
+          run: () =>
+            provisionOptionalApimApis({
+              runner: asyncRunner,
+              log,
+              manifest,
+              subscriptionId,
+              provisionFlags,
+              capabilities,
+              siteHostname
+            })
+        },
+        {
+          name: 'api-center',
+          fatal: false,
+          run: async () => {
+            if (provisionFlags['api-center']) {
+              await provisionApiCenter({
+                runner: asyncRunner,
+                log,
+                manifest,
+                subscriptionId,
+                capabilities
+              });
+            } else {
+              capabilities['api-center'] = { ok: false, reasonCode: 'cost-guard-blocked' };
+            }
+          }
+        },
+        {
+          name: 'service-bus',
+          fatal: false,
+          run: () =>
+            provisionServiceBusIfGuarded({
+              runner: asyncRunner,
+              log,
+              manifest,
+              subscriptionId,
+              provisionFlags,
+              capabilities
+            })
+        },
+        {
+          name: 'apim-export-ready',
+          fatal: true,
+          run: async () => {
+            const exportStarted = now();
+            log('Waiting for APIM export availability');
+            const deadline = now() + APIM_READY_TIMEOUT_MS;
+            let ready = false;
+            let lastProbeError = '';
+            for (;;) {
+              try {
+                const exportProbe = await azJsonAsync(asyncRunner, [
+                  'rest',
+                  '--method',
+                  'get',
+                  '--url',
+                  `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.ApiManagement/service/${manifest.apimName}/apis/payments-live?export=true&format=openapi%2Bjson-link&api-version=2024-05-01`
+                ]);
+                if (exportProbe?.link || exportProbe?.value?.link || exportProbe?.properties?.value?.link) {
+                  ready = true;
+                  break;
+                }
+                lastProbeError = 'export response contained no download link';
+              } catch (error) {
+                lastProbeError = redactSecrets(error instanceof Error ? error.message : String(error));
+                if (classifyProbeError(lastProbeError) === 'fatal') {
+                  throw new Error(`APIM export probe failed with a non-retryable error: ${lastProbeError}`);
+                }
+                log(`APIM export probe not ready yet: ${lastProbeError}`);
+              }
+              if (now() >= deadline) break;
+              await sleep(APIM_POLL_INTERVAL_MS);
+            }
+            apimExportReadyMs = now() - exportStarted;
+            if (!ready) {
+              throw new Error(
+                `APIM export did not become available within the ${APIM_READY_TIMEOUT_MS / 60000}-minute readiness ceiling` +
+                  (lastProbeError ? `; last probe error: ${lastProbeError}` : '')
+              );
+            }
+          }
+        }
+      ];
 
+      const settled = await Promise.allSettled(parallelUnits.map((unit) => unit.run()));
+      phases.push({ name: 'parallel-provision', durationMs: now() - parallelStarted });
+      phases.push({ name: 'apim-export-ready', durationMs: apimExportReadyMs });
+
+      let firstFatal;
+      for (let i = 0; i < settled.length; i += 1) {
+        const outcome = settled[i];
+        const unit = parallelUnits[i];
+        if (outcome.status === 'rejected') {
+          log(
+            `Parallel provision unit ${unit.name} failed: ${redactSecrets(outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason))}`
+          );
+          if (unit.fatal && !firstFatal) {
+            firstFatal = outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason));
+          }
+        }
+      }
+      if (firstFatal) throw firstFatal;
+
+      if (!stubUrl) {
+        stubUrl = `https://${siteHostname}/openapi.json`;
+      }
       const webhookEndpointUrl = stubUrl.replace(/openapi\.json$/, 'health');
+
+      const extendedStarted = now();
       if (
         provisionFlags['logic-app'] ||
         provisionFlags['custom-connector'] ||
@@ -2388,124 +2706,96 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
         provisionFlags['event-grid'] ||
         provisionFlags['function-app']
       ) {
-        try {
-          log('Deploying extended-stack.bicep (logic/connector/templatespec/eventgrid/functions)');
-          const plan = azJson(runner, [
-            'resource',
-            'show',
-            '--resource-group',
-            resourceGroup,
-            '--resource-type',
-            'Microsoft.Web/serverfarms',
-            '--name',
-            manifest.planName
-          ]);
-          az(runner, [
-            'deployment',
-            'group',
-            'create',
-            '--name',
-            manifest.extendedDeploymentName,
-            '--resource-group',
-            resourceGroup,
-            '--template-file',
-            'validation/fixtures/azure/extended-stack.bicep',
-            '--parameters',
-            `runMarker=${runMarker}`,
-            `logicAppName=${manifest.logicAppName}`,
-            `customConnectorName=${manifest.customConnectorName}`,
-            `templateSpecName=${manifest.templateSpecName}`,
-            `eventGridTopicName=${manifest.eventGridTopicName}`,
-            `eventGridSubName=${manifest.eventGridSubName}`,
-            `webhookEndpointUrl=${webhookEndpointUrl}`,
-            `functionAppName=${manifest.functionAppName}`,
-            `appServicePlanId=${plan?.id ?? ''}`,
-            `provisionLogicApp=${provisionFlags['logic-app'] ? 'true' : 'false'}`,
-            `provisionCustomConnector=${provisionFlags['custom-connector'] ? 'true' : 'false'}`,
-            `provisionTemplateSpec=${provisionFlags['template-spec'] ? 'true' : 'false'}`,
-            `provisionEventGrid=${provisionFlags['event-grid'] ? 'true' : 'false'}`,
-            `provisionFunctionApp=${provisionFlags['function-app'] ? 'true' : 'false'}`
-          ]);
-          for (const [flag, key, type] of [
-            ['logic-app', 'logicAppName', 'Microsoft.Logic/workflows'],
-            ['custom-connector', 'customConnectorName', 'Microsoft.Web/customApis'],
-            ['template-spec', 'templateSpecName', 'Microsoft.Resources/templateSpecs'],
-            ['event-grid', 'eventGridTopicName', 'Microsoft.EventGrid/topics'],
-            ['function-app', 'functionAppName', 'Microsoft.Web/sites']
-          ]) {
-            if (provisionFlags[flag]) {
-              capabilities[flag] = { ok: true };
-              recordManifestResource(manifest, { type, name: manifest[key] });
-            } else {
-              capabilities[flag] = { ok: false, reasonCode: 'cost-guard-blocked' };
-            }
-          }
-        } catch (error) {
-          const reasonCode = capabilityReasonFromError(error);
+        const healthOk = await waitForStubHealth({
+          url: webhookEndpointUrl,
+          timeoutMs: STUB_HEALTH_TIMEOUT_MS,
+          intervalMs: STUB_HEALTH_POLL_INTERVAL_MS,
+          fetchImpl,
+          now,
+          sleep,
+          log
+        });
+        if (!healthOk) {
+          const reasonCode = 'capability-absent';
           for (const flag of ['logic-app', 'custom-connector', 'template-spec', 'event-grid', 'function-app']) {
             if (provisionFlags[flag] && !capabilities[flag]?.ok) {
               capabilities[flag] = { ok: false, reasonCode };
             }
           }
-          log(`Extended stack partially blocked (${reasonCode}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+          log(`Stub health gate failed; skipping extended-stack deploy (${reasonCode})`);
+        } else {
+          try {
+            log('Deploying extended-stack.bicep (logic/connector/templatespec/eventgrid/functions)');
+            const plan = azJson(runner, [
+              'resource',
+              'show',
+              '--resource-group',
+              resourceGroup,
+              '--resource-type',
+              'Microsoft.Web/serverfarms',
+              '--name',
+              manifest.planName
+            ]);
+            az(runner, [
+              'deployment',
+              'group',
+              'create',
+              '--name',
+              manifest.extendedDeploymentName,
+              '--resource-group',
+              resourceGroup,
+              '--template-file',
+              'validation/fixtures/azure/extended-stack.bicep',
+              '--parameters',
+              `runMarker=${runMarker}`,
+              `logicAppName=${manifest.logicAppName}`,
+              `customConnectorName=${manifest.customConnectorName}`,
+              `templateSpecName=${manifest.templateSpecName}`,
+              `eventGridTopicName=${manifest.eventGridTopicName}`,
+              `eventGridSubName=${manifest.eventGridSubName}`,
+              `webhookEndpointUrl=${webhookEndpointUrl}`,
+              `functionAppName=${manifest.functionAppName}`,
+              `appServicePlanId=${plan?.id ?? ''}`,
+              `provisionLogicApp=${provisionFlags['logic-app'] ? 'true' : 'false'}`,
+              `provisionCustomConnector=${provisionFlags['custom-connector'] ? 'true' : 'false'}`,
+              `provisionTemplateSpec=${provisionFlags['template-spec'] ? 'true' : 'false'}`,
+              `provisionEventGrid=${provisionFlags['event-grid'] ? 'true' : 'false'}`,
+              `provisionFunctionApp=${provisionFlags['function-app'] ? 'true' : 'false'}`
+            ]);
+            for (const [flag, key, type] of [
+              ['logic-app', 'logicAppName', 'Microsoft.Logic/workflows'],
+              ['custom-connector', 'customConnectorName', 'Microsoft.Web/customApis'],
+              ['template-spec', 'templateSpecName', 'Microsoft.Resources/templateSpecs'],
+              ['event-grid', 'eventGridTopicName', 'Microsoft.EventGrid/topics'],
+              ['function-app', 'functionAppName', 'Microsoft.Web/sites']
+            ]) {
+              if (provisionFlags[flag]) {
+                capabilities[flag] = { ok: true };
+                recordManifestResource(manifest, { type, name: manifest[key] });
+              } else {
+                capabilities[flag] = { ok: false, reasonCode: 'cost-guard-blocked' };
+              }
+            }
+          } catch (error) {
+            const reasonCode = capabilityReasonFromError(error);
+            for (const flag of ['logic-app', 'custom-connector', 'template-spec', 'event-grid', 'function-app']) {
+              if (provisionFlags[flag] && !capabilities[flag]?.ok) {
+                capabilities[flag] = { ok: false, reasonCode };
+              }
+            }
+            log(
+              `Extended stack partially blocked (${reasonCode}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`
+            );
+          }
         }
       }
-
-      if (provisionFlags['api-center']) {
-        await provisionApiCenter({ runner, log, manifest, subscriptionId, capabilities });
-      } else {
-        capabilities['api-center'] = { ok: false, reasonCode: 'cost-guard-blocked' };
-      }
-
-      await provisionServiceBusIfGuarded({
-        runner,
-        log,
-        manifest,
-        subscriptionId,
-        provisionFlags,
-        capabilities
-      });
+      phases.push({ name: 'extended-stack', durationMs: now() - extendedStarted });
 
       await writeFile(
         path.join(repoRoot, 'validation/evidence/live-resource-manifest.local.json'),
         `${JSON.stringify(manifest, null, 2)}\n`,
         'utf8'
       );
-
-      log('Waiting for APIM export availability');
-      const deadline = now() + APIM_READY_TIMEOUT_MS;
-      let ready = false;
-      let lastProbeError = '';
-      for (;;) {
-        try {
-          const exportProbe = azJson(runner, [
-            'rest',
-            '--method',
-            'get',
-            '--url',
-            `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.ApiManagement/service/${manifest.apimName}/apis/payments-live?export=true&format=openapi%2Bjson-link&api-version=2024-05-01`
-          ]);
-          if (exportProbe?.link || exportProbe?.value?.link || exportProbe?.properties?.value?.link) {
-            ready = true;
-            break;
-          }
-          lastProbeError = 'export response contained no download link';
-        } catch (error) {
-          lastProbeError = redactSecrets(error instanceof Error ? error.message : String(error));
-          if (classifyProbeError(lastProbeError) === 'fatal') {
-            throw new Error(`APIM export probe failed with a non-retryable error: ${lastProbeError}`);
-          }
-          log(`APIM export probe not ready yet: ${lastProbeError}`);
-        }
-        if (now() >= deadline) break;
-        await sleep(APIM_POLL_INTERVAL_MS);
-      }
-      if (!ready) {
-        throw new Error(
-          `APIM export did not become available within the ${APIM_READY_TIMEOUT_MS / 60000}-minute readiness ceiling` +
-            (lastProbeError ? `; last probe error: ${lastProbeError}` : '')
-        );
-      }
     } else if (flags.cancelRecover) {
       const localManifestPath = path.join(repoRoot, 'validation/evidence/live-resource-manifest.local.json');
       if (existsSync(localManifestPath)) {
@@ -2515,10 +2805,12 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
       log(`Cancel-recover mode: will teardown run marker ${manifest.runMarker}`);
     }
 
+    const caseStarted = now();
     const results = flags.cancelRecover
       ? []
-      : await runCases({ runner, log, manifest, subscriptionId, cliPath, capabilities });
-    evidence = buildEvidence(results, { testedCommitHashPrefix });
+      : await runCases({ runner, log, manifest, subscriptionId, cliPath, capabilities, now });
+    phases.push({ name: 'case-matrix', durationMs: now() - caseStarted });
+    evidence = buildEvidence(results, { testedCommitHashPrefix, phases: [...phases] });
     if (!flags.cancelRecover) {
       await writeFile(
         path.join(repoRoot, 'validation/evidence/live-azure-surfaces.json'),
@@ -2535,7 +2827,11 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   } catch (error) {
     validationFailure = error instanceof Error ? error : new Error(String(error));
   } finally {
-    if (flags.teardown && provisioned) {
+    if (flags.keepAlive && provisioned) {
+      log(`Keep-alive: leaving persistent stack ${manifest.runMarker} running (no teardown)`);
+    }
+    if (flags.teardown && !flags.keepAlive && provisioned) {
+      const teardownStarted = now();
       if (ownsResourceGroup) {
         try {
           await teardownDedicatedResourceGroup({ runner, log, manifest, subscriptionId, now, sleep });
@@ -2551,6 +2847,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
           log(`Shared-group teardown failure: ${redactSecrets(cleanupFailure.message)}`);
         }
       }
+      phases.push({ name: 'teardown', durationMs: now() - teardownStarted });
     }
   }
 
@@ -2558,8 +2855,21 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   if (!evidence) {
     evidence = buildEvidence(
       [toEvidenceResult('runner', 'fail', { reasonCode: 'cli-failed' })],
-      { testedCommitHashPrefix }
+      { testedCommitHashPrefix, phases: phases.length > 0 ? [...phases] : undefined }
     );
+  } else if (phases.length > 0 && !evidence.phases) {
+    evidence = buildEvidence(evidence.results, {
+      testedCommitHashPrefix: evidence.testedCommitHashPrefix,
+      suiteVersion: evidence.suiteVersion,
+      phases: [...phases]
+    });
+  } else if (phases.some((phase) => phase.name === 'teardown') && Array.isArray(evidence.phases)) {
+    // Rebuild so teardown duration captured in finally is included.
+    evidence = buildEvidence(evidence.results, {
+      testedCommitHashPrefix: evidence.testedCommitHashPrefix,
+      suiteVersion: evidence.suiteVersion,
+      phases: [...phases]
+    });
   }
   if (!flags.cancelRecover && !flags.dryRun) {
     await writeFile(

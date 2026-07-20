@@ -8,29 +8,36 @@ import { describe, expect, it } from 'vitest';
 import {
   API_CENTER_LOCATION,
   CASE_CATALOG,
+  CASE_MATRIX_CONCURRENCY,
   CLEANUP_RESOURCE_ORDER,
   EVIDENCE_SCHEMA_VERSION,
   EXPECTED_CASE_CATALOG_SIZE,
   PIPELINE_ID,
   PROVISION_FLAGS,
+  STUB_HEALTH_POLL_INTERVAL_MS,
+  STUB_HEALTH_TIMEOUT_MS,
   SUITE_VERSION,
   assertExpectedResult,
   buildEvidence,
   classifyProbeError,
   isResourceNotFoundError,
+  mapPool,
   parseFlags,
   parseProvisionFlags,
   passingLiveCaseIds,
+  provisionOptionalApimApis,
   renderExecutionPlan,
   requiredEnv,
   runLiveValidation,
   resolveSubscriptionId,
   hasExactResourceIdentity,
+  stubWebsocketServiceUrl,
   teardownDedicatedResourceGroup,
   teardownSharedGroupResources,
   shouldDeleteGroup,
   shouldDeleteResource,
-  toEvidenceResult
+  toEvidenceResult,
+  waitForStubHealth
 } from '../validation/scripts/validate-live-azure-surfaces.mjs';
 import { eventGridValidationResponse } from '../validation/fixtures/azure/app-service-stub/server.mjs';
 
@@ -85,15 +92,18 @@ describe('live validation control flow', () => {
       teardown: false,
       dryRun: false,
       renderPlan: false,
-      cancelRecover: false
+      cancelRecover: false,
+      keepAlive: false
     });
     expect(parseFlags(['--provision', '--teardown', '--dry-run', '--render-plan', '--cancel-recover'])).toEqual({
       provision: true,
       teardown: true,
       dryRun: true,
       renderPlan: true,
-      cancelRecover: true
+      cancelRecover: true,
+      keepAlive: false
     });
+    expect(parseFlags(['--provision', '--keep-alive']).keepAlive).toBe(true);
 
     const manifest = { resourceGroup: 'postman-azure-spec-live-abcd1234', runMarker: 'run-1-abcd1234' };
     const matchingGroup = {
@@ -529,6 +539,10 @@ describe('R8 harness matrix contract', () => {
     expect(liveStack).toContain('provisionMultiApi');
     expect(liveStack).toContain('postman:repo');
     expect(liveStack).toContain('GithubOrg');
+    expect(liveStack).toMatch(/name:\s*'B1'/);
+    expect(liveStack).toMatch(/tier:\s*'Basic'/);
+    expect(liveStack).toMatch(/alwaysOn:\s*true/);
+    expect(liveStack).not.toMatch(/name:\s*'F1'/);
     expect(liveStack).toMatch(/service-inherited|path-selects payments-live|Clean-repo isolation/i);
     const revisionStart = liveStack.indexOf('resource paymentsApiRev2');
     const revisionEnd = liveStack.indexOf('resource ordersApi');
@@ -603,6 +617,311 @@ describe('R8 harness matrix contract', () => {
     ])).toEqual({ validationResponse: 'challenge-code' });
     expect(eventGridValidationResponse([{ eventType: 'ordinary-event', data: {} }])).toBeUndefined();
     expect(eventGridValidationResponse({})).toBeUndefined();
+  });
+
+  it('AZ-LIVE-017: evidence phases and per-case durationMs are additive sanitized timing fields', () => {
+    expect(STUB_HEALTH_TIMEOUT_MS).toBe(120_000);
+    expect(STUB_HEALTH_POLL_INTERVAL_MS).toBe(5_000);
+    expect(CASE_MATRIX_CONCURRENCY).toBe(4);
+
+    const evidence = buildEvidence(
+      [
+        toEvidenceResult('apim-explicit-api-id', 'pass', { durationMs: 12.7 }),
+        toEvidenceResult('ambiguity', 'fail', { reasonCode: 'cli-failed', durationMs: 3 })
+      ],
+      {
+        testedCommitHashPrefix: 'abc1234',
+        phases: [
+          { name: 'live-stack-deploy', durationMs: 100 },
+          { name: 'parallel-provision', durationMs: 200 },
+          { name: 'extended-stack', durationMs: 50 },
+          { name: 'apim-export-ready', durationMs: 40 },
+          { name: 'case-matrix', durationMs: 80 },
+          { name: 'teardown', durationMs: 30 }
+        ]
+      }
+    );
+
+    expect(evidence.phases).toEqual([
+      { name: 'live-stack-deploy', durationMs: 100 },
+      { name: 'parallel-provision', durationMs: 200 },
+      { name: 'extended-stack', durationMs: 50 },
+      { name: 'apim-export-ready', durationMs: 40 },
+      { name: 'case-matrix', durationMs: 80 },
+      { name: 'teardown', durationMs: 30 }
+    ]);
+    expect(evidence.results[0]?.durationMs).toBe(13);
+    expect(evidence.results[1]?.durationMs).toBe(3);
+    expect(JSON.stringify(evidence)).not.toMatch(/\.azurewebsites\.net/);
+    expect(JSON.stringify(evidence)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  });
+
+  it('AZ-LIVE-018: case-matrix mapPool preserves catalog order under out-of-order completion', async () => {
+    const order = CASE_CATALOG.map((row) => row.id).slice(0, 8);
+    expect(CASE_MATRIX_CONCURRENCY).toBe(4);
+
+    const deferred = order.map(() => {
+      let resolve!: (value: string) => void;
+      const promise = new Promise<string>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    });
+
+    const running = mapPool(order, CASE_MATRIX_CONCURRENCY, async (id, index) => deferred[index]!.promise);
+
+    // Complete in reverse so pool workers finish out of catalog order.
+    for (let i = order.length - 1; i >= 0; i -= 1) {
+      deferred[i]!.resolve(order[i]!);
+    }
+
+    await expect(running).resolves.toEqual(order);
+  });
+
+  it('AZ-LIVE-019: failed stub health gate skips extended-stack and marks event-grid capability-absent', async () => {
+    const evidencePath = join(repoRoot, 'validation/evidence/live-azure-surfaces.json');
+    const hadEvidence = existsSync(evidencePath);
+    const baseline = hadEvidence ? readFileSync(evidencePath, 'utf8') : undefined;
+    const commands: string[][] = [];
+    let t = 0;
+    const runner = (command: string, args: string[]) => {
+      if (command === 'zip') return '';
+      if (command !== 'az') throw new Error(`unexpected command ${command}`);
+      commands.push(args);
+      if (args[0] === 'account') return '';
+      if (args[0] === 'group' && args[1] === 'show') {
+        return JSON.stringify({
+          name: 'CSE-Azure-Team',
+          id: '/subscriptions/sub-1/resourceGroups/CSE-Azure-Team'
+        });
+      }
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'create') {
+        if (args.includes('validation/fixtures/azure/extended-stack.bicep')) {
+          throw new Error('extended-stack must not be deployed when health gate fails');
+        }
+        return '';
+      }
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'show') {
+        throw new Error('ResourceNotFound');
+      }
+      if (args[0] === 'deployment' && args[1] === 'group' && args[2] === 'delete') return '';
+      if (args[0] === 'webapp' && args[1] === 'deploy') return '';
+      if (args[0] === 'webapp' && args[1] === 'show') {
+        return JSON.stringify({ defaultHostName: 'pmspecsiteabcd.azurewebsites.net' });
+      }
+      if (args[0] === 'rest' && args.includes('--method') && args.includes('get')) {
+        return JSON.stringify({ link: 'https://example.invalid/export' });
+      }
+      if (args[0] === 'rest') return '';
+      if (args[0] === 'provider') {
+        return JSON.stringify({ registrationState: 'NotRegistered' });
+      }
+      if (args[0] === 'resource' && args[1] === 'show') throw new Error('ResourceNotFound');
+      if (args[0] === 'resource' && args[1] === 'list') return '[]';
+      if (args[0] === 'graph') return JSON.stringify({ data: [] });
+      return '';
+    };
+
+    try {
+      const evidence = await runLiveValidation({
+        argv: ['--provision', '--teardown'],
+        env: {
+          AZURE_SUBSCRIPTION_ID: 'sub-1',
+          AZURE_LOCATION: 'eastus2',
+          AZURE_RESOURCE_GROUP: 'CSE-Azure-Team',
+          AZURE_LIVE_COMMIT_PREFIX: 'a1b2c3d',
+          AZURE_LIVE_PROVISION_FLAGS: '!api-center,!service-bus-standard'
+        },
+        deps: {
+          runner,
+          log: () => undefined,
+          sleep: async () => undefined,
+          now: () => {
+            // Jump in large steps so the 120s health-gate ceiling elapses quickly in unit tests.
+            t += 60_000;
+            return t;
+          },
+          fetch: (async () => ({ status: 503 })) as unknown as typeof fetch,
+          runCases: async ({
+            capabilities
+          }: {
+            capabilities: Record<string, { ok: boolean; reasonCode?: string }>;
+          }) => {
+            expect(capabilities['event-grid']).toEqual({ ok: false, reasonCode: 'capability-absent' });
+            return [
+              toEvidenceResult('event-grid-webhook-partial', 'requires-capability', {
+                reasonCode: 'capability-absent',
+                durationMs: 1
+              })
+            ];
+          }
+        }
+      });
+
+      expect(
+        commands.some(
+          (args) =>
+            args[0] === 'deployment' &&
+            args[2] === 'create' &&
+            args.includes('validation/fixtures/azure/extended-stack.bicep')
+        )
+      ).toBe(false);
+      expect(evidence.phases?.some((phase) => phase.name === 'extended-stack')).toBe(true);
+      expect(evidence.phases?.every((phase) => typeof phase.durationMs === 'number')).toBe(true);
+      expect(evidence.results[0]?.durationMs).toBe(1);
+      expect(evidence.results[0]?.reasonCode).toBe('capability-absent');
+      expect(JSON.stringify(evidence)).not.toContain('pmspecsiteabcd');
+    } finally {
+      if (hadEvidence) writeFileSync(evidencePath, baseline!, 'utf8');
+      else rmSync(evidencePath, { force: true });
+    }
+  });
+
+  it('AZ-LIVE-020: websocket serviceUrl uses the stub site hostname', async () => {
+    expect(stubWebsocketServiceUrl('pmspecsiteabcd.azurewebsites.net')).toBe(
+      'wss://pmspecsiteabcd.azurewebsites.net/ws'
+    );
+
+    const bodies: string[] = [];
+    const runner = (_command: string, args: string[]) => {
+      if (args[0] === 'rest' && args.includes('put')) {
+        const bodyIdx = args.indexOf('--body');
+        if (bodyIdx >= 0) bodies.push(String(args[bodyIdx + 1] ?? ''));
+      }
+      return '';
+    };
+    const capabilities: Record<string, { ok: boolean; reasonCode?: string }> = {};
+    await provisionOptionalApimApis({
+      runner,
+      log: () => undefined,
+      manifest: {
+        resourceGroup: 'CSE-Azure-Team',
+        apimName: 'pmspecapimabcd',
+        siteName: 'pmspecsiteabcd',
+        resources: []
+      },
+      subscriptionId: 'sub-1',
+      provisionFlags: {
+        'apim-soap': false,
+        'apim-graphql': false,
+        'apim-websocket': true,
+        'apim-grpc': false,
+        'apim-odata': false
+      },
+      capabilities,
+      siteHostname: 'pmspecsiteabcd.azurewebsites.net'
+    });
+
+    expect(capabilities['apim-websocket']).toEqual({ ok: true });
+    expect(bodies.some((body) => body.includes('"serviceUrl":"wss://pmspecsiteabcd.azurewebsites.net/ws"'))).toBe(
+      true
+    );
+    expect(bodies.some((body) => body.includes('example.invalid/ws'))).toBe(false);
+  });
+
+  it('AZ-LIVE-021: waitForStubHealth returns false on persistent non-200 without hanging', async () => {
+    let probes = 0;
+    const ok = await waitForStubHealth({
+      url: 'https://example.invalid/health',
+      timeoutMs: 20,
+      intervalMs: 5,
+      now: (() => {
+        let t = 0;
+        return () => {
+          t += 10;
+          return t;
+        };
+      })(),
+      sleep: async () => undefined,
+      fetchImpl: (async () => {
+        probes += 1;
+        return { status: 503 };
+      }) as unknown as typeof fetch,
+      log: () => undefined
+    });
+    expect(ok).toBe(false);
+    expect(probes).toBeGreaterThan(0);
+  });
+
+  it('AZ-LIVE-022: keep-alive requires a persistent suffix, refuses --teardown, and never tears down', async () => {
+    await expect(runLiveValidation({
+      argv: ['--provision', '--keep-alive'],
+      env: {
+        AZURE_SUBSCRIPTION_ID: 'sub-1',
+        AZURE_LOCATION: 'eastus2',
+        AZURE_RESOURCE_GROUP: 'CSE-Azure-Team'
+      },
+      deps: { runner: () => '', log: () => undefined }
+    })).rejects.toThrow(/AZURE_LIVE_PERSISTENT_SUFFIX/);
+
+    await expect(runLiveValidation({
+      argv: ['--provision', '--keep-alive', '--teardown'],
+      env: {
+        AZURE_SUBSCRIPTION_ID: 'sub-1',
+        AZURE_LOCATION: 'eastus2',
+        AZURE_RESOURCE_GROUP: 'CSE-Azure-Team',
+        AZURE_LIVE_PERSISTENT_SUFFIX: 'c5e1feed'
+      },
+      deps: { runner: () => '', log: () => undefined }
+    })).rejects.toThrow(/mutually exclusive/);
+
+    // Full keep-alive pass: existing persistent APIM short-circuits live-stack deploy and no delete is ever issued.
+    const commands: string[][] = [];
+    const runner = (command: string, args: string[]) => {
+      if (command === 'zip') return '';
+      if (command !== 'az') return '';
+      commands.push(args);
+      if (args[0] === 'account') return args.includes('--query') ? 'sub-1\n' : '';
+      if (args[0] === 'group' && args[1] === 'show') {
+        return JSON.stringify({ name: 'CSE-Azure-Team', id: '/subscriptions/sub-1/resourceGroups/CSE-Azure-Team' });
+      }
+      if (args[0] === 'resource' && args[1] === 'show' && args.includes('Microsoft.ApiManagement/service')) {
+        return JSON.stringify({
+          tags: { 'postman-azure-spec-discovery-live-run': 'persistent-c5e1feed' }
+        });
+      }
+      if (args[0] === 'resource' && args[1] === 'show') {
+        return JSON.stringify({ id: '/subscriptions/sub-1/rg/plan' });
+      }
+      if (args[0] === 'webapp' && args[1] === 'show') {
+        return JSON.stringify({ defaultHostName: 'stub.azurewebsites.net' });
+      }
+      if (args[0] === 'webapp') return '';
+      if (args[0] === 'rest') {
+        return JSON.stringify({ link: 'https://example.invalid/export' });
+      }
+      if (args[0] === 'deployment') return '';
+      if (args[0] === 'apic') return '';
+      return '';
+    };
+    const evidencePath = join(repoRoot, 'validation/evidence/live-azure-surfaces.json');
+    const hadEvidence = existsSync(evidencePath);
+    const baseline = hadEvidence ? readFileSync(evidencePath, 'utf8') : undefined;
+    try {
+      await runLiveValidation({
+        argv: ['--provision', '--keep-alive'],
+        env: {
+          AZURE_SUBSCRIPTION_ID: 'sub-1',
+          AZURE_LOCATION: 'eastus2',
+          AZURE_RESOURCE_GROUP: 'CSE-Azure-Team',
+          AZURE_LIVE_COMMIT_PREFIX: 'f3c7775',
+          AZURE_LIVE_PERSISTENT_SUFFIX: 'c5e1feed',
+          AZURE_LIVE_PROVISION_FLAGS: '!apim-multi,!apim-soap,!apim-graphql,!apim-websocket,!apim-grpc,!apim-odata,!api-center,!logic-app,!custom-connector,!template-spec,!event-grid,!function-app'
+        },
+        deps: {
+          runner,
+          log: () => undefined,
+          sleep: async () => undefined,
+          runCases: async () => []
+        }
+      });
+    } finally {
+      if (hadEvidence) writeFileSync(evidencePath, baseline!, 'utf8');
+      else rmSync(evidencePath, { force: true });
+    }
+    const flat = commands.map((args) => args.join(' '));
+    expect(flat.some((line) => line.startsWith('deployment group create'))).toBe(false);
+    expect(flat.some((line) => line.includes('delete'))).toBe(false);
   });
 });
 

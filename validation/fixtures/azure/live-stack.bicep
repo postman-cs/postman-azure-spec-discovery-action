@@ -106,8 +106,8 @@ resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: appServicePlanName
   location: location
   sku: {
-    name: 'F1'
-    tier: 'Free'
+    name: 'B1'
+    tier: 'Basic'
   }
   kind: 'linux'
   properties: {
@@ -132,6 +132,7 @@ resource site 'Microsoft.Web/sites@2023-12-01' = {
     siteConfig: {
       linuxFxVersion: 'NODE|20-lts'
       appCommandLine: 'node server.mjs'
+      alwaysOn: true
     }
   }
 }
