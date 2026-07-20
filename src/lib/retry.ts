@@ -78,9 +78,21 @@ export function computeBoundedRetryDelayMs(options: BoundedRetryDelayOptions): n
   return Math.round(random() * ceiling);
 }
 
-/** Transient HTTP statuses eligible for bounded ARM direct-REST retries. */
+/**
+ * Transient HTTP statuses eligible for bounded ARM direct-REST retries.
+ * Matches Azure retry guidance used by this package: keep 408/429 and the
+ * classic transient 5xx set (500/502/503/504). Permanent/protocol 5xx such as
+ * 501 Not Implemented and 505 HTTP Version Not Supported are not retried.
+ */
 export function isTransientHttpStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
+  return (
+    status === 408 ||
+    status === 429 ||
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
 }
 
 function normalizeRetryOptions(options: RetryOptions): Required<RetryOptions> {

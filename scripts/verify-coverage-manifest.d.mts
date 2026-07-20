@@ -8,6 +8,7 @@ export interface CoverageVerificationResult {
 }
 
 export function isRemoteImplementationFile(relPath: string): boolean;
+export function validateEvidenceAgainstCatalog(evidence: unknown, errors: string[]): Map<string, Record<string, unknown>>;
 export function verifyCoverageManifest(input: {
   root: string;
   manifest?: unknown;

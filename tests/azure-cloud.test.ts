@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { armRequest } from '../src/lib/azure/arm-rest.js';
 import {
   resolveAzureCloudProfile,
   AZURE_CLOUD_PROFILES
 } from '../src/lib/azure/cloud.js';
 import {
   computeBoundedRetryDelayMs,
+  isTransientHttpStatus,
   parseRetryAfterMs
 } from '../src/lib/retry.js';
 
@@ -120,5 +122,65 @@ describe('bounded Retry-After and full jitter', () => {
         random: () => 1
       })
     ).toBe(0);
+  });
+
+  it('AZ-RETRY-005: transient classification keeps 408/429/500/502/503/504 and rejects permanent 501/505', () => {
+    for (const status of [408, 429, 500, 502, 503, 504]) {
+      expect(isTransientHttpStatus(status)).toBe(true);
+    }
+    for (const status of [400, 401, 403, 404, 501, 505, 506, 511]) {
+      expect(isTransientHttpStatus(status)).toBe(false);
+    }
+  });
+
+  it.each([501, 505] as const)(
+    'AZ-RETRY-006: arm-rest throwOnHttpError does not retry permanent HTTP %s',
+    async (status) => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('permanent', { status }));
+      await expect(
+        armRequest('https://management.azure.com/subscriptions/sub-1?api-version=2022-12-01', 'tok', {
+          maxAttempts: 3,
+          requestTimeoutMs: 30000,
+          operation: 'ARM REST probe',
+          throwOnHttpError: true,
+          sleep: async () => undefined
+        })
+      ).rejects.toThrow(`HTTP ${status}`);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      fetchSpy.mockRestore();
+    }
+  );
+
+  it.each([500, 502, 503, 504] as const)(
+    'AZ-RETRY-007: arm-rest throwOnHttpError retries HTTP %s to maxAttempts',
+    async (status) => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('transient', { status }));
+      await expect(
+        armRequest('https://management.azure.com/subscriptions/sub-1?api-version=2022-12-01', 'tok', {
+          maxAttempts: 3,
+          requestTimeoutMs: 30000,
+          operation: 'ARM REST probe',
+          throwOnHttpError: true,
+          sleep: async () => undefined
+        })
+      ).rejects.toThrow(/failed after 3 attempt|HTTP /i);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      fetchSpy.mockRestore();
+    }
+  );
+
+  it('AZ-RETRY-008: arm-rest throwOnHttpError never retries permanent 400', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('bad', { status: 400 }));
+    await expect(
+      armRequest('https://management.azure.com/subscriptions/sub-1?api-version=2022-12-01', 'tok', {
+        maxAttempts: 3,
+        requestTimeoutMs: 30000,
+        operation: 'ARM REST probe',
+        throwOnHttpError: true,
+        sleep: async () => undefined
+      })
+    ).rejects.toThrow('HTTP 400');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
   });
 });

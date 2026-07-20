@@ -130,4 +130,39 @@ describe('R4 runtime-declared specification routes', () => {
     expect(candidate!.meta.resourceId).toContain('managedClusters/k8s');
     expect(candidate!.meta.workloadKind).toBe('aks');
   });
+
+  it('AZ-RT-R4-007: evidence and errors redact query/SAS while preserving SSRF distinction', async () => {
+    const sasUrl = 'https://orders.example.com/openapi.json?sv=2024-01-01&sig=super-secret-sas';
+    const provider = new RuntimeDeclaredRoutesProvider({
+      enabled: true,
+      targets: [target({ url: sasUrl })]
+    });
+    const [candidate] = await provider.listCandidates();
+    expect(candidate!.evidence.join('\n')).toContain('https://orders.example.com/openapi.json');
+    expect(candidate!.evidence.join('\n')).not.toMatch(/sig=|super-secret|sv=/);
+    // meta retains the fetchable URL (including SAS) for the guarded fetch itself
+    expect(candidate!.meta.specUrl).toBe(sasUrl);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(VALID_OPENAPI, { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    const exported = await provider.exportSpec(candidate!);
+    expect(exported.evidence.join('\n')).toContain('https://orders.example.com/openapi.json');
+    expect(exported.evidence.join('\n')).not.toMatch(/sig=|super-secret/);
+
+    const blockedProvider = new RuntimeDeclaredRoutesProvider({
+      enabled: true,
+      targets: [target({ url: 'https://127.0.0.1/openapi.json?sig=secret-sas' })]
+    });
+    const [blocked] = await blockedProvider.listCandidates();
+    await expect(blockedProvider.exportSpec(blocked!)).rejects.toThrow(/blocked by SSRF defenses/i);
+    try {
+      await blockedProvider.exportSpec(blocked!);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).toContain('https://127.0.0.1/openapi.json');
+      expect(message).not.toMatch(/sig=|secret-sas/);
+      expect(message).not.toMatch(/private-network-unreachable/i);
+    }
+  });
 });

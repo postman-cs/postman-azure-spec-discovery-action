@@ -10,7 +10,7 @@ Live evidence proves only the cases listed in `live-azure-surfaces.json` with `s
 
 - The machine-readable coverage claim for every advertised and explicit unsupported route lives in `coverage/route-claims.json` (see `docs/COVERAGE.md`).
 - A passing unit test does not promote a route to `validationState: live`.
-- Only a matching **passing** case id/name in this evidence file may back a `live` claim.
+- Only a matching **passing** case id/name in this evidence file may back a `live` claim, and that pass must match `CASE_CATALOG` metadata (`providerType`, `sourceType`, `specFormat`, `contractClass`).
 - `requires-capability` is an explicit blocked lane, not live proof. It is the Azure harness category for missing provider registration, RBAC, SKU/region, or cost guards — not the GCP `substitute` category.
 - `local-only` proves compiled-CLI local parsing without Azure calls; it never promotes a remote route to `live`.
 - Routes marked `unit-only`, `local-only`, or `unsupported` in the claim manifest remain outside the live proof set until a new sanitized pass is committed.

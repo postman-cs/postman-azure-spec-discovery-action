@@ -3,7 +3,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { execute, resolveInputs, type AzureDependencies, type ReporterLike, type ResolvedInputs } from '../src/runtime.js';
+import {
+  execute,
+  headerEnumerationDeadline,
+  HEADER_ENUMERATION_DEADLINE_MS,
+  resolveInputs,
+  type AzureDependencies,
+  type ReporterLike,
+  type ResolvedInputs
+} from '../src/runtime.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecProvider } from '../src/lib/providers/types.js';
 import { adaptLegacyProvider } from '../src/lib/providers/types.js';
 
@@ -513,5 +521,79 @@ describe('narrow-before-hydration (R7 / POS-400)', () => {
     expect(result.resolution?.status).toBe('resolved');
     expect(result.resolution?.apiId).toBe(targetId);
     expect(hydrateOther).not.toHaveBeenCalled();
+  });
+
+  it('C7/Q3: a non-settling header provider is aborted and another provider still resolves', async () => {
+    const previousDeadline = headerEnumerationDeadline.ms;
+    headerEnumerationDeadline.ms = 25;
+    try {
+      expect(HEADER_ENUMERATION_DEADLINE_MS).toBe(30000);
+      let hungSignal: AbortSignal | undefined;
+      const hung: SpecProvider = {
+        type: 'logic-apps',
+        probe: vi.fn(async () => 'available' as const),
+        listCandidates: vi.fn(async () => []),
+        listCandidateHeaders: vi.fn(
+          (signal?: AbortSignal) =>
+            new Promise<SpecCandidateHeader[]>((_resolve, reject) => {
+              hungSignal = signal;
+              if (signal?.aborted) {
+                reject(new Error('aborted'));
+                return;
+              }
+              signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+            })
+        ),
+        hydrateCandidates: vi.fn(async (headers) => headers),
+        exportSpec: vi.fn(async () => ({
+          content: VALID_OPENAPI,
+          format: 'openapi-json' as const,
+          filename: 'index.json',
+          evidence: ['hung export']
+        }))
+      };
+      const winnerId =
+        '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/payments';
+      const winner = candidate('apim', 'payments', {
+        id: winnerId,
+        apiId: winnerId,
+        tags: { 'postman:repo': 'acme/payments' }
+      });
+      const apim: SpecProvider = {
+        type: 'apim',
+        probe: vi.fn(async () => 'available' as const),
+        listCandidates: vi.fn(async () => [winner]),
+        listCandidateHeaders: vi.fn(async () => [{ ...winner, headerHydrated: true }]),
+        hydrateCandidates: vi.fn(async (headers) => headers),
+        exportSpec: vi.fn(async () => ({
+          content: VALID_OPENAPI,
+          format: 'openapi-json' as const,
+          filename: 'index.json',
+          evidence: ['apim export']
+        }))
+      };
+
+      const warnings: string[] = [];
+      const deps = baseDeps([hung, apim]);
+      deps.core = {
+        group: async (_name, fn) => fn(),
+        info: () => undefined,
+        warning: (message) => {
+          warnings.push(message);
+        }
+      };
+
+      const result = await execute(inputs(), deps);
+      expect(result.resolution?.status).toBe('resolved');
+      expect(result.resolution?.providerType).toBe('apim');
+      expect(hung.exportSpec).not.toHaveBeenCalled();
+      expect(apim.exportSpec).toHaveBeenCalledTimes(1);
+      expect(hungSignal?.aborted).toBe(true);
+      expect(warnings.some((message) => /logic-apps|exceeded|enumeration failed/i.test(message))).toBe(
+        true
+      );
+    } finally {
+      headerEnumerationDeadline.ms = previousDeadline;
+    }
   });
 });

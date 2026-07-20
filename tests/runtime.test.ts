@@ -1,10 +1,18 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { execute, resolveInputs, type AzureDependencies, type ReporterLike, type ResolvedInputs } from '../src/runtime.js';
+import {
+  corroborateRuntimeDeclaredTargets,
+  execute,
+  resolveInputs,
+  type AzureDependencies,
+  type ReporterLike,
+  type ResolvedInputs
+} from '../src/runtime.js';
 import type { SpecCandidate, SpecProvider } from '../src/lib/providers/types.js';
+import { loadAzureResolverBinding } from '../src/lib/repo/azure-bindings.js';
 
 const VALID_OPENAPI = `${JSON.stringify({
   openapi: '3.0.3',
@@ -271,6 +279,402 @@ describe('runtime execute', () => {
     expect(result.exportSummary?.failed).toBe(1);
     expect(result.discovered).toHaveLength(1);
     expect(result.outputs['resolution-status']).toBe('unresolved');
+  });
+
+  it('C3: two valid local specs remain unresolved and never call cloud providers', async () => {
+    await writeFile(
+      path.join(repoRoot, 'openapi.yaml'),
+      'openapi: 3.0.3\ninfo:\n  title: a\n  version: "1"\npaths:\n  /a:\n    get:\n      responses:\n        "200":\n          description: ok\n'
+    );
+    await writeFile(
+      path.join(repoRoot, 'async.events.yaml'),
+      'asyncapi: 2.6.0\ninfo:\n  title: events\n  version: "1"\nchannels:\n  ping:\n    subscribe:\n      message:\n        payload:\n          type: string\n'
+    );
+    const cloudGet = vi.fn(async () => {
+      throw new Error('cloud discovery must not run');
+    });
+    const provider = stubProvider([apimCandidate('payments')]);
+    const deps = dependencies(provider);
+    deps.subscriptions = { get: cloudGet, list: cloudGet };
+    const result = await execute(inputs(), deps);
+    expect(result.resolution?.status).toBe('unresolved');
+    expect(result.resolution?.rankedCandidates?.length).toBeGreaterThanOrEqual(2);
+    expect(cloudGet).not.toHaveBeenCalled();
+    expect(provider.listCandidates).not.toHaveBeenCalled();
+    expect(provider.probe).not.toHaveBeenCalled();
+  });
+
+  it('C3: exact pipeline nativeSpecPath selects a non-OpenAPI artifact without cloud calls', async () => {
+    await mkdir(path.join(repoRoot, 'specs'), { recursive: true });
+    await mkdir(path.join(repoRoot, '.github', 'workflows'), { recursive: true });
+    await writeFile(path.join(repoRoot, 'specs', 'schema.graphql'), 'type Query {\n  health: String\n}\n');
+    await writeFile(
+      path.join(repoRoot, 'openapi.yaml'),
+      'openapi: 3.0.3\ninfo:\n  title: a\n  version: "1"\npaths:\n  /a:\n    get:\n      responses:\n        "200":\n          description: ok\n'
+    );
+    await writeFile(
+      path.join(repoRoot, '.github', 'workflows', 'publish.yml'),
+      'env:\n  OPENAPI_PATH: specs/schema.graphql\njobs:\n  publish:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo publish\n'
+    );
+    const cloudGet = vi.fn(async () => {
+      throw new Error('cloud discovery must not run');
+    });
+    const provider = stubProvider([apimCandidate('payments')]);
+    const deps = dependencies(provider);
+    deps.subscriptions = { get: cloudGet, list: cloudGet };
+    const result = await execute(inputs(), deps);
+    expect(result.resolution).toMatchObject({
+      status: 'resolved',
+      sourceType: 'repo-spec',
+      specPath: 'specs/schema.graphql',
+      specFormat: 'graphql-sdl',
+      confidence: 100
+    });
+    expect(cloudGet).not.toHaveBeenCalled();
+    expect(provider.probe).not.toHaveBeenCalled();
+  });
+
+  it('Q2: uncorroborated runtime-declared-spec-targets-json is rejected before provider construction', async () => {
+    const resolved = resolveInputs({
+      INPUT_REPO_ROOT: repoRoot,
+      INPUT_SUBSCRIPTION_ID: 'sub-1',
+      INPUT_ENABLE_RUNTIME_DECLARED_SPEC_ROUTES: 'true',
+      INPUT_RUNTIME_DECLARED_SPEC_TARGETS_JSON: JSON.stringify([
+        {
+          id: 'rogue',
+          name: 'rogue',
+          workloadKind: 'app-service',
+          url: 'https://example.com/openapi.json?token=secret-value'
+        }
+      ])
+    });
+    await expect(
+      execute(resolved, {
+        core: reporter,
+        subscriptions: {
+          get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+          list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+        },
+        createApimClient: () => {
+          throw new Error('provider construction must not run');
+        },
+        createAppServiceClient: () => {
+          throw new Error('provider construction must not run');
+        },
+        writeSpecFile: async () => undefined
+      })
+    ).rejects.toThrow(/Uncorroborated runtime-declared/);
+
+    await mkdir(path.join(repoRoot, '.postman'), { recursive: true });
+    await writeFile(
+      path.join(repoRoot, '.postman', 'resources.yaml'),
+      [
+        'azure:',
+        '  runtimeDeclaredSpecTargets:',
+        '    - id: app1',
+        '      name: app1',
+        '      workloadKind: app-service',
+        '      url: https://app.example.com/openapi.json',
+        ''
+      ].join('\n'),
+      'utf8'
+    );
+    const binding = await loadAzureResolverBinding(repoRoot);
+    expect(binding.status).toBe('ok');
+    if (binding.status !== 'ok') return;
+    const corroborated = corroborateRuntimeDeclaredTargets(
+      resolveInputs({
+        INPUT_REPO_ROOT: repoRoot,
+        INPUT_ENABLE_RUNTIME_DECLARED_SPEC_ROUTES: 'true',
+        INPUT_RUNTIME_DECLARED_SPEC_TARGETS_JSON: JSON.stringify([
+          {
+            id: 'app1',
+            name: 'app1',
+            workloadKind: 'app-service',
+            url: 'https://app.example.com/openapi.json'
+          }
+        ])
+      }),
+      binding.binding
+    );
+    expect(corroborated).toHaveLength(1);
+    expect(JSON.stringify(corroborated)).not.toMatch(/secret|token=/i);
+  });
+
+  it('C4/Q12: matching Azure source-control association narrows but never resolves without a spec', async () => {
+    const siteId = '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/sites/orders';
+    const candidate: SpecCandidate = {
+      id: siteId,
+      name: 'orders',
+      providerType: 'app-service',
+      resourceGroup: 'rg',
+      tags: {},
+      supported: false,
+      evidence: ['App Service site has no apiDefinition.url'],
+      meta: { resourceGroup: 'rg', siteName: 'orders' }
+    };
+    const provider: SpecProvider = {
+      type: 'app-service',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates: vi.fn(async () => [candidate]),
+      exportSpec: vi.fn(async () => {
+        throw new Error('export must not run without a spec');
+      })
+    };
+    const getAppServiceSourceControl = vi.fn(async () => ({
+      status: 'ok' as const,
+      association: {
+        resourceId: siteId,
+        resourceGroup: 'rg',
+        name: 'orders',
+        kind: 'app-service' as const,
+        repoUrl: 'https://github.com/acme/demo',
+        branch: 'main',
+        org: 'acme',
+        repo: 'demo'
+      }
+    }));
+    const result = await execute(
+      {
+        ...resolveInputs({
+          INPUT_REPO_ROOT: repoRoot,
+          INPUT_SUBSCRIPTION_ID: 'sub-1'
+        }),
+        repoContext: {
+          provider: 'github',
+          repoSlug: 'acme/demo',
+          repoUrl: 'https://github.com/acme/demo',
+          ref: 'main'
+        }
+      },
+      {
+        core: reporter,
+        subscriptions: {
+          get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+          list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+        },
+        createApimClient: () => {
+          throw new Error('unused');
+        },
+        createAppServiceClient: () => {
+          throw new Error('unused');
+        },
+        createSourceControlClient: () => ({
+          getAppServiceSourceControl,
+          listContainerAppSourceControls: vi.fn(async () => []),
+          listContainerApps: vi.fn(async () => [])
+        }),
+        writeSpecFile: async () => undefined,
+        providers: [provider]
+      }
+    );
+    expect(getAppServiceSourceControl).toHaveBeenCalledWith('rg', 'orders', expect.anything());
+    expect(result.resolution?.status).toBe('unresolved');
+    expect(result.resolution?.sourceType).toBe('manual-review');
+    const evidence = JSON.stringify(result.resolution?.evidence ?? []);
+    expect(evidence).toMatch(/source-control association/);
+    expect(evidence).not.toMatch(/super-secret|password|token=/i);
+    expect(provider.exportSpec).not.toHaveBeenCalled();
+  });
+
+  it('C4/Q12: source-control repo/branch mismatch does not select; IAM denial stays scoped', async () => {
+    const siteId = '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/sites/orders';
+    const candidate: SpecCandidate = {
+      id: siteId,
+      name: 'orders',
+      providerType: 'app-service',
+      resourceGroup: 'rg',
+      tags: {},
+      supported: true,
+      evidence: ['has definition'],
+      meta: { resourceGroup: 'rg', siteName: 'orders' }
+    };
+    const provider: SpecProvider = {
+      type: 'app-service',
+      probe: vi.fn(async () => 'available' as const),
+      listCandidates: vi.fn(async () => [candidate]),
+      exportSpec: vi.fn(async () => ({
+        content: VALID_OPENAPI,
+        format: 'openapi-json' as const,
+        filename: 'index.json' as const,
+        evidence: ['stub export']
+      }))
+    };
+    const result = await execute(
+      {
+        ...resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_SUBSCRIPTION_ID: 'sub-1' }),
+        repoContext: {
+          provider: 'github',
+          repoSlug: 'acme/demo',
+          repoUrl: 'https://github.com/acme/demo',
+          ref: 'main'
+        }
+      },
+      {
+        core: reporter,
+        subscriptions: {
+          get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+          list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+        },
+        createApimClient: () => {
+          throw new Error('unused');
+        },
+        createAppServiceClient: () => {
+          throw new Error('unused');
+        },
+        createSourceControlClient: () => ({
+          getAppServiceSourceControl: vi.fn(async () => ({
+            status: 'unavailable' as const,
+            reason: 'iam' as const,
+            detail: 'App Service source-control association unavailable (HTTP 403)'
+          })),
+          listContainerAppSourceControls: vi.fn(async () => [
+            {
+              status: 'ok' as const,
+              association: {
+                resourceId: siteId,
+                resourceGroup: 'rg',
+                name: 'orders',
+                kind: 'app-service' as const,
+                repoUrl: 'https://github.com/other/repo',
+                branch: 'develop',
+                org: 'other',
+                repo: 'repo'
+              }
+            }
+          ]),
+          listContainerApps: vi.fn(async () => [])
+        }),
+        writeSpecFile: async () => undefined,
+        providers: [provider]
+      }
+    );
+    // IAM/mismatch must not invent select-grade tags or crash.
+    expect(result.resolution?.status).toBeDefined();
+    const blob = JSON.stringify(result);
+    expect(blob).not.toMatch(/AuthorizationFailed|HTTP 403/i);
+  });
+
+  it('C4/Q12: Functions explicitOpenApiPath is wired only when capability enabled', async () => {
+    await mkdir(path.join(repoRoot, '.postman'), { recursive: true });
+    await writeFile(
+      path.join(repoRoot, '.postman', 'resources.yaml'),
+      'azure:\n  functionsOpenApiPath: /api/openapi/v3.json\n',
+      'utf8'
+    );
+    const listFunctions = vi.fn(async () => [
+      {
+        name: 'hello',
+        bindings: [{ type: 'httpTrigger', direction: 'in', methods: ['get'], route: 'hello' }]
+      }
+    ]);
+    const listFunctionApps = vi.fn(async () => [
+      {
+        id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/sites/fn1',
+        name: 'fn1',
+        resourceGroup: 'rg',
+        // Omit defaultHostName so export synthesizes; hydrate still records explicitOpenApiPath.
+        tags: { 'postman:repo': 'acme/demo' }
+      }
+    ]);
+    const deps = (): AzureDependencies => ({
+      core: reporter,
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
+      createApimClient: () => ({
+        listServices: vi.fn(async () => []),
+        listApis: vi.fn(async () => []),
+        getApi: vi.fn(async () => {
+          throw new Error('unused');
+        }),
+        exportApi: vi.fn(async () => ''),
+        getGraphqlSchema: vi.fn(async () => ''),
+        probeApimReadAccess: vi.fn(async () => undefined)
+      }),
+      createAppServiceClient: () => ({
+        listSites: vi.fn(async () => []),
+        probeAppServiceReadAccess: vi.fn(async () => undefined)
+      }),
+      createFunctionsClient: () => ({
+        listFunctionApps,
+        listFunctions,
+        probeFunctionsReadAccess: vi.fn(async () => undefined)
+      }),
+      writeSpecFile: async () => undefined
+    });
+    const disabled = await execute(
+      {
+        ...resolveInputs({
+          INPUT_REPO_ROOT: repoRoot,
+          INPUT_SUBSCRIPTION_ID: 'sub-1',
+          INPUT_ENABLE_FUNCTIONS_OPENAPI_EXTENSION: 'false'
+        }),
+        repoContext: {
+          provider: 'github',
+          repoSlug: 'acme/demo',
+          repoUrl: 'https://github.com/acme/demo',
+          ref: 'main'
+        }
+      },
+      deps()
+    );
+    expect(JSON.stringify(disabled)).not.toContain('/api/openapi/v3.json');
+
+    const enabled = await execute(
+      {
+        ...resolveInputs({
+          INPUT_REPO_ROOT: repoRoot,
+          INPUT_SUBSCRIPTION_ID: 'sub-1',
+          INPUT_ENABLE_FUNCTIONS_OPENAPI_EXTENSION: 'true'
+        }),
+        repoContext: {
+          provider: 'github',
+          repoSlug: 'acme/demo',
+          repoUrl: 'https://github.com/acme/demo',
+          ref: 'main'
+        }
+      },
+      deps()
+    );
+    const enabledBlob = JSON.stringify(enabled);
+    expect(enabledBlob).toContain('/api/openapi/v3.json');
+    expect(enabledBlob).toMatch(/Repository\/manifest declared Functions OpenAPI path/);
+  });
+
+  it('C4/Q12: input-only runtime-declared target rejects without committed corroboration', async () => {
+    await expect(
+      execute(
+        resolveInputs({
+          INPUT_REPO_ROOT: repoRoot,
+          INPUT_SUBSCRIPTION_ID: 'sub-1',
+          INPUT_ENABLE_RUNTIME_DECLARED_SPEC_ROUTES: 'true',
+          INPUT_RUNTIME_DECLARED_SPEC_TARGETS_JSON: JSON.stringify([
+            {
+              id: 'only-input',
+              name: 'only-input',
+              workloadKind: 'app-service',
+              url: 'https://app.example.com/openapi.json'
+            }
+          ])
+        }),
+        {
+          core: reporter,
+          subscriptions: {
+            get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+            list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+          },
+          createApimClient: () => {
+            throw new Error('must not construct');
+          },
+          createAppServiceClient: () => {
+            throw new Error('must not construct');
+          },
+          writeSpecFile: async () => undefined
+        }
+      )
+    ).rejects.toThrow(/Uncorroborated runtime-declared/);
   });
 });
 

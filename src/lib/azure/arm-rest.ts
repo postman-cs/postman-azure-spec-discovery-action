@@ -78,6 +78,21 @@ export interface ArmRequestOptions {
   headers?: Record<string, string>;
 }
 
+/** Private to this helper: carries status so catch can honor isTransientHttpStatus for all classes. */
+class ArmHttpError extends Error {
+  readonly status: number;
+
+  constructor(operation: string, status: number) {
+    super(`${operation} failed with HTTP ${status}`);
+    this.name = 'ArmHttpError';
+    this.status = status;
+  }
+}
+
+function httpStatusFromThrown(error: unknown): number | undefined {
+  return error instanceof ArmHttpError ? error.status : undefined;
+}
+
 export async function armRequest(url: string, token: string, options: ArmRequestOptions): Promise<Response> {
   const sleepFn = options.sleep ?? defaultSleep;
   const randomFn = options.random ?? Math.random;
@@ -101,13 +116,13 @@ export async function armRequest(url: string, token: string, options: ArmRequest
       if (response.ok) return response;
       if (!isTransientHttpStatus(response.status)) {
         if (options.throwOnHttpError) {
-          throw new Error(`${options.operation} failed with HTTP ${response.status}`);
+          throw new ArmHttpError(options.operation, response.status);
         }
         return response;
       }
       if (attempt === options.maxAttempts) {
         if (options.throwOnHttpError) {
-          throw new Error(`${options.operation} failed with HTTP ${response.status}`);
+          throw new ArmHttpError(options.operation, response.status);
         }
         return response;
       }
@@ -118,11 +133,8 @@ export async function armRequest(url: string, token: string, options: ArmRequest
       });
       await sleepFn(delayMs);
     } catch (error) {
-      if (
-        error instanceof Error &&
-        /failed with HTTP [1-4]/.test(error.message) &&
-        !/HTTP (408|429)/.test(error.message)
-      ) {
+      const status = httpStatusFromThrown(error);
+      if (status !== undefined && !isTransientHttpStatus(status)) {
         throw error;
       }
       if (options.signal?.aborted) throw error;

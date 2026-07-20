@@ -17,9 +17,14 @@ describe('README action tables', () => {
 
     const readme = readFileSync(resolve(repoRoot, 'README.md'), 'utf8');
     const providersDoc = readFileSync(resolve(repoRoot, 'docs/providers.md'), 'utf8');
+    expect(readme).toContain('<!-- coverage-table:start -->');
+    expect(readme).toContain('coverage/route-claims.json');
+    expect(readme).toMatch(/live:`apim-explicit-api-id`/);
+    expect(readme).toMatch(/unit-only/);
 
     const providerIdentifiers = [
       '`apim`',
+      '`api-center`',
       '`app-service`',
       '`custom-apis`',
       '`iac-local`',
@@ -33,7 +38,8 @@ describe('README action tables', () => {
       expect(readme).toContain(provider);
       expect(providersDoc).toContain(provider);
     }
-    expect(readme).toMatch(/repo-local OpenAPI\/Swagger specification short-circuits discovery/i);
+    expect(readme).toMatch(/Exactly one repo-local native specification .* resolves without calling Azure/is);
+    expect(readme).toMatch(/Multiple valid local specs fail closed/i);
     expect(readme).toMatch(/all available supported Azure candidates enter the same narrowing and ranking flow/i);
     // Non-goals must be documented so users do not expect them.
     for (const nonGoal of ['API Center', 'Container Apps']) {

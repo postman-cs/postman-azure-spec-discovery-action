@@ -90,6 +90,13 @@ import {
   CustomApisSdkClient,
   SubscriptionsSdkClient
 } from '../src/lib/azure/clients.js';
+import {
+  createArmRestClientOptions,
+  listArmPages,
+  MAX_ARM_LIST_PAGES
+} from '../src/lib/azure/arm-rest.js';
+import { CustomApisProvider } from '../src/lib/providers/custom-apis.js';
+import { ApimProvider } from '../src/lib/providers/apim.js';
 
 function fakeCredential() {
   return { getToken: vi.fn(async () => ({ token: 'tok', expiresOnTimestamp: Date.now() + 3600_000 })) };
@@ -298,6 +305,58 @@ describe('azure sdk client wrappers', () => {
 
     await expect(client.getGraphqlSchema('rg', 'svc', 'graphql-api')).resolves.toContain('type Query');
     expect(sdk.apiSchema.get).toHaveBeenCalledWith('rg', 'svc', 'graphql-api', 'graphql');
+  });
+
+  it('AZ-APIM-GW-001: listServices + listApis enumerate gateway assignments once per service', async () => {
+    const client = new ApimSdkClient(fakeCredential(), 'sub-1', { requestTimeoutMs: 30000, maxAttempts: 3 });
+    const sdk = (client as unknown as {
+      client: {
+        apiManagementService: { list: ReturnType<typeof vi.fn> };
+        api: { listByService: ReturnType<typeof vi.fn> };
+        workspace: { listByService: ReturnType<typeof vi.fn> };
+        gateway: { listByService: ReturnType<typeof vi.fn> };
+        gatewayApi: { listByService: ReturnType<typeof vi.fn> };
+        apiManagementWorkspaceLinks: { listByService: ReturnType<typeof vi.fn> };
+      };
+    }).client;
+
+    sdk.apiManagementService.list.mockReturnValue((async function* () {
+      yield {
+        name: 'svc',
+        id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc',
+        gatewayUrl: 'https://svc.azure-api.net'
+      };
+    })());
+    sdk.api.listByService.mockReturnValue((async function* () {
+      yield { name: 'payments', displayName: 'Payments', apiType: 'http', isCurrent: true };
+    })());
+    sdk.workspace.listByService.mockReturnValue((async function* () {})());
+    sdk.apiManagementWorkspaceLinks.listByService.mockReturnValue((async function* () {})());
+
+    let gatewayListCalls = 0;
+    sdk.gateway.listByService.mockImplementation(() => {
+      gatewayListCalls += 1;
+      return (async function* () {
+        yield { name: 'edge-1' };
+      })();
+    });
+    sdk.gatewayApi.listByService.mockReturnValue((async function* () {
+      yield { name: 'payments' };
+    })());
+
+    const services = await client.listServices();
+    expect(services).toHaveLength(1);
+    expect(services[0]?.gatewayAssignments).toEqual([{ gatewayId: 'edge-1', apiIds: ['payments'] }]);
+    expect(gatewayListCalls).toBe(1);
+
+    const apis = await client.listApis('rg', 'svc');
+    expect(apis).toEqual([
+      expect.objectContaining({ apiId: 'payments', assignedGatewayIds: ['edge-1'] })
+    ]);
+    // Hot path must not re-enumerate gateways after listServices already did.
+    expect(gatewayListCalls).toBe(1);
+    expect(sdk.gateway.listByService).toHaveBeenCalledTimes(1);
+    expect(sdk.gatewayApi.listByService).toHaveBeenCalledTimes(1);
   });
 
   it('AZ-APIM-001: service and workspace APIs retain current revisions and full scope metadata', async () => {
@@ -672,6 +731,358 @@ describe('azure sdk client wrappers', () => {
     await expect(client.get('sub-1')).rejects.toThrow('HTTP 400');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(sleeps).toEqual([]);
+  });
+
+  it.each([501, 505] as const)(
+    'AZ-RETRY-011: subscription REST does not retry permanent HTTP %s',
+    async (status) => {
+      const client = new SubscriptionsSdkClient(fakeCredential(), {
+        requestTimeoutMs: 30000,
+        maxAttempts: 3,
+        sleep: async () => undefined
+      });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('permanent', { status }));
+      await expect(client.get('sub-1')).rejects.toThrow(`HTTP ${status}`);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it.each([500, 502, 503, 504] as const)(
+    'AZ-RETRY-012: subscription REST retries HTTP %s within maxAttempts then surfaces',
+    async (status) => {
+      const client = new SubscriptionsSdkClient(fakeCredential(), {
+        requestTimeoutMs: 30000,
+        maxAttempts: 3,
+        sleep: async () => undefined
+      });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('transient', { status }));
+      await expect(client.get('sub-1')).rejects.toThrow(`HTTP ${status}`);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it('AZ-RETRY-013: generic ARM client never retries permanent 400', async () => {
+    const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('bad', { status: 400 }));
+    await expect(client.listCustomApis()).rejects.toThrow('HTTP 400');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([501, 505] as const)(
+    'AZ-RETRY-014: generic ARM client (Custom APIs) does not retry permanent HTTP %s',
+    async (status) => {
+      const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', {
+        requestTimeoutMs: 30000,
+        maxAttempts: 3,
+        sleep: async () => undefined
+      });
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('permanent', { status }));
+      await expect(client.listCustomApis()).rejects.toThrow(`HTTP ${status}`);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    }
+  );
+});
+
+describe('shared ARM listArmPages helper (R1-R7 list seam)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('AZ-PAGINATION-020: listArmPages aborts at the page ceiling', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const page = Number(new URL(url).searchParams.get('page') ?? '0');
+      return new Response(
+        JSON.stringify({
+          value: [{ id: `item-${page}` }],
+          nextLink: `https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Test/items?api-version=2024-01-01&page=${page + 1}`
+        }),
+        { status: 200 }
+      );
+    });
+    const options = createArmRestClientOptions({
+      maxAttempts: 1,
+      requestTimeoutMs: 30000,
+      sleep: async () => undefined
+    });
+    await expect(
+      listArmPages(
+        'https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Test/items?api-version=2024-01-01',
+        'tok',
+        'Shared ARM list',
+        options
+      )
+    ).rejects.toThrow(`Shared ARM list pagination exceeded ${MAX_ARM_LIST_PAGES} pages`);
+    expect(fetchSpy).toHaveBeenCalledTimes(MAX_ARM_LIST_PAGES);
+  });
+
+  it('AZ-PAGINATION-021: listArmPages rejects malformed and repeated nextLink', async () => {
+    const options = createArmRestClientOptions({
+      maxAttempts: 1,
+      requestTimeoutMs: 30000,
+      sleep: async () => undefined
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ value: [], nextLink: 'not a url' }), { status: 200 })
+    );
+    await expect(
+      listArmPages(
+        'https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Test/items?api-version=2024-01-01',
+        'tok',
+        'Shared ARM list',
+        options
+      )
+    ).rejects.toThrow(/malformed nextLink/i);
+
+    const repeated = vi.spyOn(globalThis, 'fetch').mockReset().mockImplementation(async (input) => {
+      const url = String(input);
+      return new Response(JSON.stringify({ value: [{ id: 'a' }], nextLink: url }), { status: 200 });
+    });
+    await expect(
+      listArmPages(
+        'https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Test/items?api-version=2024-01-01',
+        'tok',
+        'Shared ARM list',
+        options
+      )
+    ).rejects.toThrow(/repeated nextLink/i);
+    expect(repeated).toHaveBeenCalledTimes(1);
+  });
+
+  const restOpts = { requestTimeoutMs: 30000, maxAttempts: 1, sleep: async () => undefined };
+
+  it.each([
+    [
+      'subscriptions',
+      () => new SubscriptionsSdkClient(fakeCredential(), restOpts),
+      (client: SubscriptionsSdkClient) => client.list(),
+      'Subscription listing',
+      (page: number) => ({
+        value: [{ subscriptionId: `sub-${page}`, state: 'Enabled' }],
+        nextLink: `https://management.azure.com/subscriptions?api-version=2022-12-01&page=${page + 1}`
+      })
+    ],
+    [
+      'custom-apis',
+      () => new CustomApisSdkClient(fakeCredential(), 'sub-1', restOpts),
+      (client: CustomApisSdkClient) => client.listCustomApis(),
+      'Custom API listing',
+      (page: number) => ({
+        value: [
+          {
+            id: `/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/customApis/a-${page}`,
+            name: `a-${page}`,
+            properties: { swagger: {} }
+          }
+        ],
+        nextLink: `https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Web/customApis?api-version=2016-06-01&page=${page + 1}`
+      })
+    ],
+    [
+      'logic-workflows',
+      () => new LogicWorkflowsSdkClient(fakeCredential(), 'sub-1', restOpts),
+      (client: LogicWorkflowsSdkClient) => client.listWorkflows(),
+      'Logic workflow listing',
+      (page: number) => ({
+        value: [
+          {
+            id: `/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Logic/workflows/wf-${page}`,
+            name: `wf-${page}`,
+            properties: { state: 'Enabled' }
+          }
+        ],
+        nextLink: `https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Logic/workflows?api-version=2019-05-01&page=${page + 1}`
+      })
+    ],
+    [
+      'template-specs',
+      () => new TemplateSpecsSdkClient(fakeCredential(), 'sub-1', restOpts),
+      (client: TemplateSpecsSdkClient) => client.listTemplateSpecs(),
+      'Template spec listing',
+      (page: number) => ({
+        value: [
+          {
+            id: `/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Resources/templateSpecs/ts-${page}`,
+            name: `ts-${page}`
+          }
+        ],
+        nextLink: `https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Resources/templateSpecs?api-version=2022-02-01&page=${page + 1}`
+      })
+    ],
+    [
+      'function-apps',
+      () => new FunctionsSdkClient(fakeCredential(), 'sub-1', restOpts),
+      (client: FunctionsSdkClient) => client.listFunctionApps(),
+      'Function app listing',
+      (page: number) => ({
+        value: [
+          {
+            id: `/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.Web/sites/fn-${page}`,
+            name: `fn-${page}`,
+            kind: 'functionapp'
+          }
+        ],
+        nextLink: `https://management.azure.com/subscriptions/sub-1/providers/Microsoft.Web/sites?api-version=2023-12-01&page=${page + 1}`
+      })
+    ]
+  ] as const)(
+    'AZ-PAGINATION-022: %s list seam hits the 100-page ceiling through the shared nextLink helper',
+    async (_name, createClient, invoke, operationLabel, pageBody) => {
+      const client = createClient();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+        const page = Number(new URL(url).searchParams.get('page') ?? '0');
+        return new Response(JSON.stringify(pageBody(page)), { status: 200 });
+      });
+      await expect(invoke(client as never)).rejects.toThrow(`${operationLabel} pagination exceeded 100 pages`);
+      expect(fetchSpy.mock.calls.length).toBe(100);
+    }
+  );
+
+  it.each([
+    [
+      'logic-workflows',
+      () => new LogicWorkflowsSdkClient(fakeCredential(), 'sub-1', restOpts),
+      (client: LogicWorkflowsSdkClient) => client.listWorkflows()
+    ],
+    [
+      'template-specs',
+      () => new TemplateSpecsSdkClient(fakeCredential(), 'sub-1', restOpts),
+      (client: TemplateSpecsSdkClient) => client.listTemplateSpecs()
+    ],
+    [
+      'function-apps',
+      () => new FunctionsSdkClient(fakeCredential(), 'sub-1', restOpts),
+      (client: FunctionsSdkClient) => client.listFunctionApps()
+    ]
+  ] as const)(
+    'AZ-PAGINATION-023: %s list seam rejects malformed and repeated nextLink',
+    async (_name, createClient, invoke) => {
+      const client = createClient();
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ value: [], nextLink: ':::bad' }), { status: 200 })
+      );
+      await expect(invoke(client as never)).rejects.toThrow(/malformed nextLink/i);
+
+      const repeated = vi.spyOn(globalThis, 'fetch').mockReset().mockImplementation(async (input) => {
+        const url = String(input);
+        return new Response(JSON.stringify({ value: [], nextLink: url }), { status: 200 });
+      });
+      await expect(invoke(client as never)).rejects.toThrow(/repeated nextLink/i);
+      expect(repeated).toHaveBeenCalledTimes(1);
+    }
+  );
+});
+
+describe('identity contract (DefaultAzureCredential / token failure modes)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('AZ-IDENTITY-001: expired or unavailable token from getToken fails closed without inventing credentials', async () => {
+    const expired = {
+      getToken: vi.fn(async () => {
+        throw new Error('AuthenticationRequiredError: AADSTS700084: The refresh token has expired due to inactivity');
+      })
+    };
+    const client = new SubscriptionsSdkClient(expired, {
+      requestTimeoutMs: 30000,
+      maxAttempts: 2,
+      sleep: async () => undefined
+    });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await expect(client.get('sub-1')).rejects.toThrow(/refresh token has expired|AuthenticationRequiredError/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(expired.getToken).toHaveBeenCalledWith('https://management.azure.com/.default');
+  });
+
+  it('AZ-IDENTITY-002: credential that produces no token fails closed', async () => {
+    const empty = { getToken: vi.fn(async () => null) };
+    const client = new CustomApisSdkClient(empty, 'sub-1', {
+      requestTimeoutMs: 30000,
+      maxAttempts: 2,
+      sleep: async () => undefined
+    });
+    await expect(client.listCustomApis()).rejects.toThrow(/produced no ARM token/i);
+    expect(empty.getToken).toHaveBeenCalledOnce();
+  });
+
+  it('AZ-IDENTITY-003: wrong tenant/subscription surfaces as not-found/unauthorized without retry storm', async () => {
+    const credential = fakeCredential();
+    const client = new SubscriptionsSdkClient(credential, {
+      requestTimeoutMs: 30000,
+      maxAttempts: 3,
+      sleep: async () => undefined
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ error: { code: 'SubscriptionNotFound' } }), { status: 404 }));
+    await expect(client.get('00000000-0000-0000-0000-000000000099')).rejects.toThrow('HTTP 404');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockReset();
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: 'InvalidAuthenticationTokenTenant' } }), { status: 401 })
+    );
+    await expect(client.get('sub-1')).rejects.toThrow('HTTP 401');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('AZ-IDENTITY-004: insufficient RBAC maps probe to skipped:iam (fail-soft) while selected export stays fatal', async () => {
+    const deniedClient = {
+      probeCustomApisReadAccess: vi.fn(async () => {
+        throw new Error('AuthorizationFailed: The client does not have authorization to perform action');
+      }),
+      listCustomApis: vi.fn(async () => []),
+      getSwagger: vi.fn(async () => {
+        throw new Error('unused');
+      })
+    };
+    const provider = new CustomApisProvider(deniedClient);
+    await expect(provider.probe()).resolves.toBe('skipped:iam');
+
+    const apim = new ApimProvider(
+      {
+        listServices: vi.fn(async () => []),
+        listApis: vi.fn(async () => []),
+        getApi: vi.fn(async () => {
+          throw new Error('unused');
+        }),
+        exportApi: vi.fn(async () => {
+          throw new Error('AuthorizationFailed: export denied for selected API');
+        }),
+        getGraphqlSchema: vi.fn(async () => ''),
+        probeApimReadAccess: vi.fn(async () => undefined)
+      },
+      { subscriptionId: 'sub-1' }
+    );
+    await expect(apim.probe()).resolves.toBe('available');
+    await expect(
+      apim.exportSpec({
+        id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/pay',
+        name: 'pay',
+        providerType: 'apim',
+        supported: true,
+        evidence: [],
+        tags: {},
+        meta: {
+          resourceGroup: 'rg',
+          serviceName: 'svc',
+          apiId: 'pay',
+          apiType: 'http'
+        }
+      })
+    ).rejects.toThrow(/AuthorizationFailed|export denied/i);
+  });
+
+  it('AZ-IDENTITY-005: createAzureCredential remains the sole DefaultAzureCredential construction seam', () => {
+    expect(typeof createAzureCredential).toBe('function');
+    const src = readFileSync(path.resolve(import.meta.dirname, '..', 'src/lib/azure/clients.ts'), 'utf8');
+    expect(src).toMatch(/new DefaultAzureCredential\(\{\s*authorityHost:\s*cloud\.authorityHost/);
   });
 });
 

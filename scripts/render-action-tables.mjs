@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /* global console, process */
-// Renders the README inputs/outputs tables from action.yml between
-// <!-- inputs-table:start --> / <!-- inputs-table:end --> and
-// <!-- outputs-table:start --> / <!-- outputs-table:end --> markers.
+// Renders README tables from action.yml and coverage/route-claims.json between
+// <!-- inputs-table:start --> / <!-- inputs-table:end -->,
+// <!-- outputs-table:start --> / <!-- outputs-table:end -->, and
+// <!-- coverage-table:start --> / <!-- coverage-table:end --> markers.
 // Usage: node scripts/render-action-tables.mjs [--check]
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -13,12 +14,11 @@ import { parse } from 'yaml';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const actionPath = resolve(repoRoot, 'action.yml');
 const readmePath = resolve(repoRoot, 'README.md');
-
-const action = parse(readFileSync(actionPath, 'utf8'));
+const claimsPath = resolve(repoRoot, 'coverage', 'route-claims.json');
 
 const escapeCell = (value) => String(value ?? '').replaceAll('|', '\\|').replaceAll('\n', ' ').trim();
 
-function renderInputsTable(inputs) {
+export function renderInputsTable(inputs) {
   const lines = ['| Name | Description | Required | Default |', '| --- | --- | --- | --- |'];
   for (const [name, spec] of Object.entries(inputs ?? {})) {
     const required = spec.required ? 'yes' : 'no';
@@ -28,7 +28,7 @@ function renderInputsTable(inputs) {
   return lines.join('\n');
 }
 
-function renderOutputsTable(outputs) {
+export function renderOutputsTable(outputs) {
   const lines = ['| Name | Description |', '| --- | --- |'];
   for (const [name, spec] of Object.entries(outputs ?? {})) {
     lines.push(`| \`${name}\` | ${escapeCell(spec.description)} |`);
@@ -36,7 +36,36 @@ function renderOutputsTable(outputs) {
   return lines.join('\n');
 }
 
-function replaceBetween(content, marker, table) {
+/**
+ * Support/validation labels derived only from coverage/route-claims.json.
+ * Does not invent live promotions beyond committed validationState values.
+ */
+export function renderCoverageTable(manifest) {
+  const routes = Array.isArray(manifest?.routes) ? manifest.routes : [];
+  const lines = [
+    '| Route | Provider | Contract | Validation | Evidence mapping |',
+    '| --- | --- | --- | --- | --- |'
+  ];
+  for (const route of routes) {
+    const validation = route.validationState ?? '';
+    let mapping = '—';
+    if (validation === 'live' && route.liveEvidenceCase) {
+      mapping = `live:\`${route.liveEvidenceCase}\``;
+    } else if (route.plannedLiveEvidenceCase) {
+      mapping = `planned:\`${route.plannedLiveEvidenceCase}\``;
+    } else if (route.localOnlyRationale) {
+      mapping = 'local-only rationale';
+    } else if (validation === 'unsupported') {
+      mapping = 'unsupported';
+    }
+    lines.push(
+      `| \`${escapeCell(route.id)}\` | \`${escapeCell(route.provider)}\` | ${escapeCell(route.contractClass)} | ${escapeCell(validation)} | ${escapeCell(mapping)} |`
+    );
+  }
+  return lines.join('\n');
+}
+
+export function replaceBetween(content, marker, table) {
   const start = `<!-- ${marker}:start -->`;
   const end = `<!-- ${marker}:end -->`;
   const startIdx = content.indexOf(start);
@@ -47,19 +76,28 @@ function replaceBetween(content, marker, table) {
   return `${content.slice(0, startIdx + start.length)}\n${table}\n${content.slice(endIdx)}`;
 }
 
-const original = readFileSync(readmePath, 'utf8');
-let updated = replaceBetween(original, 'inputs-table', renderInputsTable(action.inputs));
-updated = replaceBetween(updated, 'outputs-table', renderOutputsTable(action.outputs));
+function main(argv) {
+  const action = parse(readFileSync(actionPath, 'utf8'));
+  const claims = JSON.parse(readFileSync(claimsPath, 'utf8'));
+  const original = readFileSync(readmePath, 'utf8');
+  let updated = replaceBetween(original, 'inputs-table', renderInputsTable(action.inputs));
+  updated = replaceBetween(updated, 'outputs-table', renderOutputsTable(action.outputs));
+  updated = replaceBetween(updated, 'coverage-table', renderCoverageTable(claims));
 
-if (process.argv.includes('--check')) {
-  if (updated !== original) {
-    console.error('README tables are out of date with action.yml. Run: npm run docs:tables');
-    process.exit(1);
+  if (argv.includes('--check')) {
+    if (updated !== original) {
+      console.error('README tables are out of date with action.yml / coverage/route-claims.json. Run: npm run docs:tables');
+      process.exit(1);
+    }
+    console.log('README tables match action.yml and coverage/route-claims.json.');
+  } else if (updated !== original) {
+    writeFileSync(readmePath, updated);
+    console.log('README tables updated from action.yml and coverage/route-claims.json.');
+  } else {
+    console.log('README tables already up to date.');
   }
-  console.log('README tables match action.yml.');
-} else if (updated !== original) {
-  writeFileSync(readmePath, updated);
-  console.log('README tables updated from action.yml.');
-} else {
-  console.log('README tables already up to date.');
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main(process.argv);
 }

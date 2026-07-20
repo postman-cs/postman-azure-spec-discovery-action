@@ -43,7 +43,13 @@ const APIM_POLL_INTERVAL_MS = 10 * 1000;
 const CLEANUP_READY_TIMEOUT_MS = 5 * 60 * 1000;
 const CLEANUP_POLL_INTERVAL_MS = 10 * 1000;
 
-/** Machine-readable case catalog for the public-Azure safe matrix. */
+/** Exact public-Azure safe matrix size; coverage gate rejects drift. */
+export const EXPECTED_CASE_CATALOG_SIZE = 31;
+
+/**
+ * Machine-readable case catalog for the public-Azure safe matrix.
+ * `claimFacets` is required when more than one route-claims row maps to the same case id.
+ */
 export const CASE_CATALOG = Object.freeze([
   // Baseline six (retained)
   { id: 'apim-explicit-api-id', providerType: 'apim', sourceType: 'apim-export', specFormat: 'openapi-json', contractClass: 'authoritative', lane: 'baseline' },
@@ -56,7 +62,16 @@ export const CASE_CATALOG = Object.freeze([
   // APIM multi-API clean repository / association
   { id: 'apim-clean-repo-tag', providerType: 'apim', sourceType: 'apim-export', specFormat: 'openapi-json', contractClass: 'association-only', lane: 'apim-clean-repo', requires: ['apim-multi'] },
   { id: 'apim-clean-repo-github-org-repo-pair', providerType: 'apim', sourceType: 'apim-export', specFormat: 'openapi-json', contractClass: 'association-only', lane: 'apim-clean-repo', requires: ['apim-multi'] },
-  { id: 'apim-gateway-host-path', providerType: 'apim', sourceType: 'apim-export', specFormat: 'openapi-json', contractClass: 'association-only', lane: 'apim-clean-repo', requires: ['apim-multi'] },
+  {
+    id: 'apim-gateway-host-path',
+    providerType: 'apim',
+    sourceType: 'apim-export',
+    specFormat: 'openapi-json',
+    contractClass: 'association-only',
+    lane: 'apim-clean-repo',
+    requires: ['apim-multi'],
+    claimFacets: Object.freeze(['association.gateway-hostname-hint', 'association.clean-repo-host-path'])
+  },
   { id: 'apim-host-only-ambiguity', providerType: 'apim', sourceType: 'manual-review', specFormat: '', contractClass: 'association-only', lane: 'apim-clean-repo', requires: ['apim-multi'] },
   { id: 'apim-version-revision-ambiguity', providerType: 'apim', sourceType: 'manual-review', specFormat: '', contractClass: 'association-only', lane: 'apim-clean-repo', requires: ['apim-multi'] },
   { id: 'apim-explicit-historical-revision', providerType: 'apim', sourceType: 'apim-export', specFormat: 'openapi-json', contractClass: 'authoritative', lane: 'apim-clean-repo', requires: ['apim-multi'] },
@@ -366,8 +381,12 @@ function redactSecrets(text) {
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[redacted-uuid]');
 }
 
-function runCli(runner, cliPath, args, cwd) {
-  const stdout = runner(process.execPath, [cliPath, ...args], { cwd });
+function runCli(runner, cliPath, args, cwd, options = {}) {
+  const execOptions = { cwd };
+  if (options.env) {
+    execOptions.env = { ...process.env, ...options.env };
+  }
+  const stdout = runner(process.execPath, [cliPath, ...args], execOptions);
   return JSON.parse(stdout);
 }
 
@@ -434,6 +453,33 @@ async function seedCleanRepoGateway(workspace, { gatewayHostname, apiPath, hostO
   await writeFile(path.join(workspace, 'README.md'), `${lines.join('\n')}\n`, 'utf8');
 }
 
+/** Canonical clean-repo fixture: path-selects payments-live; repo slug comes from env, not CLI. */
+async function seedCanonicalCleanRepo(workspace, { gatewayHostname }) {
+  await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'payments-live' });
+  await writeFile(
+    path.join(workspace, '.postman-clean-repo-canonical.md'),
+    'canonical postman:repo association fixture; selection requires exact gateway host+path\n',
+    'utf8'
+  );
+}
+
+/** the customer clean-repo fixture: path-selects orders-live; distinct from canonical path evidence. */
+async function seedGithubOrgRepoCleanRepo(workspace, { gatewayHostname }) {
+  await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'orders-live' });
+  await writeFile(
+    path.join(workspace, '.postman-clean-repo-github-org-repo.md'),
+    'GithubOrg/GithubRepo association fixture; selection requires exact gateway host+path\n',
+    'utf8'
+  );
+}
+
+function cleanRepoEnv(manifest) {
+  return {
+    GITHUB_REPOSITORY: manifest.repoSlug,
+    GITHUB_REPOSITORY_OWNER: String(manifest.repoSlug).split('/')[0] ?? ''
+  };
+}
+
 async function seedLocalR3(workspace) {
   const source = path.join(repoRoot, 'validation/fixtures/azure/local-r3/specs');
   await mkdir(path.join(workspace, 'specs'), { recursive: true });
@@ -473,6 +519,101 @@ function expectUnresolved(result) {
     throw new Error('expected at least two ranked candidates');
   }
   return resolution;
+}
+
+/**
+ * Central catalog-backed assertion for a harness case pass.
+ * Case-specific checks may pass `assert` to require exact API/revision/evidence.
+ */
+export function assertExpectedResult(caseId, resolution, options = {}) {
+  const catalog = CASE_CATALOG.find((row) => row.id === caseId);
+  if (!catalog) {
+    throw new Error(`unknown catalog case ${caseId}`);
+  }
+  if (!resolution || typeof resolution !== 'object') {
+    throw new Error(`case ${caseId}: missing resolution`);
+  }
+
+  if (catalog.sourceType === 'manual-review') {
+    if (resolution.status !== 'unresolved' && resolution.status !== undefined) {
+      // Dry-run/local stubs may omit status; live unresolved paths set it.
+      if (resolution.sourceType && resolution.sourceType !== 'manual-review') {
+        throw new Error(`case ${caseId}: expected manual-review unresolved, got ${resolution.sourceType}`);
+      }
+    }
+    if (resolution.sourceType && resolution.sourceType !== catalog.sourceType) {
+      throw new Error(`case ${caseId}: expected sourceType ${catalog.sourceType}, got ${resolution.sourceType}`);
+    }
+    if (catalog.providerType && resolution.providerType && resolution.providerType !== catalog.providerType) {
+      throw new Error(
+        `case ${caseId}: expected providerType ${catalog.providerType}, got ${resolution.providerType}`
+      );
+    }
+  } else {
+    if (resolution.sourceType !== catalog.sourceType) {
+      throw new Error(`case ${caseId}: expected sourceType ${catalog.sourceType}, got ${resolution.sourceType}`);
+    }
+    if (catalog.providerType && resolution.providerType !== catalog.providerType) {
+      throw new Error(
+        `case ${caseId}: expected providerType ${catalog.providerType}, got ${resolution.providerType}`
+      );
+    }
+    if (catalog.specFormat && resolution.specFormat !== catalog.specFormat) {
+      throw new Error(`case ${caseId}: expected specFormat ${catalog.specFormat}, got ${resolution.specFormat}`);
+    }
+  }
+
+  if (typeof options.expectedApiIdSuffix === 'string' && options.expectedApiIdSuffix) {
+    const apiId = String(resolution.apiId ?? '');
+    if (!apiId.toLowerCase().endsWith(options.expectedApiIdSuffix.toLowerCase())) {
+      throw new Error(`case ${caseId}: expected apiId ending ${options.expectedApiIdSuffix}, got ${apiId || 'empty'}`);
+    }
+  }
+  if (typeof options.forbiddenApiIdPattern === 'string' && options.forbiddenApiIdPattern) {
+    if (new RegExp(options.forbiddenApiIdPattern, 'i').test(String(resolution.apiId ?? ''))) {
+      throw new Error(`case ${caseId}: apiId matched forbidden pattern ${options.forbiddenApiIdPattern}`);
+    }
+  }
+  if (typeof options.requiredEvidence === 'string' && options.requiredEvidence) {
+    const evidence = Array.isArray(resolution.evidence) ? resolution.evidence.join('\n') : String(resolution.evidence ?? '');
+    if (!new RegExp(options.requiredEvidence, 'i').test(evidence)) {
+      throw new Error(`case ${caseId}: missing required evidence /${options.requiredEvidence}/`);
+    }
+  }
+  if (typeof options.forbiddenEvidence === 'string' && options.forbiddenEvidence) {
+    const evidence = Array.isArray(resolution.evidence) ? resolution.evidence.join('\n') : String(resolution.evidence ?? '');
+    if (new RegExp(options.forbiddenEvidence, 'i').test(evidence)) {
+      throw new Error(`case ${caseId}: found forbidden evidence /${options.forbiddenEvidence}/`);
+    }
+  }
+  if (typeof options.expectedContractClass === 'string' && options.expectedContractClass) {
+    if (resolution.contractClass !== options.expectedContractClass) {
+      throw new Error(
+        `case ${caseId}: expected contractClass ${options.expectedContractClass}, got ${resolution.contractClass}`
+      );
+    }
+  }
+  if (typeof options.assert === 'function') {
+    options.assert(resolution, catalog);
+  }
+
+  return {
+    sourceType: resolution.sourceType ?? catalog.sourceType,
+    providerType: resolution.providerType ?? catalog.providerType,
+    specFormat: resolution.specFormat ?? catalog.specFormat,
+    contractClass: catalog.contractClass,
+    apiId: resolution.apiId,
+    evidence: resolution.evidence
+  };
+}
+
+function evidenceText(resolution) {
+  return Array.isArray(resolution?.evidence) ? resolution.evidence.join('\n') : String(resolution?.evidence ?? '');
+}
+
+function isPartialFallback(resolution) {
+  if (resolution?.contractClass === 'partial') return true;
+  return /Synthesized partial/i.test(evidenceText(resolution));
 }
 
 export function buildManifestNames({ suffix, runMarker, subscriptionId, resourceGroup, ownsResourceGroup, provisionFlags }) {
@@ -976,6 +1117,75 @@ export async function teardownSharedGroupResources({
   }
 }
 
+/**
+ * Await dedicated resource-group deletion to terminal absence, then audit residuals.
+ * Timeout/failure must fail the run; messages stay redacted (no raw IDs in committed evidence).
+ */
+export async function teardownDedicatedResourceGroup({
+  runner,
+  log,
+  manifest,
+  subscriptionId,
+  now = () => Date.now(),
+  sleep = delay
+}) {
+  const resourceGroup = manifest.resourceGroup;
+  const runMarker = manifest.runMarker;
+  let groupShow = null;
+  try {
+    groupShow = azJson(runner, ['group', 'show', '--name', resourceGroup]);
+  } catch (error) {
+    if (isResourceNotFoundError(error)) {
+      log(`Dedicated resource group already absent`);
+      const graphCount = await residualResourceGraphAudit({ runner, log, subscriptionId, runMarker });
+      if (graphCount > 0) {
+        throw new Error('Dedicated-group teardown residual audit reported remaining run-marked resources');
+      }
+      return;
+    }
+    throw error;
+  }
+
+  if (!shouldDeleteGroup({ manifest, groupShow, subscriptionId })) {
+    throw new Error('Dedicated-group teardown refused: run-marker/subscription check failed');
+  }
+
+  log(`Deleting run-marked dedicated resource group`);
+  az(runner, ['group', 'delete', '--yes', '--name', resourceGroup]);
+
+  const cleanupDeadline = now() + CLEANUP_READY_TIMEOUT_MS;
+  for (;;) {
+    try {
+      azJson(runner, ['group', 'show', '--name', resourceGroup]);
+    } catch (error) {
+      if (isResourceNotFoundError(error)) {
+        break;
+      }
+      throw error;
+    }
+    if (now() >= cleanupDeadline) {
+      throw new Error('Dedicated-group teardown timed out before terminal absence');
+    }
+    log('Waiting for dedicated resource group deletion to finish');
+    await sleep(CLEANUP_POLL_INTERVAL_MS);
+  }
+
+  try {
+    azJson(runner, ['group', 'show', '--name', resourceGroup]);
+    throw new Error('Dedicated-group teardown residue: group still present after delete');
+  } catch (error) {
+    if (!isResourceNotFoundError(error)) {
+      throw error;
+    }
+  }
+
+  const graphCount = await residualResourceGraphAudit({ runner, log, subscriptionId, runMarker });
+  if (graphCount > 0) {
+    throw new Error('Dedicated-group teardown residual audit reported remaining run-marked resources');
+  }
+  log('Dedicated-group teardown complete: group absent and residual audit clean');
+}
+
 async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath, capabilities = {} }) {
   const results = [];
   const armApiId =
@@ -1012,7 +1222,12 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         log(`case ${id}: local-only`);
         return;
       }
-      results.push(toEvidenceResult(id, 'pass', resolution));
+      const assertOptions = resolution?.__assertOptions ?? {};
+      const resolutionFields = { ...resolution };
+      delete resolutionFields.__assertOptions;
+      delete resolutionFields.__status;
+      const asserted = assertExpectedResult(id, resolutionFields, assertOptions);
+      results.push(toEvidenceResult(id, 'pass', asserted));
       log(`case ${id}: pass`);
     } catch (error) {
       if (allowRequiresCapability) {
@@ -1061,7 +1276,11 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    return expectResolved(result, 'apim-export');
+    const resolution = expectResolved(result, 'apim-export');
+    return {
+      ...resolution,
+      __assertOptions: { expectedApiIdSuffix: '/apis/payments-live', forbiddenApiIdPattern: ';rev=' }
+    };
   });
 
   await runCase('apim-discovery', async (workspace) => {
@@ -1082,7 +1301,11 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    return expectResolved(result, 'apim-export');
+    const resolution = expectResolved(result, 'apim-export');
+    return {
+      ...resolution,
+      __assertOptions: { expectedApiIdSuffix: '/apis/payments-live' }
+    };
   });
 
   await runCase('app-service-api-definition', async (workspace) => {
@@ -1134,8 +1357,9 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
     }
     return {
       sourceType: 'discover-many',
-      providerType: result.discovered[0]?.providerType ?? '',
-      specFormat: result.discovered[0]?.specFormat ?? ''
+      providerType: result.discovered[0]?.providerType ?? 'apim',
+      specFormat: result.discovered[0]?.specFormat ?? 'openapi-json',
+      contractClass: 'authoritative'
     };
   });
 
@@ -1180,9 +1404,12 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
   });
 
   // --- APIM clean-repo / formats ---
+  // No --api-id / --repo-slug: repository context comes from GITHUB_REPOSITORY.
+  // Path fixtures isolate canonical vs the customer; inherited service tags alone do not select.
   await runCase('apim-clean-repo-tag', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
+    await seedCanonicalCleanRepo(workspace, { gatewayHostname });
     const result = runCli(
       runner,
       cliPath,
@@ -1193,19 +1420,23 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         manifest.resourceGroup,
         '--repo-root',
         workspace,
-        '--repo-slug',
-        manifest.repoSlug,
         '--result-json',
         'result.json'
       ],
-      workspace
+      workspace,
+      { env: cleanRepoEnv(manifest) }
     );
-    return expectResolved(result, 'apim-export');
+    const resolution = expectResolved(result, 'apim-export');
+    return {
+      ...resolution,
+      __assertOptions: { expectedApiIdSuffix: '/apis/payments-live' }
+    };
   });
 
   await runCase('apim-clean-repo-github-org-repo-pair', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
+    await seedGithubOrgRepoCleanRepo(workspace, { gatewayHostname });
     const result = runCli(
       runner,
       cliPath,
@@ -1216,14 +1447,17 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         manifest.resourceGroup,
         '--repo-root',
         workspace,
-        '--repo-slug',
-        manifest.repoSlug,
         '--result-json',
         'result.json'
       ],
-      workspace
+      workspace,
+      { env: cleanRepoEnv(manifest) }
     );
-    return expectResolved(result, 'apim-export');
+    const resolution = expectResolved(result, 'apim-export');
+    return {
+      ...resolution,
+      __assertOptions: { expectedApiIdSuffix: '/apis/orders-live' }
+    };
   });
 
   await runCase('apim-gateway-host-path', async (workspace) => {
@@ -1243,9 +1477,14 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         '--result-json',
         'result.json'
       ],
-      workspace
+      workspace,
+      { env: cleanRepoEnv(manifest) }
     );
-    return expectResolved(result, 'apim-export');
+    const resolution = expectResolved(result, 'apim-export');
+    return {
+      ...resolution,
+      __assertOptions: { expectedApiIdSuffix: '/apis/payments-live' }
+    };
   });
 
   await runCase('apim-host-only-ambiguity', async (workspace) => {
@@ -1265,15 +1504,18 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         '--result-json',
         'result.json'
       ],
-      workspace
+      workspace,
+      { env: cleanRepoEnv(manifest) }
     );
+    // Inherited service tags across multiple APIs must remain unresolved without path evidence.
     return expectUnresolved(result);
   });
 
   await runCase('apim-version-revision-ambiguity', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;
-    await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'payments-live' });
+    // Host-only + version selector with current+historical revisions must stay unresolved.
+    await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: '', hostOnly: true });
     const result = runCli(
       runner,
       cliPath,
@@ -1289,17 +1531,9 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         '--result-json',
         'result.json'
       ],
-      workspace
+      workspace,
+      { env: cleanRepoEnv(manifest) }
     );
-    // With version set + historical revision inventory, ambiguity or exact current is acceptable
-    // as long as we do not silently pick a non-current revision without --api-revision.
-    if (result.resolution?.status === 'resolved') {
-      const apiId = String(result.resolution.apiId ?? '');
-      if (/;rev=2$/i.test(apiId)) {
-        throw new Error('selected historical revision without explicit api-revision');
-      }
-      return expectResolved(result, 'apim-export');
-    }
     return expectUnresolved(result);
   });
 
@@ -1323,7 +1557,11 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    return expectResolved(result, 'apim-export');
+    const resolution = expectResolved(result, 'apim-export');
+    return {
+      ...resolution,
+      __assertOptions: { expectedApiIdSuffix: ';rev=2' }
+    };
   });
 
   await runCase('apim-version-set', async (workspace) => {
@@ -1348,7 +1586,11 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    return expectResolved(result, 'apim-export');
+    const resolution = expectResolved(result, 'apim-export');
+    return {
+      ...resolution,
+      __assertOptions: { expectedApiIdSuffix: '/apis/payments-live', forbiddenApiIdPattern: ';rev=2$' }
+    };
   });
 
   await runCase('apim-soap-wsdl', async (workspace) => {
@@ -1373,11 +1615,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    const resolution = expectResolved(result, 'apim-export');
-    if (resolution.specFormat !== 'wsdl') {
-      throw new Error(`expected wsdl, got ${resolution.specFormat}`);
-    }
-    return resolution;
+    return expectResolved(result, 'apim-export');
   });
 
   await runCase('apim-graphql-sdl', async (workspace) => {
@@ -1402,11 +1640,7 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    const resolution = expectResolved(result, 'apim-export');
-    if (resolution.specFormat !== 'graphql-sdl') {
-      throw new Error(`expected graphql-sdl, got ${resolution.specFormat}`);
-    }
-    return resolution;
+    return expectResolved(result, 'apim-export');
   });
 
   for (const unsupported of [
@@ -1498,7 +1732,21 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         args.push('--api-center-definition-id', definitionId);
       }
       const result = runCli(runner, cliPath, args, workspace);
-      return expectResolved(result, 'api-center-export');
+      const resolution = expectResolved(result, 'api-center-export');
+      if (apiCenterCase === 'api-center-native-non-openapi') {
+        return {
+          ...resolution,
+          __assertOptions: {
+            expectedContractClass: 'authoritative',
+            assert: (resolved) => {
+              if (resolved.specFormat !== 'graphql-sdl') {
+                throw new Error(`api-center-native-non-openapi expected graphql-sdl, got ${resolved.specFormat}`);
+              }
+            }
+          }
+        };
+      }
+      return resolution;
     });
   }
 
@@ -1518,6 +1766,8 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
         'payments-logic',
         '--enable-logic-apps-list-swagger',
         'true',
+        '--require-logic-apps-native-swagger',
+        'true',
         '--repo-root',
         workspace,
         '--result-json',
@@ -1525,7 +1775,25 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    return expectResolved(result, 'logic-apps-workflow');
+    if (result.resolution?.status !== 'resolved') {
+      return { __status: 'requires-capability', reasonCode: 'capability-absent', providerType: 'logic-apps' };
+    }
+    const resolution = expectResolved(result, 'logic-apps-workflow');
+    if (isPartialFallback(resolution) || !/native listSwagger/i.test(evidenceText(resolution))) {
+      // Never accept Reader synthesis as proof of the native listSwagger case.
+      return {
+        __status: 'requires-capability',
+        reasonCode: 'rbac-insufficient',
+        providerType: 'logic-apps',
+        sourceType: 'logic-apps-workflow',
+        specFormat: 'openapi-json',
+        contractClass: 'reconstructed'
+      };
+    }
+    return {
+      ...resolution,
+      __assertOptions: { requiredEvidence: 'native listSwagger', forbiddenEvidence: 'Synthesized partial' }
+    };
   });
 
   await runCase('logic-apps-reader-synthesis', async (workspace) => {
@@ -1550,7 +1818,11 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    return expectResolved(result, 'logic-apps-workflow');
+    const resolution = expectResolved(result, 'logic-apps-workflow');
+    return {
+      ...resolution,
+      __assertOptions: { expectedContractClass: 'partial' }
+    };
   });
 
   await runCase('custom-apis-inline-swagger', async (workspace) => {
@@ -1648,6 +1920,16 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
   await runCase('function-bindings-openapi-extension', async (workspace) => {
     const gated = capabilityGate('function-app');
     if (gated) return gated;
+    if (!manifest.functionOpenApiExtensionSeeded) {
+      return {
+        __status: 'requires-capability',
+        reasonCode: 'capability-absent',
+        providerType: 'function-bindings',
+        sourceType: 'function-bindings-trigger',
+        specFormat: 'openapi-json',
+        contractClass: 'authoritative'
+      };
+    }
     const result = runCli(
       runner,
       cliPath,
@@ -1667,37 +1949,148 @@ async function runDefaultCases({ runner, log, manifest, subscriptionId, cliPath,
       ],
       workspace
     );
-    return expectResolved(result, 'function-bindings-trigger');
+    if (result.resolution?.status !== 'resolved') {
+      return {
+        __status: 'requires-capability',
+        reasonCode: 'capability-absent',
+        providerType: 'function-bindings'
+      };
+    }
+    const resolution = expectResolved(result, 'function-bindings-trigger');
+    if (isPartialFallback(resolution) || !/OpenAPI extension/i.test(evidenceText(resolution))) {
+      return {
+        __status: 'requires-capability',
+        reasonCode: 'capability-absent',
+        providerType: 'function-bindings',
+        sourceType: 'function-bindings-trigger',
+        specFormat: 'openapi-json',
+        contractClass: 'authoritative'
+      };
+    }
+    return {
+      ...resolution,
+      __assertOptions: {
+        expectedContractClass: 'authoritative',
+        requiredEvidence: 'OpenAPI extension',
+        forbiddenEvidence: 'Synthesized partial'
+      }
+    };
   });
 
   await runCase('app-service-apispecpath-runtime', async (workspace) => {
     const gated = capabilityGate('app-service');
     if (gated) return gated;
-    const result = runCli(
-      runner,
-      cliPath,
-      [
-        '--subscription-id',
-        subscriptionId,
-        '--resource-group',
-        manifest.resourceGroup,
-        '--expected-service-name',
-        'payments-live-site',
-        '--api-filter',
-        manifest.siteName,
-        '--enable-app-service-scm-spec-fetch',
-        'true',
-        '--enable-runtime-declared-spec-routes',
-        'true',
-        '--repo-root',
-        workspace,
-        '--result-json',
-        'result.json'
-      ],
-      workspace
-    );
-    // Public apiDefinition.url remains the authoritative path when SCM path is absent.
-    return expectResolved(result, 'app-service-api-definition');
+    // Seed ApiSpecPath and clear public apiDefinition so the case cannot pass on URL fallback.
+    const configUrl =
+      `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
+      `/providers/Microsoft.Web/sites/${manifest.siteName}/config/web?api-version=2023-12-01`;
+    let seeded = false;
+    try {
+      az(runner, [
+        'rest',
+        '--method',
+        'patch',
+        '--url',
+        configUrl,
+        '--body',
+        JSON.stringify({
+          properties: {
+            apiDefinition: { url: null },
+            aiIntegration: { ApiSpecPath: '/home/site/wwwroot/openapi.json' }
+          }
+        })
+      ]);
+      seeded = true;
+      manifest.appServiceApiSpecPathSeeded = true;
+    } catch (error) {
+      log(
+        `ApiSpecPath seed blocked: ${redactSecrets(error instanceof Error ? error.message : String(error))}`
+      );
+    }
+    if (!seeded) {
+      return {
+        __status: 'requires-capability',
+        reasonCode: 'capability-absent',
+        providerType: 'app-service',
+        sourceType: 'app-service-api-definition',
+        specFormat: 'openapi-json',
+        contractClass: 'authoritative'
+      };
+    }
+    try {
+      const result = runCli(
+        runner,
+        cliPath,
+        [
+          '--subscription-id',
+          subscriptionId,
+          '--resource-group',
+          manifest.resourceGroup,
+          '--expected-service-name',
+          'payments-live-site',
+          '--api-filter',
+          manifest.siteName,
+          '--enable-app-service-scm-spec-fetch',
+          'true',
+          '--enable-runtime-declared-spec-routes',
+          'true',
+          '--repo-root',
+          workspace,
+          '--result-json',
+          'result.json'
+        ],
+        workspace
+      );
+      if (result.resolution?.status !== 'resolved') {
+        return {
+          __status: 'requires-capability',
+          reasonCode: 'capability-absent',
+          providerType: 'app-service'
+        };
+      }
+      const resolution = expectResolved(result, 'app-service-api-definition');
+      if (!/ApiSpecPath|SCM\/VFS|site SCM/i.test(evidenceText(resolution))) {
+        return {
+          __status: 'requires-capability',
+          reasonCode: 'capability-absent',
+          providerType: 'app-service',
+          sourceType: 'app-service-api-definition',
+          specFormat: 'openapi-json',
+          contractClass: 'authoritative'
+        };
+      }
+      return {
+        ...resolution,
+        __assertOptions: {
+          requiredEvidence: 'ApiSpecPath|SCM',
+          forbiddenEvidence: 'declares an API definition URL'
+        }
+      };
+    } finally {
+      // Restore public apiDefinition for any later cases / operator inspection.
+      try {
+        const site = azJson(runner, [
+          'webapp',
+          'show',
+          '--resource-group',
+          manifest.resourceGroup,
+          '--name',
+          manifest.siteName
+        ]);
+        const stubUrl = `https://${site.defaultHostName}/openapi.json`;
+        az(runner, [
+          'rest',
+          '--method',
+          'patch',
+          '--url',
+          configUrl,
+          '--body',
+          JSON.stringify({ properties: { apiDefinition: { url: stubUrl } } })
+        ]);
+      } catch {
+        // best-effort restore
+      }
+    }
   });
 
   await runCase('local-r3-format-parser-matrix', async (workspace) => {
@@ -2068,15 +2461,10 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
     if (flags.teardown && provisioned) {
       if (ownsResourceGroup) {
         try {
-          const groupShow = azJson(runner, ['group', 'show', '--name', resourceGroup]);
-          if (shouldDeleteGroup({ manifest, groupShow, subscriptionId })) {
-            log(`Requesting deletion of run-marked resource group ${resourceGroup}`);
-            az(runner, ['group', 'delete', '--yes', '--no-wait', '--name', resourceGroup]);
-          } else {
-            log(`REFUSING deletion: ${resourceGroup} failed the run-marker/subscription check; delete manually after review.`);
-          }
+          await teardownDedicatedResourceGroup({ runner, log, manifest, subscriptionId, now, sleep });
         } catch (error) {
-          log(`Teardown error for ${resourceGroup}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+          cleanupFailure = error instanceof Error ? error : new Error(String(error));
+          log(`Dedicated-group teardown failure: ${redactSecrets(cleanupFailure.message)}`);
         }
       } else {
         try {

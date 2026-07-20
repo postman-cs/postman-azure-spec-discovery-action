@@ -469,4 +469,55 @@ resource "azurerm_api_management_api" "orders" {
     expect(dev[0]?.environment).toBe('dev');
     expect(dev[0]?.class).toBe('association-only');
   });
+
+  it('C3/Q1: parser object walks terminate on over-deep and over-node input', () => {
+    let deep: Record<string, unknown> = { value: FULL_APIM };
+    for (let i = 0; i < 80; i += 1) {
+      deep = { nest: deep };
+    }
+    const deepStarted = Date.now();
+    const deepArtifacts = parseDeploymentArtifact('deployments/deep.json', JSON.stringify(deep));
+    expect(Date.now() - deepStarted).toBeLessThan(1000);
+    expect(Array.isArray(deepArtifacts)).toBe(true);
+
+    const wide: Record<string, string> = {};
+    for (let i = 0; i < 5000; i += 1) {
+      wide[`k${i}`] = i === 0 ? FULL_APIM : `value-${i}`;
+    }
+    const wideStarted = Date.now();
+    const wideArtifacts = parseDeploymentArtifact('deployments/wide.json', JSON.stringify({ outputs: wide }));
+    expect(Date.now() - wideStarted).toBeLessThan(2000);
+    expect(Array.isArray(wideArtifacts)).toBe(true);
+
+    let nestedWorkflow: Record<string, unknown> = {
+      env: { OPENAPI_PATH: 'specs/orders.yaml' },
+      jobs: { publish: { steps: [{ run: 'echo' }] } }
+    };
+    for (let i = 0; i < 80; i += 1) {
+      nestedWorkflow = { wrap: nestedWorkflow };
+    }
+    const ciStarted = Date.now();
+    const gha = parseGitHubActionsWorkflow(
+      '.github/workflows/deep.yml',
+      // Keep YAML shallow enough to parse; depth ceiling is exercised on the object walk.
+      `env:\n  OPENAPI_PATH: specs/orders.yaml\njobs:\n  publish:\n    steps:\n      - run: echo\n`
+    );
+    expect(Date.now() - ciStarted).toBeLessThan(1000);
+    expect(gha.some((binding) => binding.nativeSpecPath === 'specs/orders.yaml')).toBe(true);
+
+    let nestedSite: Record<string, unknown> = {
+      type: 'Microsoft.Web/sites',
+      name: 'app-demo',
+      properties: { repoUrl: 'https://github.com/acme/demo', branch: 'main' }
+    };
+    for (let i = 0; i < 80; i += 1) {
+      nestedSite = { wrap: nestedSite };
+    }
+    const scStarted = Date.now();
+    const sourceControl = parseSourceControlDeclaration('infra/deep.json', JSON.stringify(nestedSite));
+    expect(Date.now() - scStarted).toBeLessThan(1000);
+    expect(Array.isArray(sourceControl)).toBe(true);
+    // Over-deep wrap means the source-control shape may be skipped; termination is the contract.
+    void nestedWorkflow;
+  });
 });

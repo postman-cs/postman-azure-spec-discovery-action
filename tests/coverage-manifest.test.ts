@@ -9,8 +9,11 @@ import {
   ADVERTISED_PROVIDERS,
   CONTRACT_CLASSES,
   VALIDATION_STATES,
+  validateEvidenceAgainstCatalog,
   verifyCoverageManifest
 } from '../scripts/verify-coverage-manifest.mjs';
+import { CASE_CATALOG, EXPECTED_CASE_CATALOG_SIZE } from '../validation/scripts/validate-live-azure-surfaces.mjs';
+import { renderCoverageTable } from '../scripts/render-action-tables.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const manifestPath = path.join(repoRoot, 'coverage', 'route-claims.json');
@@ -283,6 +286,193 @@ describe('coverage claim verifier negatives', () => {
     expect(result.errors.some((error) => /advertised provider/i.test(error) && /event-grid/i.test(error))).toBe(
       true
     );
+  });
+
+  it('AZ-COV-019: rejects wrong evidence metadata, bogus catalog ids, totals mismatch, and duplicates', () => {
+    const errors: string[] = [];
+    validateEvidenceAgainstCatalog(
+      {
+        schemaVersion: 2,
+        cases: 2,
+        passed: 1,
+        failed: 0,
+        requiresCapability: 0,
+        localOnly: 0,
+        results: [
+          {
+            id: 'apim-explicit-api-id',
+            name: 'apim-explicit-api-id',
+            status: 'pass',
+            providerType: 'wrong',
+            sourceType: 'apim-export',
+            specFormat: 'openapi-json',
+            contractClass: 'authoritative'
+          },
+          {
+            id: 'not-in-catalog',
+            name: 'not-in-catalog',
+            status: 'pass',
+            providerType: 'apim',
+            sourceType: 'apim-export',
+            specFormat: 'openapi-json',
+            contractClass: 'authoritative'
+          }
+        ]
+      },
+      errors
+    );
+    expect(errors.some((error) => /providerType/i.test(error))).toBe(true);
+    expect(errors.some((error) => /not in CASE_CATALOG/i.test(error))).toBe(true);
+    expect(errors.some((error) => /does not match results|aggregate|passed/i.test(error))).toBe(true);
+
+    const dupErrors: string[] = [];
+    validateEvidenceAgainstCatalog(
+      {
+        schemaVersion: 2,
+        cases: 2,
+        passed: 2,
+        failed: 0,
+        requiresCapability: 0,
+        localOnly: 0,
+        results: [
+          {
+            id: 'iac-single',
+            name: 'iac-single',
+            status: 'pass',
+            providerType: 'iac-local',
+            sourceType: 'iac-embedded',
+            specFormat: 'openapi-json',
+            contractClass: 'authoritative'
+          },
+          {
+            id: 'iac-single',
+            name: 'iac-single',
+            status: 'pass',
+            providerType: 'iac-local',
+            sourceType: 'iac-embedded',
+            specFormat: 'openapi-json',
+            contractClass: 'authoritative'
+          }
+        ]
+      },
+      dupErrors
+    );
+    expect(dupErrors.some((error) => /duplicate result id/i.test(error))).toBe(true);
+  });
+
+  it('AZ-COV-020: rejects missing planned mapping and multi-route reuse without claimFacets', () => {
+    const missingMapping = verifyMutated((manifest) => {
+      const routes = manifest.routes as Array<Record<string, unknown>>;
+      const route = routes.find((row) => row.id === 'platform.sovereign-cloud')!;
+      route.localOnlyRationale = null;
+      route.plannedLiveEvidenceCase = null;
+      route.liveEvidenceCase = null;
+    });
+    expect(missingMapping.ok).toBe(false);
+    expect(missingMapping.errors.some((error) => /missing live\/planned|localOnlyRationale/i.test(error))).toBe(
+      true
+    );
+
+    const bogusPlanned = verifyMutated((manifest) => {
+      const routes = manifest.routes as Array<Record<string, unknown>>;
+      const route = routes.find((row) => row.validationState === 'unit-only')!;
+      route.plannedLiveEvidenceCase = 'not-a-catalog-case';
+      route.localOnlyRationale = null;
+    });
+    expect(bogusPlanned.ok).toBe(false);
+    expect(bogusPlanned.errors.some((error) => /not in CASE_CATALOG/i.test(error))).toBe(true);
+
+    const looseReuse = verifyMutated((manifest) => {
+      const routes = manifest.routes as Array<Record<string, unknown>>;
+      const route = routes.find((row) => row.id === 'association.postman-repo-tag')!;
+      route.plannedLiveEvidenceCase = 'apim-gateway-host-path';
+    });
+    expect(looseReuse.ok).toBe(false);
+    expect(looseReuse.errors.some((error) => /claimFacets/i.test(error))).toBe(true);
+  });
+
+  it('AZ-COV-021: README coverage table is manifest-derived and drifts when labels change', () => {
+    expect(CASE_CATALOG.length).toBe(EXPECTED_CASE_CATALOG_SIZE);
+    const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
+    expect(readme).toContain('<!-- coverage-table:start -->');
+    expect(readme).toContain('<!-- coverage-table:end -->');
+    const rendered = renderCoverageTable(
+      loadJson(manifestPath) as {
+        routes: Array<{
+          id?: string;
+          provider?: string;
+          contractClass?: string;
+          validationState?: string;
+          liveEvidenceCase?: string | null;
+          plannedLiveEvidenceCase?: string | null;
+          localOnlyRationale?: string | null;
+        }>;
+      }
+    );
+    expect(readme).toContain(rendered.split('\n')[0]!);
+    expect(rendered).toContain('live:`apim-explicit-api-id`');
+    expect(rendered).toContain('planned:`api-center-openapi-export`');
+    expect(rendered).toContain('association.app-service-container-apps-source-control');
+    expect(rendered).toMatch(/association-only/);
+    expect(rendered).toMatch(/unit-only/);
+    expect(rendered).toMatch(/local-only/);
+    // Historical six remain the only live promotions in committed claims.
+    const liveCount = (rendered.match(/\| live \|/g) ?? []).length;
+    expect(liveCount).toBe(6);
+    // Source-control association is claim-gated unit-only; never live without evidence.
+    expect(rendered).toMatch(
+      /`association\.app-service-container-apps-source-control`.*\| association-only \| unit-only \|/
+    );
+
+    const drifted = renderCoverageTable({
+      routes: [
+        {
+          id: 'drift.route',
+          provider: 'apim',
+          contractClass: 'authoritative',
+          validationState: 'live',
+          liveEvidenceCase: 'apim-discovery'
+        }
+      ]
+    });
+    expect(drifted).toContain('drift.route');
+    expect(readme).not.toContain('drift.route');
+  });
+
+  it('AZ-COV-022: source-control association route is unit-only association-only with local rationale', () => {
+    const manifest = loadJson(manifestPath) as {
+      routes: Array<{
+        id: string;
+        provider: string;
+        contractClass: string;
+        validationState: string;
+        liveEvidenceCase?: string | null;
+        plannedLiveEvidenceCase?: string | null;
+        localOnlyRationale?: string | null;
+        implementationFiles: string[];
+        positiveTests: string[];
+        negativeTests: string[];
+        securityTests: string[];
+        paginationTests: string[];
+        requiredCapability: string;
+      }>;
+    };
+    const route = manifest.routes.find(
+      (row) => row.id === 'association.app-service-container-apps-source-control'
+    );
+    expect(route).toBeDefined();
+    expect(route!.provider).toBe('association');
+    expect(route!.contractClass).toBe('association-only');
+    expect(route!.validationState).toBe('unit-only');
+    expect(route!.liveEvidenceCase).toBeNull();
+    expect(route!.plannedLiveEvidenceCase).toBeNull();
+    expect(route!.localOnlyRationale).toMatch(/association-only/i);
+    expect(route!.implementationFiles).toContain('src/lib/azure/source-control-client.ts');
+    expect(route!.positiveTests).toContain('tests/source-control-client.test.ts');
+    expect(route!.negativeTests).toContain('tests/source-control-client.test.ts');
+    expect(route!.securityTests).toContain('tests/source-control-client.test.ts');
+    expect(route!.paginationTests).toContain('tests/source-control-client.test.ts');
+    expect(route!.requiredCapability).toMatch(/sourcecontrols/i);
   });
 
   it('AZ-COV-017: fixture tree with a mutated manifest fails the CLI verifier', () => {

@@ -103,13 +103,6 @@ function definition(overrides: Partial<ApiCenterDefinitionSummary> = {}): ApiCen
     specificationName: 'openapi',
     specificationVersion: '3.0.3',
     tags: { 'postman:repo': 'contoso/echo' },
-    deployments: [
-      {
-        name: 'prod',
-        environmentId: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac/workspaces/default/environments/prod',
-        runtimeType: 'Azure API Management'
-      }
-    ],
     ...overrides
   };
 }
@@ -118,6 +111,14 @@ function client(overrides: Partial<AzureApiCenterClient> = {}): AzureApiCenterCl
   return {
     listServices: vi.fn(async () => []),
     listDefinitions: vi.fn(async () => [definition()]),
+    listDeployments: vi.fn(async () => [
+      {
+        name: 'prod',
+        environmentId:
+          '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac/workspaces/default/environments/prod',
+        runtimeType: 'Azure API Management'
+      }
+    ]),
     exportSpecification: vi.fn(async () => ({ content: OPENAPI_JSON, source: 'inline' as const })),
     probeApiCenterReadAccess: vi.fn(async () => undefined),
     ...overrides
@@ -148,6 +149,19 @@ describe('ApiCenterProvider', () => {
     expect(await new ApiCenterProvider(client(), { subscriptionId: 'sub-1' }).probe()).toBe('available');
   });
 
+  it('AZ-APIC-PROV-001a: hierarchy AuthorizationFailed during header listing is unavailable (distinct from association denial)', async () => {
+    const listDefinitions = vi.fn(async () => {
+      throw new Error('AuthorizationFailed: API Center service listing returned HTTP 403');
+    });
+    const listDeployments = vi.fn(async () => {
+      throw new Error('should not list deployments when hierarchy is denied');
+    });
+    const provider = new ApiCenterProvider(client({ listDefinitions, listDeployments }), { subscriptionId: 'sub-1' });
+    await expect(provider.listCandidateHeaders()).rejects.toThrow(/AuthorizationFailed/);
+    await expect(provider.listCandidates()).rejects.toThrow(/AuthorizationFailed/);
+    expect(listDeployments).not.toHaveBeenCalled();
+  });
+
   it('AZ-APIC-PROV-002: candidates use full definition ARM ids and treat deployments as association evidence only', async () => {
     const provider = new ApiCenterProvider(client(), { subscriptionId: 'sub-1' });
     const candidates = await provider.listCandidates();
@@ -157,6 +171,82 @@ describe('ApiCenterProvider', () => {
     expect(candidates[0]!.supported).toBe(true);
     expect(candidates[0]!.evidence.join(' ')).toContain('deployment prod');
     expect(candidates[0]!.evidence.join(' ').toLowerCase()).toContain('association');
+  });
+
+  it('AZ-APIC-PROV-002a: headers are unhydrated and do not call listDeployments; only selected hydrate', async () => {
+    const listDefinitions = vi.fn(async () => [
+      definition({ id: DEF_A, versionName: 'v1' }),
+      definition({ id: DEF_B, versionName: 'v2', versionTitle: 'v2' })
+    ]);
+    const listDeployments = vi.fn(async (coords) => [
+      {
+        name: `dep-${coords.versionName}`,
+        runtimeType: 'Azure API Management'
+      }
+    ]);
+    const exportSpecification = vi.fn(async () => ({ content: OPENAPI_JSON, source: 'inline' as const }));
+    const provider = new ApiCenterProvider(
+      client({ listDefinitions, listDeployments, exportSpecification }),
+      { subscriptionId: 'sub-1' }
+    );
+
+    const headers = await provider.listCandidateHeaders();
+    expect(headers).toHaveLength(2);
+    expect(headers.every((h) => h.headerHydrated === false)).toBe(true);
+    expect(headers.every((h) => !/deployment \S+ .*association evidence only/i.test(h.evidence.join(' ')))).toBe(
+      true
+    );
+    expect(listDeployments).not.toHaveBeenCalled();
+    expect(exportSpecification).not.toHaveBeenCalled();
+
+    const selected = headers.find((h) => h.id === DEF_B)!;
+    const hydrated = await provider.hydrateCandidates([selected]);
+    expect(hydrated).toHaveLength(1);
+    expect(hydrated[0]!.id).toBe(DEF_B);
+    expect(hydrated[0]!.evidence.join(' ')).toContain('deployment dep-v2');
+    expect(listDeployments).toHaveBeenCalledTimes(1);
+    expect(listDeployments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceGroup: 'rg',
+        serviceName: 'ac',
+        workspaceName: 'default',
+        apiName: 'echo',
+        versionName: 'v2'
+      })
+    );
+    expect(exportSpecification).not.toHaveBeenCalled();
+  });
+
+  it('AZ-APIC-PROV-002b: hydrateCandidates preserves stable order and fail-soft optional deployment enrichment', async () => {
+    const listDefinitions = vi.fn(async () => [
+      definition({ id: DEF_A, versionName: 'v1' }),
+      definition({ id: DEF_B, versionName: 'v2' })
+    ]);
+    // Mirrors client fail-soft: deployment 403 yields empty association, not a thrown error.
+    const listDeployments = vi.fn(async (coords) => {
+      if (coords.versionName === 'v1') return [];
+      return [{ name: 'prod-v2', runtimeType: 'Azure API Management' }];
+    });
+    const provider = new ApiCenterProvider(client({ listDefinitions, listDeployments }), { subscriptionId: 'sub-1' });
+    const headers = await provider.listCandidateHeaders();
+    const hydrated = await provider.hydrateCandidates(headers);
+    expect(hydrated.map((c) => c.id)).toEqual(headers.map((h) => h.id));
+    expect(hydrated[0]!.evidence.join(' ')).not.toMatch(/deployment /i);
+    expect(hydrated[1]!.evidence.join(' ')).toContain('deployment prod-v2');
+    expect(listDeployments).toHaveBeenCalledTimes(2);
+  });
+
+  it('AZ-APIC-PROV-002c: optional deployment denial is association-only; selected export still succeeds', async () => {
+    const listDeployments = vi.fn(async () => []);
+    const exportSpecification = vi.fn(async () => ({ content: OPENAPI_JSON, source: 'inline' as const }));
+    const provider = new ApiCenterProvider(client({ listDeployments, exportSpecification }), { subscriptionId: 'sub-1' });
+    const [header] = await provider.listCandidateHeaders();
+    const [candidate] = await provider.hydrateCandidates([header!]);
+    expect(candidate!.supported).toBe(true);
+    expect(candidate!.evidence.join(' ')).not.toMatch(/deployment /i);
+    const exported = await provider.exportSpec(candidate!);
+    expect(exported.format).toBe('openapi-json');
+    expect(exportSpecification).toHaveBeenCalledTimes(1);
   });
 
   it('AZ-APIC-PROV-003: multiple definitions remain listed; no first/latest auto-pick in provider', async () => {
@@ -200,20 +290,40 @@ describe('ApiCenterProvider', () => {
 
   it('AZ-APIC-PROV-004a: a complete exact definition ARM id exports directly without broad inventory', async () => {
     const listDefinitions = vi.fn(async () => [definition({ id: DEF_A })]);
+    const listDeployments = vi.fn(async () => [{ name: 'prod' }]);
     const exportSpecification = vi.fn(async () => ({ content: OPENAPI_JSON, source: 'inline' as const }));
-    const provider = new ApiCenterProvider(client({ listDefinitions, exportSpecification }), { subscriptionId: 'sub-1' });
+    const provider = new ApiCenterProvider(client({ listDefinitions, listDeployments, exportSpecification }), {
+      subscriptionId: 'sub-1'
+    });
 
     const exact = provider.resolveExplicitDefinition(DEF_B);
     expect(exact).toBeTruthy();
     await provider.exportSpec(exact!);
 
     expect(listDefinitions).not.toHaveBeenCalled();
+    expect(listDeployments).not.toHaveBeenCalled();
     expect(exportSpecification).toHaveBeenCalledWith(expect.objectContaining({ versionName: 'v2', definitionName: 'openapi' }));
     expect(
       provider.resolveExplicitDefinition(
         '/subscriptions/other/resourceGroups/rg/providers/Microsoft.ApiCenter/services/ac/workspaces/default/apis/echo/versions/v1/definitions/openapi'
       )
     ).toBeUndefined();
+  });
+
+  it('AZ-APIC-PROV-004b: selected export 403 fails without retry and does not inventory', async () => {
+    const listDefinitions = vi.fn(async () => [definition()]);
+    const listDeployments = vi.fn(async () => []);
+    const exportSpecification = vi.fn(async () => {
+      throw new Error('API Center exportSpecification failed with HTTP 403');
+    });
+    const provider = new ApiCenterProvider(client({ listDefinitions, listDeployments, exportSpecification }), {
+      subscriptionId: 'sub-1'
+    });
+    const exact = provider.resolveExplicitDefinition(DEF_A);
+    await expect(provider.exportSpec(exact!)).rejects.toThrow(/HTTP 403/);
+    expect(exportSpecification).toHaveBeenCalledTimes(1);
+    expect(listDefinitions).not.toHaveBeenCalled();
+    expect(listDeployments).not.toHaveBeenCalled();
   });
 
   it('AZ-APIC-PROV-005: all native formats export with stable filenames; empty/malformed/wrong-kind fail', async () => {

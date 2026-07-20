@@ -260,7 +260,7 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
     },
     'runtime-declared-spec-targets-json': {
       description:
-        'JSON array of explicit runtime-declared specification targets when enable-runtime-declared-spec-routes is true. Each entry requires id, name, workloadKind, and https url.',
+        'Requested subset of runtime-declared HTTPS specification targets when enable-runtime-declared-spec-routes is true. Each entry requires id, name, workloadKind, and https url. Caller JSON alone is rejected; every target must match a committed .postman/repository binding or authorized ARM association evidence.',
       required: false,
       default: '[]'
     }

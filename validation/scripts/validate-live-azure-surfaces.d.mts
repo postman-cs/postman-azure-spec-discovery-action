@@ -55,8 +55,10 @@ export interface CaseCatalogEntry {
   lane: string;
   requires?: string[];
   localOnly?: boolean;
+  claimFacets?: readonly string[];
 }
 
+export const EXPECTED_CASE_CATALOG_SIZE: 31;
 export const CASE_CATALOG: readonly CaseCatalogEntry[];
 export const PROVISION_FLAGS: Readonly<Record<string, boolean>>;
 export const CLEANUP_RESOURCE_ORDER: readonly Array<{ key: string; type: string; nested?: boolean; parentKey?: string; parentType?: string }>;
@@ -146,6 +148,26 @@ export function teardownSharedGroupResources(input: {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<void>;
+export function teardownDedicatedResourceGroup(input: {
+  runner: (command: string, args: string[], options?: Record<string, unknown>) => string;
+  log: (line: string) => void;
+  manifest: Record<string, unknown>;
+  subscriptionId: string;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<void>;
+export function assertExpectedResult(
+  caseId: string,
+  resolution: Record<string, unknown>,
+  options?: {
+    expectedApiIdSuffix?: string;
+    forbiddenApiIdPattern?: string;
+    requiredEvidence?: string;
+    forbiddenEvidence?: string;
+    expectedContractClass?: string;
+    assert?: (resolution: Record<string, unknown>, catalog: CaseCatalogEntry) => void;
+  }
+): Record<string, unknown>;
 export function runLiveValidation(options?: {
   argv?: string[];
   env?: Record<string, string | undefined>;

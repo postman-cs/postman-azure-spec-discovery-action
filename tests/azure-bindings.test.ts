@@ -284,4 +284,113 @@ describe('azure resolver bindings (R1)', () => {
     expect(exportSpec).toHaveBeenCalledTimes(1);
     expect(exportSpec.mock.calls[0]?.[0]?.id).toBe(defId);
   });
+
+  it('C3: conflicting exact APIM bindings between .postman and discovery fail closed', async () => {
+    const repo = await makeRoot();
+    const bindingId =
+      '/subscriptions/sub/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/from-binding';
+    const discoveryId =
+      '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-demo/providers/Microsoft.ApiManagement/service/apim-demo/apis/orders;rev=2';
+    await writeFile(
+      path.join(repo, '.postman/resources.yaml'),
+      `azure:\n  apimApiId: ${bindingId}\n`,
+      'utf8'
+    );
+    await mkdir(path.join(repo, '.azure', 'prod'), { recursive: true });
+    await writeFile(path.join(repo, '.azure', 'prod', '.env'), `APIM_API_ID=${discoveryId}\n`, 'utf8');
+    const reporter: ReporterLike = {
+      group: async (_name, fn) => fn(),
+      info: () => undefined,
+      warning: () => undefined
+    };
+    await expect(
+      execute(
+        resolveInputs({ INPUT_REPO_ROOT: repo, INPUT_SUBSCRIPTION_ID: 'sub' }),
+        {
+          core: reporter,
+          subscriptions: {
+            get: async () => {
+              throw new Error('cloud must not run');
+            },
+            list: async () => []
+          },
+          createApimClient: () => {
+            throw new Error('cloud must not run');
+          },
+          createAppServiceClient: () => {
+            throw new Error('cloud must not run');
+          },
+          writeSpecFile: async () => undefined,
+          providers: []
+        }
+      )
+    ).rejects.toThrow(/Conflicting exact APIM|refusing to choose/i);
+  });
+
+  it('C3: .postman nativeSpecPath resolves non-OpenAPI native formats without cloud calls', async () => {
+    const repo = await makeRoot();
+    await mkdir(path.join(repo, 'contracts'), { recursive: true });
+    await writeFile(
+      path.join(repo, 'contracts', 'api.graphql'),
+      'type Query {\n  ping: String\n}\n',
+      'utf8'
+    );
+    await writeFile(
+      path.join(repo, '.postman', 'resources.yaml'),
+      'azure:\n  nativeSpecPath: contracts/api.graphql\n',
+      'utf8'
+    );
+    const reporter: ReporterLike = {
+      group: async (_name, fn) => fn(),
+      info: () => undefined,
+      warning: () => undefined
+    };
+    const result = await execute(resolveInputs({ INPUT_REPO_ROOT: repo }), {
+      core: reporter,
+      subscriptions: {
+        get: async () => {
+          throw new Error('cloud discovery must not run');
+        },
+        list: async () => []
+      },
+      createApimClient: () => {
+        throw new Error('cloud discovery must not run');
+      },
+      createAppServiceClient: () => {
+        throw new Error('cloud discovery must not run');
+      },
+      writeSpecFile: async () => undefined
+    });
+    expect(result.resolution).toMatchObject({
+      status: 'resolved',
+      sourceType: 'repo-spec',
+      specPath: 'contracts/api.graphql',
+      specFormat: 'graphql-sdl'
+    });
+  });
+
+  it('C4/Q12: functionsOpenApiPath must start with / and loads from .postman binding', async () => {
+    const repo = await makeRoot();
+    await writeFile(
+      path.join(repo, '.postman/resources.yaml'),
+      'azure:\n  functionsOpenApiPath: api/openapi.json\n',
+      'utf8'
+    );
+    const bad = await loadAzureResolverBinding(repo);
+    expect(bad.status).toBe('error');
+    if (bad.status === 'error') {
+      expect(bad.reason).toMatch(/functionsOpenApiPath must be an absolute path starting with \//);
+    }
+
+    await writeFile(
+      path.join(repo, '.postman/resources.yaml'),
+      'azure:\n  functionsOpenApiPath: /api/openapi/v3.json\n',
+      'utf8'
+    );
+    const ok = await loadAzureResolverBinding(repo);
+    expect(ok.status).toBe('ok');
+    if (ok.status === 'ok') {
+      expect(ok.binding.functionsOpenApiPath).toBe('/api/openapi/v3.json');
+    }
+  });
 });

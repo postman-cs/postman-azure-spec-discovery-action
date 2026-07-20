@@ -19,6 +19,7 @@ import {
   EventGridSdkClient,
   ServiceBusSdkClient,
   FunctionsSdkClient,
+  SourceControlSdkClient,
   type AzureApimClient,
   type AzureAppServiceClient,
   type AzureAppServiceRuntimeClient,
@@ -30,7 +31,8 @@ import {
   type AzureTemplateSpecsClient,
   type AzureEventGridClient,
   type AzureServiceBusClient,
-  type AzureFunctionsClient
+  type AzureFunctionsClient,
+  type AzureSourceControlClient
 } from './lib/azure/clients.js';
 import { ApiCenterSdkClient, type AzureApiCenterClient } from './lib/azure/api-center-client.js';
 import { formatUserSafeError } from './lib/logging/sanitize.js';
@@ -65,6 +67,7 @@ export interface GitHubActionDependencies {
   createEventGridClient?: (subscriptionId: string) => AzureEventGridClient;
   createServiceBusClient?: (subscriptionId: string) => AzureServiceBusClient;
   createFunctionsClient?: (subscriptionId: string) => AzureFunctionsClient;
+  createSourceControlClient?: (subscriptionId: string) => AzureSourceControlClient;
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile?: (outputPath: string, content: string, rootPath: string) => Promise<void>;
   providers?: SpecProvider[];
@@ -149,6 +152,11 @@ async function runActionInner(
     createFunctionsClient:
       dependencies.createFunctionsClient ??
       (useProductionProviders ? (subscriptionId) => new FunctionsSdkClient(credential!, subscriptionId, sdkOptions) : undefined),
+    createSourceControlClient:
+      dependencies.createSourceControlClient ??
+      (useProductionProviders
+        ? (subscriptionId) => new SourceControlSdkClient(credential!, subscriptionId, sdkOptions)
+        : undefined),
     createResourceGraphClient:
       dependencies.createResourceGraphClient ??
       (useProductionProviders ? () => new ResourceGraphSdkClient(credential!, sdkOptions) : undefined),

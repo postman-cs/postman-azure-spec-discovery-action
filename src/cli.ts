@@ -17,7 +17,8 @@ import {
   TemplateSpecsSdkClient,
   EventGridSdkClient,
   ServiceBusSdkClient,
-  FunctionsSdkClient
+  FunctionsSdkClient,
+  SourceControlSdkClient
 } from './lib/azure/clients.js';
 import { ApiCenterSdkClient } from './lib/azure/api-center-client.js';
 import { formatUserSafeError, sanitizeLogMessage } from './lib/logging/sanitize.js';
@@ -316,6 +317,8 @@ export async function runCli(
             createEventGridClient: (subscriptionId) => new EventGridSdkClient(credential!, subscriptionId, sdkOptions),
             createServiceBusClient: (subscriptionId) => new ServiceBusSdkClient(credential!, subscriptionId, sdkOptions),
             createFunctionsClient: (subscriptionId) => new FunctionsSdkClient(credential!, subscriptionId, sdkOptions),
+            createSourceControlClient: (subscriptionId) =>
+              new SourceControlSdkClient(credential!, subscriptionId, sdkOptions),
             createResourceGraphClient: () => new ResourceGraphSdkClient(credential!, sdkOptions),
             writeSpecFile: defaultWriteSpecFile
           }

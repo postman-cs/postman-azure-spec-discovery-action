@@ -16,11 +16,25 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 
 ## Cloud, subscription scope, and absence
 
-- Azure Public, US Government, and China endpoint profiles share one cloud abstraction for ARM/token audiences. Advertise a sovereign profile only after live validation in that cloud.
+- Azure Public, US Government, and China endpoint profiles share one cloud abstraction for ARM/token audiences (`AZURE_ENVIRONMENT` / `AZURE_AUTHORITY_HOST`). Endpoint and audience construction for all three profiles is **locally unit-tested**. None of these clouds — including Public — is advertised as live-proven for a route unless the coverage manifest and committed live evidence say so (`validationState: live`). Sovereign (US Government / China) profiles must not be described as live-validated from local tests alone.
+- API Center feature parity in sovereign clouds remains **unsupported** pending live proof per cloud. Do not claim API Center sovereign coverage from Public-cloud evidence.
 - Discovery enumerates only the selected subscription scope(s): singular `subscription-id`, explicit `subscription-ids-json`, or the single enabled subscription visible to the credential. The action never auto-enumerates every visible subscription.
 - `subscription-ids-json` is a JSON array of subscription IDs. It conflicts with `subscription-id` unless both identify exactly the same one ID. Entries are verified independently (get with list fallback on 401/403), reject empty/invalid arrays and case-insensitive duplicates, and run in stable lexical order.
 - Resource Graph prefers one request that includes every selected subscription scope. Absence is scoped: evidence reports `no visible candidates in selected scope(s)` with counts, never a global claim that no APIs exist, and never hidden subscription names or IDs in errors.
 - Provider IAM failure in one selected subscription does not erase successful candidates from another. A selected exact export failure remains fatal.
+- Direct ARM list surfaces follow opaque `nextLink` / Resource Graph `$skipToken` with host validation, repeated-token detection, and a 100-page ceiling. Bounded retries honor `Retry-After` and full jitter for `408`/`429`/`500`/`502`/`503`/`504` only; permanent `501`/`505` and ordinary `4xx` are not retried.
+
+## Identity forms (no new secret inputs)
+
+Authentication is ambient `DefaultAzureCredential` only. Documented forms:
+
+1. **GitHub OIDC — immutable repository ID** — federated credential subject shaped as `repo:<ORG_ID>/<REPO_ID>:ref:...` (or environment/pull_request variants). Prefer this so repository renames cannot retarget trust. Workflow needs `id-token: write`; use `azure/login` (or equivalent) before this action.
+2. **GitHub OIDC — legacy name subject** — `repo:<org>/<repo>:...`. Still valid when an Entra app was registered that way; treat as legacy and migrate to repository-ID subjects when practical.
+3. **Azure DevOps workload identity federation** — service connection federating into Entra (as in this repository's live-validation pipeline). No personal login and no committed subscription/tenant secrets.
+4. **Azure-hosted managed identity** — MSI on the runner/compute picked up by the credential chain. Scope Reader (and provider-specific roles) to the selected subscription or resource group only.
+5. **Service-principal environment credentials** — `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` or certificate env vars on the runner. This action never accepts those values as inputs.
+
+Scoped failure modes: expired/missing tokens and wrong-tenant/subscription lookups fail closed; insufficient RBAC on unselected providers is `skipped:iam`; selected export authorization failures are fatal. See the README Auth section for the operator-facing table.
 
 ## `apim` — Azure API Management
 
@@ -35,7 +49,7 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 
 - Enumerates API Center services, workspaces, APIs, versions, and definitions through ARM `api-version=2024-03-01` (subscription-wide or `resource-group` scoped). Follows opaque `nextLink` with configured-cloud host validation, repeated-link detection, and a 100-page ceiling. Data-plane inventory APIs are never used for bytes.
 - Candidate IDs are full definition ARM resource IDs. Deployment/environment metadata and APIM synchronization links are association evidence only and never auto-select among multiple versions or definitions.
-- Export uses `POST .../definitions/{definition}/exportSpecification?api-version=2024-03-01`. Handles immediate `200` bodies and `202` LRO via `Location` / `Azure-AsyncOperation`, honors `Retry-After`, bounds polls/time/attempts, and retries only transient `408`/`429`/`5xx`. Permanent `4xx` responses are not retried. Poll URLs must stay on the configured ARM host.
+- Export uses `POST .../definitions/{definition}/exportSpecification?api-version=2024-03-01`. Handles immediate `200` bodies and `202` LRO via `Location` / `Azure-AsyncOperation`, honors `Retry-After`, bounds polls/time/attempts, and retries only transient `408`/`429`/`500`/`502`/`503`/`504`. Permanent `501`/`505` and ordinary `4xx` responses are not retried. Poll URLs must stay on the configured ARM host.
 - Export payload shapes are parsed defensively (`format=inline|link`, `value`/`content` string or object). Link results are fetched immediately through guarded `fetchSpecFromUrl` without Azure `Authorization`. SAS query material is never logged.
 - Native formats are detected and validated: OpenAPI JSON/YAML, AsyncAPI JSON/YAML, WSDL, WADL, XSD, protobuf, and GraphQL SDL. Bytes are preserved except canonical JSON where existing conventions require it. Contract class is `authoritative`. Empty, malformed, or wrong-kind exports fail selected resolution.
 - Exact selection uses Action/CLI `api-center-definition-id` or `.postman` `apiCenterDefinitionId` (same selector). Conflicting explicit input vs binding refuses to choose. Exact API Center IDs win over cloud ranking and never pick first/latest among ambiguous definitions.
@@ -89,18 +103,19 @@ Use Azure `Reader` at the chosen subscription or resource-group scope for provid
 - A function app is a supported candidate when at least one function declares a trigger binding. Apps without triggers stay visible as unsupported candidates. Candidate IDs append `/functions` so they never collide with the `app-service` provider for the same site.
 - Export **synthesizes a deliberately partial OpenAPI 3.0 document** from the trigger topology: `httpTrigger` bindings become real HTTP operations (`/api/<route>` with declared methods); event-source triggers (queue, Service Bus, Event Grid, Event Hubs, blob, timer) become `x-azure-trigger-documented` POST entries under `/functions/<name>/invocations` so the event surface stays visible without inventing public routes. Response contracts are not declared in bindings, so every operation carries a default response and the export is `completeness: partial`.
 - Credential hygiene: `listFunctionKeys`, `listHostKeys`, `listFunctionSecrets`, and app-settings values are never called. Binding `connection` properties are setting **names** only; the client projects known structural fields and never serializes raw binding payloads beyond them.
-- The default-off `enable-functions-openapi-extension` input permits only extension routes explicitly evidenced by function metadata or a declared path; it never obtains keys or probes conventional endpoints.
+- The default-off `enable-functions-openapi-extension` input permits only extension routes explicitly evidenced by function metadata or a committed `.postman` `functionsOpenApiPath` (absolute path starting with `/`); it never obtains keys or probes conventional endpoints. There is no action/secret input for the path.
+- Reader-only Azure App Service / Container Apps source-control records (normalized repo URL + branch on already-visible resources in the selected subscription/resource-group) attach association-only narrowing tags/evidence. Container Apps are not a specification provider in this action: source-control correlation is association-only and never exports or synthesizes a contract. Matching associations never resolve without a specification source; IAM denial is scoped fail-soft; credential-bearing fields and raw ARM bodies are never retained; response bodies are streamed with a 256 KiB ceiling.
 
 ## `runtime-declared` — opt-in named compute routes
 
-- The default-off `enable-runtime-declared-spec-routes` input accepts exact, explicitly declared HTTPS specification URLs for named App Service, Functions, Container Apps, Static Web Apps, ACI, and AKS targets. It is not an advertised automatic-discovery provider and performs no blind route probing.
+- The default-off `enable-runtime-declared-spec-routes` input accepts a requested subset of exact HTTPS specification URLs for named App Service, Functions, Container Apps, Static Web Apps, ACI, and AKS targets. `runtime-declared-spec-targets-json` alone is rejected; every target must match a committed `.postman` binding or authorized ARM association evidence. It is not an advertised automatic-discovery provider and performs no blind route probing.
 - Fetches use the guarded spec fetcher: HTTPS and no userinfo; private, loopback, link-local, CGNAT, metadata, and IPv4-mapped IPv6 destinations are refused before and after DNS resolution; redirects are bounded and cross-host redirects are refused unless explicitly declared. Requests carry no auth, cookies, or credentials. Private-network unavailability is reported distinctly from a blocked URL without revealing addresses.
 - These routes are unit-only until live validation is recorded; they make no live coverage claim.
 
 ## `iac-local` — repository Azure IaC
 
 - Always `available` (no network probe). Bounded lexical scanning is stable-order, byte/file/depth capped, ignores vendor/build/output/state directories, and confines `lstat`/`realpath` traversal to the repository root. It content-detects OpenAPI, AsyncAPI, WSDL, WADL, XSD, protobuf, and GraphQL SDL rather than trusting extensions.
-- Static association parsing covers `azure.yaml` and `.azure/<environment>/.env`, ARM/Bicep, Terraform/AzAPI, Pulumi, APIOps, GitHub Actions, Azure DevOps, deployment outputs/stacks/Template Specs, and source-control declarations. Only literals and same-file static references are binding-grade; unresolved indirection is association-only.
+- Static association parsing covers `azure.yaml` and `.azure/<environment>/.env`, ARM/Bicep, Terraform/AzAPI, Pulumi, APIOps, GitHub Actions, Azure DevOps, deployment outputs/stacks/Template Specs, and source-control declarations. Azure-side App Service `sourcecontrols/web` and Container Apps `sourcecontrols` records are correlated at runtime as association evidence only. Only literals and same-file static references are binding-grade; unresolved indirection is association-only.
 - Secret-shaped values, state files, and secret-bearing subtrees never enter evidence. All valid local specifications remain candidates in stable order; `resolve-one` fails closed when more than one remains unless an exact binding selects one.
 
 ## `discover-estate` mode — estate repo association

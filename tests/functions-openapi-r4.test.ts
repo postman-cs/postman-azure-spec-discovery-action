@@ -113,4 +113,46 @@ describe('R4 Functions OpenAPI extension detection', () => {
     expect(exported.contractClass).toBe('partial');
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it('AZ-FN-R4-005: errors redact query/SAS and preserve private-network vs blocked-ssrf', async () => {
+    const provider = new FunctionBindingsProvider(client(), { enableOpenApiExtension: true });
+    const [candidate] = await provider.listCandidates();
+    const sasUrl =
+      'https://orders-fn.azurewebsites.net/api/openapi/v3.json?code=function-key&sig=secret-sas';
+    const poisoned = {
+      ...candidate!,
+      meta: { ...candidate!.meta, openApiUrl: sasUrl, openApiPath: '/api/openapi/v3.json' }
+    };
+
+    lookupMock.mockResolvedValueOnce([{ address: '10.0.0.1', family: 4 }]);
+    await expect(provider.exportSpec(poisoned)).rejects.toThrow(/blocked by SSRF defenses/i);
+    try {
+      lookupMock.mockResolvedValueOnce([{ address: '10.0.0.1', family: 4 }]);
+      await provider.exportSpec(poisoned);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).toContain('https://orders-fn.azurewebsites.net/api/openapi/v3.json');
+      expect(message).not.toMatch(/code=|sig=|function-key|secret-sas/);
+      expect(message).not.toMatch(/private-network-unreachable/i);
+    }
+  });
+
+  it('AZ-FN-R4-006: never forwards Authorization/Cookie on OpenAPI extension fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(VALID_OPENAPI, {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const provider = new FunctionBindingsProvider(client(), { enableOpenApiExtension: true });
+    const [candidate] = await provider.listCandidates();
+    const exported = await provider.exportSpec(candidate!);
+    expect(exported.evidence.some((line) => /were never called/i.test(line))).toBe(true);
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit | undefined;
+    const headers = new Headers(init?.headers);
+    expect(headers.get('authorization')).toBeNull();
+    expect(headers.get('cookie')).toBeNull();
+    expect(headers.get('x-github-token')).toBeNull();
+    expect(headers.get('x-ms-path-query')).toBeNull();
+  });
 });

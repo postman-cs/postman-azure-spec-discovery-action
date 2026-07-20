@@ -273,6 +273,21 @@ interface ArmRequestOptions {
   throwOnHttpError?: boolean;
 }
 
+/** Private to this helper: carries status so catch can honor isTransientHttpStatus for all classes. */
+class ArmHttpError extends Error {
+  readonly status: number;
+
+  constructor(operation: string, status: number) {
+    super(`${operation} failed with HTTP ${status}`);
+    this.name = 'ArmHttpError';
+    this.status = status;
+  }
+}
+
+function httpStatusFromThrown(error: unknown): number | undefined {
+  return error instanceof ArmHttpError ? error.status : undefined;
+}
+
 async function armRequest(url: string, token: string, options: ArmRequestOptions): Promise<Response> {
   const sleepFn = options.sleep ?? defaultSleep;
   const randomFn = options.random ?? Math.random;
@@ -295,13 +310,13 @@ async function armRequest(url: string, token: string, options: ArmRequestOptions
       if (response.ok) return response;
       if (!isTransientHttpStatus(response.status)) {
         if (options.throwOnHttpError) {
-          throw new Error(`${options.operation} failed with HTTP ${response.status}`);
+          throw new ArmHttpError(options.operation, response.status);
         }
         return response;
       }
       if (attempt === options.maxAttempts) {
         if (options.throwOnHttpError) {
-          throw new Error(`${options.operation} failed with HTTP ${response.status}`);
+          throw new ArmHttpError(options.operation, response.status);
         }
         return response;
       }
@@ -312,11 +327,8 @@ async function armRequest(url: string, token: string, options: ArmRequestOptions
       });
       await sleepFn(delayMs);
     } catch (error) {
-      if (
-        error instanceof Error &&
-        /failed with HTTP [1-4]/.test(error.message) &&
-        !/HTTP (408|429)/.test(error.message)
-      ) {
+      const status = httpStatusFromThrown(error);
+      if (status !== undefined && !isTransientHttpStatus(status)) {
         throw error;
       }
       if (options.signal?.aborted) throw error;
@@ -454,15 +466,71 @@ function retainCurrentApis(apis: ApimApiSummary[]): ApimApiSummary[] {
 }
 
 
+/** Per-client ceiling for cached APIM gateway/workspace enumerations (one entry per service). */
+const MAX_APIM_SERVICE_META_CACHE = 256;
+
 export class ApimSdkClient implements AzureApimClient {
   private readonly client: ApiManagementClient;
   private readonly requestTimeoutMs?: number;
   private readonly maxAttempts: number;
+  /**
+   * Per-client in-flight/result cache so listServices + listApis for the same
+   * service share one gateway-assignment / workspace-link enumeration. Keys are
+   * scoped to this instance (no global/cross-run state).
+   */
+  private readonly gatewayAssignmentCache = new Map<string, Promise<ApimGatewayAssignment[]>>();
+  private readonly workspaceGatewayCache = new Map<string, Promise<ApimWorkspaceGatewayLink[]>>();
 
   public constructor(credential: TokenCredential, subscriptionId: string, options?: AzureSdkOptions) {
     this.client = new ApiManagementClient(credential, subscriptionId, sdkClientOptions(options));
     this.requestTimeoutMs = options?.requestTimeoutMs;
     this.maxAttempts = options?.maxAttempts ?? 3;
+  }
+
+  private serviceMetaCacheKey(resourceGroup: string, serviceName: string): string {
+    return `${resourceGroup.toLowerCase()}::${serviceName.toLowerCase()}`;
+  }
+
+  private rememberCachedPromise<T>(
+    cache: Map<string, Promise<T>>,
+    key: string,
+    factory: () => Promise<T>
+  ): Promise<T> {
+    const existing = cache.get(key);
+    if (existing) return existing;
+    const pending = factory().catch((error: unknown) => {
+      cache.delete(key);
+      throw error;
+    });
+    cache.set(key, pending);
+    while (cache.size > MAX_APIM_SERVICE_META_CACHE) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined || oldest === key) break;
+      cache.delete(oldest);
+    }
+    return pending;
+  }
+
+  private cachedSelfHostedGatewayAssignments(
+    resourceGroup: string,
+    serviceName: string
+  ): Promise<ApimGatewayAssignment[]> {
+    return this.rememberCachedPromise(
+      this.gatewayAssignmentCache,
+      this.serviceMetaCacheKey(resourceGroup, serviceName),
+      () => this.listSelfHostedGatewayAssignments(resourceGroup, serviceName)
+    );
+  }
+
+  private cachedWorkspaceGatewayLinks(
+    resourceGroup: string,
+    serviceName: string
+  ): Promise<ApimWorkspaceGatewayLink[]> {
+    return this.rememberCachedPromise(
+      this.workspaceGatewayCache,
+      this.serviceMetaCacheKey(resourceGroup, serviceName),
+      () => this.listWorkspaceGatewayLinks(resourceGroup, serviceName)
+    );
   }
 
   public async listServices(resourceGroup?: string): Promise<ApimServiceSummary[]> {
@@ -480,8 +548,8 @@ export class ApimSdkClient implements AzureApimClient {
         continue;
       }
       const [gatewayAssignments, workspaceGateways] = await Promise.all([
-        this.listSelfHostedGatewayAssignments(rg, name),
-        this.listWorkspaceGatewayLinks(rg, name)
+        this.cachedSelfHostedGatewayAssignments(rg, name),
+        this.cachedWorkspaceGatewayLinks(rg, name)
       ]);
       summaries.push({ ...base, gatewayAssignments, workspaceGateways });
     }
@@ -514,7 +582,7 @@ export class ApimSdkClient implements AzureApimClient {
       if (!isUnsupportedWorkspaceTierError(error)) throw error;
     }
     const current = retainCurrentApis(summaries);
-    const assignments = await this.listSelfHostedGatewayAssignments(resourceGroup, serviceName);
+    const assignments = await this.cachedSelfHostedGatewayAssignments(resourceGroup, serviceName);
     const byApi = new Map<string, string[]>();
     for (const assignment of assignments) {
       for (const apiId of assignment.apiIds) {
@@ -2033,4 +2101,13 @@ export {
   type AppServiceRuntimeSiteConfig,
   type AppServiceScmFetchResult
 } from './app-service-runtime-client.js';
+export {
+  SourceControlSdkClient,
+  normalizeSourceControlRepoUrl,
+  sourceControlMatchesRepoContext,
+  sourceControlAssociationEvidence,
+  type AzureSourceControlClient,
+  type SourceControlAssociation,
+  type SourceControlLookupStatus
+} from './source-control-client.js';
 export { detectFunctionsOpenApiRoutes, type FunctionsOpenApiRoute } from './functions-openapi.js';
