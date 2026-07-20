@@ -25,13 +25,13 @@ import {
   parseFlags,
   parseProvisionFlags,
   passingLiveCaseIds,
+  provisionCustomConnectorBounded,
   provisionOptionalApimApis,
   renderExecutionPlan,
   requiredEnv,
   runLiveValidation,
   resolveSubscriptionId,
   hasExactResourceIdentity,
-  stubWebsocketServiceUrl,
   teardownDedicatedResourceGroup,
   teardownSharedGroupResources,
   shouldDeleteGroup,
@@ -777,11 +777,7 @@ describe('R8 harness matrix contract', () => {
     }
   });
 
-  it('AZ-LIVE-020: websocket serviceUrl uses the stub site hostname', async () => {
-    expect(stubWebsocketServiceUrl('pmspecsiteabcd.azurewebsites.net')).toBe(
-      'wss://pmspecsiteabcd.azurewebsites.net/ws'
-    );
-
+  it('AZ-LIVE-020: websocket inventory omits an unverified backend URL', async () => {
     const bodies: string[] = [];
     const runner = (_command: string, args: string[]) => {
       if (args[0] === 'rest' && args.includes('put')) {
@@ -808,15 +804,13 @@ describe('R8 harness matrix contract', () => {
         'apim-grpc': false,
         'apim-odata': false
       },
-      capabilities,
-      siteHostname: 'pmspecsiteabcd.azurewebsites.net'
+      capabilities
     });
 
     expect(capabilities['apim-websocket']).toEqual({ ok: true });
-    expect(bodies.some((body) => body.includes('"serviceUrl":"wss://pmspecsiteabcd.azurewebsites.net/ws"'))).toBe(
-      true
-    );
-    expect(bodies.some((body) => body.includes('example.invalid/ws'))).toBe(false);
+    const websocketBody = bodies.find((body) => body.includes('"apiType":"websocket"'));
+    expect(websocketBody).toBeTruthy();
+    expect(websocketBody).not.toContain('serviceUrl');
   });
 
   it('AZ-LIVE-021: waitForStubHealth returns false on persistent non-200 without hanging', async () => {
@@ -841,6 +835,38 @@ describe('R8 harness matrix contract', () => {
     });
     expect(ok).toBe(false);
     expect(probes).toBeGreaterThan(0);
+  });
+
+  it('AZ-LIVE-023: custom connector provisioning is isolated and command-bounded', async () => {
+    const calls: Array<{ args: string[]; options?: Record<string, unknown> }> = [];
+    const capabilities: Record<string, { ok: boolean; reasonCode?: string }> = {};
+    await provisionCustomConnectorBounded({
+      asyncRunner: async (_command, args, options) => {
+        calls.push({ args, options });
+        if (args[0] === 'resource') throw new Error('ResourceNotFound');
+        throw new Error('InternalServerError');
+      },
+      log: () => undefined,
+      manifest: {
+        resourceGroup: 'CSE-Azure-Team',
+        customConnectorName: 'pmspecconnabcd1234',
+        runMarker: 'persistent-abcd1234',
+        resources: []
+      },
+      subscriptionId: 'sub-1',
+      location: 'eastus2',
+      provisionFlags: { 'custom-connector': true },
+      capabilities,
+      siteHostname: 'pmspecsiteabcd1234.azurewebsites.net'
+    });
+
+    expect(capabilities['custom-connector']).toEqual({ ok: false, reasonCode: 'capability-absent' });
+    const put = calls.find((call) => call.args[0] === 'rest');
+    expect(put?.options).toEqual({ timeout: 30_000 });
+    expect(put?.args.join(' ')).toContain('pmspecsiteabcd1234.azurewebsites.net');
+    const bicep = readFileSync(join(repoRoot, 'validation/fixtures/azure/extended-stack.bicep'), 'utf8');
+    expect(bicep).not.toContain('Microsoft.Web/customApis');
+    expect(bicep).not.toContain('customConnectorName');
   });
 
   it('AZ-LIVE-022: keep-alive requires a persistent suffix, refuses --teardown, and never tears down', async () => {
@@ -877,7 +903,7 @@ describe('R8 harness matrix contract', () => {
       }
       if (args[0] === 'resource' && args[1] === 'show' && args.includes('Microsoft.ApiManagement/service')) {
         return JSON.stringify({
-          tags: { 'postman-azure-spec-discovery-live-run': 'persistent-c5e1feed' }
+          tags: { 'postman:run-marker': 'persistent-c5e1feed' }
         });
       }
       if (args[0] === 'resource' && args[1] === 'show') {
@@ -912,6 +938,7 @@ describe('R8 harness matrix contract', () => {
           runner,
           log: () => undefined,
           sleep: async () => undefined,
+          fetch: (async () => ({ status: 200 })) as unknown as typeof fetch,
           runCases: async () => []
         }
       });

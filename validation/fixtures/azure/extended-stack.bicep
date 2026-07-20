@@ -4,7 +4,6 @@
 param location string = resourceGroup().location
 param runMarker string
 param logicAppName string
-param customConnectorName string
 param templateSpecName string
 param eventGridTopicName string
 param eventGridSubName string
@@ -12,7 +11,6 @@ param webhookEndpointUrl string
 param functionAppName string = ''
 param appServicePlanId string = ''
 param provisionLogicApp bool = true
-param provisionCustomConnector bool = true
 param provisionTemplateSpec bool = true
 param provisionEventGrid bool = true
 param provisionFunctionApp bool = false
@@ -58,43 +56,6 @@ resource logicApp 'Microsoft.Logic/workflows@2019-05-01' = if (provisionLogicApp
         }
       }
       outputs: {}
-    }
-  }
-}
-
-resource customConnector 'Microsoft.Web/customApis@2016-06-01' = if (provisionCustomConnector) {
-  name: customConnectorName
-  location: location
-  tags: {
-    'postman:run-marker': runMarker
-    'postman:project-name': 'payments-connector'
-  }
-  properties: {
-    displayName: 'Payments Live Connector'
-    description: 'Inline swagger custom connector for live validation'
-    swagger: {
-      swagger: '2.0'
-      info: {
-        title: 'Payments Live Connector'
-        version: '1.0.0'
-      }
-      host: 'example.invalid'
-      basePath: '/'
-      schemes: [
-        'https'
-      ]
-      paths: {
-        '/health': {
-          get: {
-            operationId: 'GetHealth'
-            responses: {
-              '200': {
-                description: 'ok'
-              }
-            }
-          }
-        }
-      }
     }
   }
 }
@@ -201,7 +162,6 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = if (provisionFunctionApp
 }
 
 output logicAppNameOut string = provisionLogicApp ? logicApp.name : ''
-output customConnectorNameOut string = provisionCustomConnector ? customConnector.name : ''
 output templateSpecNameOut string = provisionTemplateSpec ? templateSpec.name : ''
 output eventGridTopicNameOut string = provisionEventGrid ? eventGridTopic.name : ''
 output functionAppNameOut string = provisionFunctionApp ? functionApp.name : ''

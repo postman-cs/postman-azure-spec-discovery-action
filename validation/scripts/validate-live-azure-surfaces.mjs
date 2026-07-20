@@ -48,6 +48,8 @@ const CLEANUP_POLL_INTERVAL_MS = 5 * 1000;
 export const STUB_HEALTH_TIMEOUT_MS = 120_000;
 export const STUB_HEALTH_POLL_INTERVAL_MS = 5_000;
 export const CASE_MATRIX_CONCURRENCY = 4;
+export const CUSTOM_CONNECTOR_TIMEOUT_MS = 30_000;
+export const EXTENDED_DEPLOYMENT_TIMEOUT_MS = 120_000;
 
 /** Exact public-Azure safe matrix size; coverage gate rejects drift. */
 export const EXPECTED_CASE_CATALOG_SIZE = 31;
@@ -420,8 +422,8 @@ async function azAsync(asyncRunner, args, options = {}) {
   return asyncRunner('az', args, options);
 }
 
-async function azJsonAsync(asyncRunner, args) {
-  const stdout = await azAsync(asyncRunner, [...args, '-o', 'json']);
+async function azJsonAsync(asyncRunner, args, options = {}) {
+  const stdout = await azAsync(asyncRunner, [...args, '-o', 'json'], options);
   return stdout.trim() ? JSON.parse(stdout) : null;
 }
 
@@ -757,22 +759,15 @@ async function putApimApi(runner, { subscriptionId, resourceGroup, apimName, api
   await Promise.resolve(az(runner, ['rest', '--method', 'put', '--url', url, '--body', JSON.stringify(body)]));
 }
 
-/** Build websocket serviceUrl for the stub site (public Azure default hostname). */
-export function stubWebsocketServiceUrl(siteHostname) {
-  return `wss://${siteHostname}/ws`;
-}
-
 export async function provisionOptionalApimApis({
   runner,
   log,
   manifest,
   subscriptionId,
   provisionFlags,
-  capabilities,
-  siteHostname
+  capabilities
 }) {
   const { resourceGroup, apimName } = manifest;
-  const host = String(siteHostname || `${manifest.siteName}.azurewebsites.net`).trim();
   const soapWsdl = await readFile(path.join(repoRoot, 'validation/fixtures/azure/apim-apis/soap.wsdl'), 'utf8');
   const graphqlSdl = await readFile(path.join(repoRoot, 'validation/fixtures/azure/apim-apis/schema.graphql'), 'utf8');
 
@@ -832,8 +827,7 @@ export async function provisionOptionalApimApis({
           displayName: 'Payments WebSocket API',
           path: 'payments-websocket',
           protocols: ['wss'],
-          apiType: 'websocket',
-          serviceUrl: stubWebsocketServiceUrl(host)
+          apiType: 'websocket'
         }
       }
     },
@@ -889,6 +883,94 @@ export async function provisionOptionalApimApis({
       capabilities[item.flag] = { ok: false, reasonCode };
       log(`Optional APIM lane ${item.flag} unavailable (${reasonCode}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
     }
+  }
+}
+
+export async function provisionCustomConnectorBounded({
+  asyncRunner,
+  log,
+  manifest,
+  subscriptionId,
+  location,
+  provisionFlags,
+  capabilities,
+  siteHostname
+}) {
+  if (!provisionFlags['custom-connector']) {
+    capabilities['custom-connector'] = { ok: false, reasonCode: 'cost-guard-blocked' };
+    return;
+  }
+
+  try {
+    const existing = await azJsonAsync(
+      asyncRunner,
+      [
+        'resource',
+        'show',
+        '--resource-group',
+        manifest.resourceGroup,
+        '--resource-type',
+        'Microsoft.Web/customApis',
+        '--name',
+        manifest.customConnectorName
+      ],
+      { timeout: CUSTOM_CONNECTOR_TIMEOUT_MS }
+    );
+    if (existing?.tags?.[RESOURCE_RUN_MARKER_TAG] === manifest.runMarker) {
+      capabilities['custom-connector'] = { ok: true };
+      recordManifestResource(manifest, { type: 'Microsoft.Web/customApis', name: manifest.customConnectorName });
+      log('Persistent custom connector already provisioned');
+      return;
+    }
+  } catch (error) {
+    if (!isResourceNotFoundError(error)) {
+      log(`Custom connector existence check failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+    }
+  }
+
+  const url =
+    `https://management.azure.com/subscriptions/${subscriptionId}/resourceGroups/${manifest.resourceGroup}` +
+    `/providers/Microsoft.Web/customApis/${manifest.customConnectorName}?api-version=2016-06-01`;
+  const body = {
+    location,
+    tags: {
+      [RESOURCE_RUN_MARKER_TAG]: manifest.runMarker,
+      'postman:project-name': 'payments-connector'
+    },
+    properties: {
+      displayName: 'Payments Live Connector',
+      description: 'Inline swagger custom connector for live validation',
+      swagger: {
+        swagger: '2.0',
+        info: { title: 'Payments Live Connector', version: '1.0.0' },
+        host: siteHostname,
+        basePath: '/',
+        schemes: ['https'],
+        paths: {
+          '/health': {
+            get: {
+              operationId: 'GetHealth',
+              responses: { 200: { description: 'ok' } }
+            }
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    await azAsync(
+      asyncRunner,
+      ['rest', '--method', 'put', '--url', url, '--body', JSON.stringify(body)],
+      { timeout: CUSTOM_CONNECTOR_TIMEOUT_MS }
+    );
+    capabilities['custom-connector'] = { ok: true };
+    recordManifestResource(manifest, { type: 'Microsoft.Web/customApis', name: manifest.customConnectorName });
+    log('Provisioned bounded custom connector lane');
+  } catch (error) {
+    const reasonCode = capabilityReasonFromError(error);
+    capabilities['custom-connector'] = { ok: false, reasonCode };
+    log(`Custom connector provision blocked (${reasonCode}): ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
   }
 }
 
@@ -2495,7 +2577,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
             '--name',
             manifest.apimName
           ]);
-          liveStackCurrent = existing?.tags?.[RUN_MARKER_TAG] === runMarker;
+          liveStackCurrent = existing?.tags?.[RESOURCE_RUN_MARKER_TAG] === runMarker;
         } catch (error) {
           if (!isResourceNotFoundError(error)) throw error;
         }
@@ -2503,25 +2585,25 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
       if (liveStackCurrent) {
         log('Persistent live stack already provisioned; skipping live-stack.bicep deploy');
       } else {
-      log('Deploying live-stack.bicep (APIM Consumption + App Service + optional multi-API)');
-      az(runner, [
-        'deployment',
-        'group',
-        'create',
-        '--name',
-        manifest.deploymentName,
-        '--resource-group',
-        resourceGroup,
-        '--template-file',
-        'validation/fixtures/azure/live-stack.bicep',
-        '--parameters',
-        `runMarker=${runMarker}`,
-        `apimName=${manifest.apimName}`,
-        `appServicePlanName=${manifest.planName}`,
-        `siteName=${manifest.siteName}`,
-        `repoSlug=${manifest.repoSlug}`,
-        `provisionMultiApi=${provisionFlags['apim-multi'] ? 'true' : 'false'}`
-      ]);
+        log('Deploying live-stack.bicep (APIM Consumption + App Service + optional multi-API)');
+        az(runner, [
+          'deployment',
+          'group',
+          'create',
+          '--name',
+          manifest.deploymentName,
+          '--resource-group',
+          resourceGroup,
+          '--template-file',
+          'validation/fixtures/azure/live-stack.bicep',
+          '--parameters',
+          `runMarker=${runMarker}`,
+          `apimName=${manifest.apimName}`,
+          `appServicePlanName=${manifest.planName}`,
+          `siteName=${manifest.siteName}`,
+          `repoSlug=${manifest.repoSlug}`,
+          `provisionMultiApi=${provisionFlags['apim-multi'] ? 'true' : 'false'}`
+        ]);
       }
       recordManifestResource(manifest, { type: 'Microsoft.ApiManagement/service', name: manifest.apimName });
       recordManifestResource(manifest, { type: 'Microsoft.Web/serverfarms', name: manifest.planName });
@@ -2538,6 +2620,23 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
           name: 'stub-deploy',
           fatal: true,
           run: async () => {
+            if (liveStackCurrent) {
+              const persistentStubUrl = `https://${siteHostname}/openapi.json`;
+              const healthy = await waitForStubHealth({
+                url: `https://${siteHostname}/health`,
+                timeoutMs: CUSTOM_CONNECTOR_TIMEOUT_MS,
+                intervalMs: STUB_HEALTH_POLL_INTERVAL_MS,
+                fetchImpl,
+                now,
+                sleep,
+                log
+              });
+              if (healthy) {
+                stubUrl = persistentStubUrl;
+                log('Persistent App Service stub is healthy; skipping zip deploy');
+                return;
+              }
+            }
             log('Deploying App Service stub zip');
             const stubDir = path.join(repoRoot, 'validation/fixtures/azure/app-service-stub');
             const zipDir = await mkdtemp(path.join(os.tmpdir(), 'az-stub-zip-'));
@@ -2595,6 +2694,20 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
               log,
               manifest,
               subscriptionId,
+              provisionFlags,
+              capabilities
+            })
+        },
+        {
+          name: 'custom-connector',
+          fatal: false,
+          run: () =>
+            provisionCustomConnectorBounded({
+              asyncRunner,
+              log,
+              manifest,
+              subscriptionId,
+              location,
               provisionFlags,
               capabilities,
               siteHostname
@@ -2701,7 +2814,6 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
       const extendedStarted = now();
       if (
         provisionFlags['logic-app'] ||
-        provisionFlags['custom-connector'] ||
         provisionFlags['template-spec'] ||
         provisionFlags['event-grid'] ||
         provisionFlags['function-app']
@@ -2717,7 +2829,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
         });
         if (!healthOk) {
           const reasonCode = 'capability-absent';
-          for (const flag of ['logic-app', 'custom-connector', 'template-spec', 'event-grid', 'function-app']) {
+          for (const flag of ['logic-app', 'template-spec', 'event-grid', 'function-app']) {
             if (provisionFlags[flag] && !capabilities[flag]?.ok) {
               capabilities[flag] = { ok: false, reasonCode };
             }
@@ -2725,50 +2837,90 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
           log(`Stub health gate failed; skipping extended-stack deploy (${reasonCode})`);
         } else {
           try {
-            log('Deploying extended-stack.bicep (logic/connector/templatespec/eventgrid/functions)');
-            const plan = azJson(runner, [
-              'resource',
-              'show',
-              '--resource-group',
-              resourceGroup,
-              '--resource-type',
-              'Microsoft.Web/serverfarms',
-              '--name',
-              manifest.planName
-            ]);
-            az(runner, [
-              'deployment',
-              'group',
-              'create',
-              '--name',
-              manifest.extendedDeploymentName,
-              '--resource-group',
-              resourceGroup,
-              '--template-file',
-              'validation/fixtures/azure/extended-stack.bicep',
-              '--parameters',
-              `runMarker=${runMarker}`,
-              `logicAppName=${manifest.logicAppName}`,
-              `customConnectorName=${manifest.customConnectorName}`,
-              `templateSpecName=${manifest.templateSpecName}`,
-              `eventGridTopicName=${manifest.eventGridTopicName}`,
-              `eventGridSubName=${manifest.eventGridSubName}`,
-              `webhookEndpointUrl=${webhookEndpointUrl}`,
-              `functionAppName=${manifest.functionAppName}`,
-              `appServicePlanId=${plan?.id ?? ''}`,
-              `provisionLogicApp=${provisionFlags['logic-app'] ? 'true' : 'false'}`,
-              `provisionCustomConnector=${provisionFlags['custom-connector'] ? 'true' : 'false'}`,
-              `provisionTemplateSpec=${provisionFlags['template-spec'] ? 'true' : 'false'}`,
-              `provisionEventGrid=${provisionFlags['event-grid'] ? 'true' : 'false'}`,
-              `provisionFunctionApp=${provisionFlags['function-app'] ? 'true' : 'false'}`
-            ]);
-            for (const [flag, key, type] of [
+            const resources = [
               ['logic-app', 'logicAppName', 'Microsoft.Logic/workflows'],
-              ['custom-connector', 'customConnectorName', 'Microsoft.Web/customApis'],
               ['template-spec', 'templateSpecName', 'Microsoft.Resources/templateSpecs'],
               ['event-grid', 'eventGridTopicName', 'Microsoft.EventGrid/topics'],
               ['function-app', 'functionAppName', 'Microsoft.Web/sites']
-            ]) {
+            ];
+            let extendedStackCurrent = flags.keepAlive;
+            if (extendedStackCurrent) {
+              for (const [flag, key, type] of resources) {
+                if (!provisionFlags[flag]) continue;
+                try {
+                  const existing = await azJsonAsync(
+                    asyncRunner,
+                    [
+                      'resource',
+                      'show',
+                      '--resource-group',
+                      resourceGroup,
+                      '--resource-type',
+                      type,
+                      '--name',
+                      manifest[key]
+                    ],
+                    { timeout: CUSTOM_CONNECTOR_TIMEOUT_MS }
+                  );
+                  if (existing?.tags?.[RESOURCE_RUN_MARKER_TAG] !== runMarker) {
+                    extendedStackCurrent = false;
+                    break;
+                  }
+                } catch {
+                  extendedStackCurrent = false;
+                  break;
+                }
+              }
+            }
+
+            if (extendedStackCurrent) {
+              log('Persistent extended stack already provisioned; skipping extended-stack.bicep deploy');
+            } else {
+              log('Deploying bounded extended-stack.bicep (logic/templatespec/eventgrid/functions)');
+              const plan = await azJsonAsync(
+                asyncRunner,
+                [
+                  'resource',
+                  'show',
+                  '--resource-group',
+                  resourceGroup,
+                  '--resource-type',
+                  'Microsoft.Web/serverfarms',
+                  '--name',
+                  manifest.planName
+                ],
+                { timeout: CUSTOM_CONNECTOR_TIMEOUT_MS }
+              );
+              await azAsync(
+                asyncRunner,
+                [
+                  'deployment',
+                  'group',
+                  'create',
+                  '--name',
+                  manifest.extendedDeploymentName,
+                  '--resource-group',
+                  resourceGroup,
+                  '--template-file',
+                  'validation/fixtures/azure/extended-stack.bicep',
+                  '--parameters',
+                  `runMarker=${runMarker}`,
+                  `logicAppName=${manifest.logicAppName}`,
+                  `templateSpecName=${manifest.templateSpecName}`,
+                  `eventGridTopicName=${manifest.eventGridTopicName}`,
+                  `eventGridSubName=${manifest.eventGridSubName}`,
+                  `webhookEndpointUrl=${webhookEndpointUrl}`,
+                  `functionAppName=${manifest.functionAppName}`,
+                  `appServicePlanId=${plan?.id ?? ''}`,
+                  `provisionLogicApp=${provisionFlags['logic-app'] ? 'true' : 'false'}`,
+                  `provisionTemplateSpec=${provisionFlags['template-spec'] ? 'true' : 'false'}`,
+                  `provisionEventGrid=${provisionFlags['event-grid'] ? 'true' : 'false'}`,
+                  `provisionFunctionApp=${provisionFlags['function-app'] ? 'true' : 'false'}`
+                ],
+                { timeout: EXTENDED_DEPLOYMENT_TIMEOUT_MS }
+              );
+            }
+            for (const [flag, key, type] of resources) {
               if (provisionFlags[flag]) {
                 capabilities[flag] = { ok: true };
                 recordManifestResource(manifest, { type, name: manifest[key] });
@@ -2778,7 +2930,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
             }
           } catch (error) {
             const reasonCode = capabilityReasonFromError(error);
-            for (const flag of ['logic-app', 'custom-connector', 'template-spec', 'event-grid', 'function-app']) {
+            for (const flag of ['logic-app', 'template-spec', 'event-grid', 'function-app']) {
               if (provisionFlags[flag] && !capabilities[flag]?.ok) {
                 capabilities[flag] = { ok: false, reasonCode };
               }
