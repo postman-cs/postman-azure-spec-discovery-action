@@ -1,51 +1,66 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "suiteVersion": "r8-pos-396-v1",
   "capturedAt": "2026-07-18",
   "cases": 6,
   "passed": 6,
   "failed": 0,
+  "requiresCapability": 0,
+  "localOnly": 0,
   "results": [
     {
+      "id": "apim-explicit-api-id",
       "name": "apim-explicit-api-id",
       "status": "pass",
-      "sourceType": "apim-export",
       "providerType": "apim",
-      "specFormat": "openapi-json"
+      "sourceType": "apim-export",
+      "specFormat": "openapi-json",
+      "contractClass": "authoritative"
     },
     {
+      "id": "apim-discovery",
       "name": "apim-discovery",
       "status": "pass",
-      "sourceType": "apim-export",
       "providerType": "apim",
-      "specFormat": "openapi-json"
+      "sourceType": "apim-export",
+      "specFormat": "openapi-json",
+      "contractClass": "authoritative"
     },
     {
+      "id": "app-service-api-definition",
       "name": "app-service-api-definition",
       "status": "pass",
-      "sourceType": "app-service-api-definition",
       "providerType": "app-service",
-      "specFormat": "openapi-json"
+      "sourceType": "app-service-api-definition",
+      "specFormat": "openapi-json",
+      "contractClass": "authoritative"
     },
     {
+      "id": "discover-many",
       "name": "discover-many",
       "status": "pass",
-      "sourceType": "discover-many",
       "providerType": "apim",
-      "specFormat": "openapi-json"
+      "sourceType": "discover-many",
+      "specFormat": "openapi-json",
+      "contractClass": "authoritative"
     },
     {
+      "id": "iac-single",
       "name": "iac-single",
       "status": "pass",
-      "sourceType": "iac-embedded",
       "providerType": "iac-local",
-      "specFormat": "openapi-json"
+      "sourceType": "iac-embedded",
+      "specFormat": "openapi-json",
+      "contractClass": "authoritative"
     },
     {
+      "id": "ambiguity",
       "name": "ambiguity",
       "status": "pass",
-      "sourceType": "manual-review",
       "providerType": "",
-      "specFormat": ""
+      "sourceType": "manual-review",
+      "specFormat": "",
+      "contractClass": "association-only"
     }
   ]
 }

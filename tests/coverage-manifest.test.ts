@@ -79,12 +79,24 @@ describe('coverage claim manifest contract', () => {
 
   it('AZ-COV-002: live rows bind only to the six committed passing evidence cases', () => {
     const manifest = loadJson(manifestPath) as {
-      routes: Array<{ id: string; validationState: string; liveEvidenceCase?: string | null }>;
+      routes: Array<{
+        id: string;
+        validationState: string;
+        liveEvidenceCase?: string | null;
+        plannedLiveEvidenceCase?: string | null;
+      }>;
     };
     const evidence = loadJson(evidencePath) as {
-      results: Array<{ name: string; status: string }>;
+      schemaVersion: number;
+      results: Array<{ name?: string; id?: string; status: string }>;
     };
-    const passing = new Set(evidence.results.filter((row) => row.status === 'pass').map((row) => row.name));
+    expect(evidence.schemaVersion).toBe(2);
+    const passing = new Set(
+      evidence.results
+        .filter((row) => row.status === 'pass')
+        .map((row) => row.name || row.id)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0)
+    );
 
     expect(passing.size).toBe(6);
     expect([...passing].sort()).toEqual([
@@ -107,6 +119,52 @@ describe('coverage claim manifest contract', () => {
 
     // Unit tests alone must not inflate live claims beyond committed evidence.
     expect(new Set(liveCases).size).toBeLessThanOrEqual(passing.size);
+
+    // Planned harness ids may be mapped while remaining unit-only.
+    const planned = manifest.routes.filter(
+      (route) => typeof route.plannedLiveEvidenceCase === 'string' && route.plannedLiveEvidenceCase.length > 0
+    );
+    expect(planned.length).toBeGreaterThan(0);
+    for (const route of planned) {
+      expect(route.validationState).not.toBe('live');
+    }
+  });
+
+  it('AZ-COV-018: requires-capability evidence never backs a live claim', () => {
+    const result = verifyMutated(
+      (manifest) => {
+        const routes = manifest.routes as Array<Record<string, unknown>>;
+        const route = routes.find((row) => row.validationState === 'unit-only')!;
+        route.validationState = 'live';
+        route.liveEvidenceCase = 'service-bus-topic-partial';
+      },
+      {
+        evidence: {
+          schemaVersion: 2,
+          suiteVersion: 'r8-pos-396-v1',
+          capturedAt: '2026-07-20',
+          cases: 1,
+          passed: 0,
+          failed: 0,
+          requiresCapability: 1,
+          localOnly: 0,
+          results: [
+            {
+              id: 'service-bus-topic-partial',
+              name: 'service-bus-topic-partial',
+              status: 'requires-capability',
+              providerType: 'service-bus',
+              sourceType: 'service-bus-topic',
+              specFormat: 'openapi-json',
+              contractClass: 'partial',
+              reasonCode: 'cost-guard-blocked'
+            }
+          ]
+        }
+      }
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((error) => /live evidence/i.test(error))).toBe(true);
   });
 
   it('AZ-COV-003: npm run verify:coverage passes against the committed tree', () => {

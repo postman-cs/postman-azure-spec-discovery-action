@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://postman.example/payments-live"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+             name="PaymentsSoap"
+             targetNamespace="http://postman.example/payments-live">
+  <types>
+    <xsd:schema targetNamespace="http://postman.example/payments-live">
+      <xsd:element name="GetHealth">
+        <xsd:complexType>
+          <xsd:sequence/>
+        </xsd:complexType>
+      </xsd:element>
+      <xsd:element name="GetHealthResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="status" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </types>
+  <message name="GetHealthRequest">
+    <part name="parameters" element="tns:GetHealth"/>
+  </message>
+  <message name="GetHealthResponse">
+    <part name="parameters" element="tns:GetHealthResponse"/>
+  </message>
+  <portType name="PaymentsPortType">
+    <operation name="GetHealth">
+      <input message="tns:GetHealthRequest"/>
+      <output message="tns:GetHealthResponse"/>
+    </operation>
+  </portType>
+  <binding name="PaymentsBinding" type="tns:PaymentsPortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+    <operation name="GetHealth">
+      <soap:operation soapAction="GetHealth"/>
+      <input><soap:body use="literal"/></input>
+      <output><soap:body use="literal"/></output>
+    </operation>
+  </binding>
+  <service name="PaymentsSoapService">
+    <port name="PaymentsPort" binding="tns:PaymentsBinding">
+      <soap:address location="https://example.invalid/soap"/>
+    </port>
+  </service>
+</definitions>

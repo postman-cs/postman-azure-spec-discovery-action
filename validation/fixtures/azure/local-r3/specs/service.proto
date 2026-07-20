@@ -1,0 +1,4 @@
+syntax = "proto3";
+package localr3;
+message Ping { string id = 1; }
+service Greeter { rpc SayHello (Ping) returns (Ping); }

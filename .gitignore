@@ -7,8 +7,12 @@ discovered-specs/
 postman-aws-spec-discovery-result.json
 validation/evidence/*.local.json
 validation/evidence/*.local.md
+validation/evidence/*dry-run*
+validation/evidence/live-resource-manifest*
+validation/evidence/deployment-output*
 validation/tmp/
 validation/.cache/
+validation/**/*.zip
 
 # Build and TypeScript artifacts
 *.tsbuildinfo

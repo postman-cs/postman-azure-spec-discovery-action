@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "capturedAt": "2026-07-19",
-  "description": "Machine-readable coverage claim manifest for Azure spec discovery. Source of truth for every currently advertised route and every planned explicit unsupported route. validationState=live requires a matching passing case in validation/evidence/live-azure-surfaces.json; unit tests alone never promote a route to live.",
+  "description": "Machine-readable coverage claim manifest for Azure spec discovery. Source of truth for every currently advertised route and every planned explicit unsupported route. validationState=live requires a matching passing case in validation/evidence/live-azure-surfaces.json; unit tests alone never promote a route to live. plannedLiveEvidenceCase maps R8 harness case ids while validationState remains unit-only until sanitized pass evidence exists. requires-capability evidence never backs live.",
   "advertisedProviders": [
     "apim",
     "api-center",
@@ -44,7 +44,8 @@
       "paginationTests": [],
       "validationState": "local-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     },
     {
       "id": "iac-local.arm-embedded",
@@ -172,7 +173,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     },
     {
       "id": "apim.revision.current-filter",
@@ -199,7 +201,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "apim-version-set"
     },
     {
       "id": "apim.soap.wsdl-export",
@@ -227,7 +230,8 @@
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "apim-soap-wsdl"
     },
     {
       "id": "apim.graphql.sdl",
@@ -255,7 +259,8 @@
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "apim-graphql-sdl"
     },
     {
       "id": "apim.websocket",
@@ -277,7 +282,8 @@
       "paginationTests": [],
       "validationState": "unsupported",
       "liveEvidenceCase": null,
-      "unsupportedReason": "APIM WebSocket APIs have no documented definition-byte export route; they remain visible as manual-review candidates only."
+      "unsupportedReason": "APIM WebSocket APIs have no documented definition-byte export route; they remain visible as manual-review candidates only.",
+      "plannedLiveEvidenceCase": "apim-unsupported-websocket"
     },
     {
       "id": "apim.grpc",
@@ -299,7 +305,8 @@
       "paginationTests": [],
       "validationState": "unsupported",
       "liveEvidenceCase": null,
-      "unsupportedReason": "APIM gRPC APIs have no documented .proto export route; use a repository artifact or API Center when available."
+      "unsupportedReason": "APIM gRPC APIs have no documented .proto export route; use a repository artifact or API Center when available.",
+      "plannedLiveEvidenceCase": "apim-unsupported-grpc"
     },
     {
       "id": "apim.odata",
@@ -321,7 +328,8 @@
       "paginationTests": [],
       "validationState": "unsupported",
       "liveEvidenceCase": null,
-      "unsupportedReason": "APIM OData APIs have no documented safe definition-byte export route; they remain visible as manual-review candidates only."
+      "unsupportedReason": "APIM OData APIs have no documented safe definition-byte export route; they remain visible as manual-review candidates only.",
+      "plannedLiveEvidenceCase": "apim-unsupported-odata"
     },
     {
       "id": "app-service.api-definition-url",
@@ -386,7 +394,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "custom-apis-inline-swagger"
     },
     {
       "id": "logic-apps.request-trigger-synthesis",
@@ -415,7 +424,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "logic-apps-reader-synthesis"
     },
     {
       "id": "template-specs.embedded-apim",
@@ -444,7 +454,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "template-specs-embedded-apim"
     },
     {
       "id": "event-grid.webhook-synthesis",
@@ -473,7 +484,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "event-grid-webhook-partial"
     },
     {
       "id": "service-bus.topic-publish-synthesis",
@@ -502,7 +514,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "service-bus-topic-partial"
     },
     {
       "id": "function-bindings.trigger-synthesis",
@@ -531,7 +544,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "function-bindings-openapi-extension"
     },
     {
       "id": "association.postman-repo-tag",
@@ -557,7 +571,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "apim-clean-repo-tag"
     },
     {
       "id": "association.github-org-repo-github-org-repo",
@@ -584,7 +599,8 @@
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "apim-clean-repo-github-org-repo-pair"
     },
     {
       "id": "association.gateway-hostname-hint",
@@ -610,7 +626,8 @@
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "apim-gateway-host-path"
     },
     {
       "id": "association.gateway-api-assignment",
@@ -634,7 +651,8 @@
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     },
     {
       "id": "association.exact-binding",
@@ -660,7 +678,8 @@
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     },
     {
       "id": "association.clean-repo-host-path",
@@ -684,7 +703,8 @@
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "apim-gateway-host-path"
     },
     {
       "id": "mode.discover-many",
@@ -738,7 +758,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     },
     {
       "id": "resolver.ambiguity",
@@ -806,7 +827,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "api-center-openapi-export"
     },
     {
       "id": "repo.spec.native-formats-r3",
@@ -830,13 +852,20 @@
         "graphql-sdl"
       ],
       "requiredCapability": "none (local filesystem)",
-      "positiveTests": ["tests/repo-discovery-r3.test.ts"],
-      "negativeTests": ["tests/repo-discovery-r3.test.ts"],
-      "securityTests": ["tests/repo-discovery-r3.test.ts"],
+      "positiveTests": [
+        "tests/repo-discovery-r3.test.ts"
+      ],
+      "negativeTests": [
+        "tests/repo-discovery-r3.test.ts"
+      ],
+      "securityTests": [
+        "tests/repo-discovery-r3.test.ts"
+      ],
       "paginationTests": [],
       "validationState": "local-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "local-r3-format-parser-matrix"
     },
     {
       "id": "logic-apps.native-list-swagger-r4",
@@ -847,15 +876,25 @@
         "src/lib/azure/logic-apps-native-client.ts"
       ],
       "contractClass": "reconstructed",
-      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "nativeFormats": [
+        "openapi-json",
+        "openapi-yaml"
+      ],
       "requiredCapability": "Microsoft.Logic/workflows/triggers/listSwagger/action",
-      "positiveTests": ["tests/logic-apps-native-r4.test.ts"],
-      "negativeTests": ["tests/logic-apps-native-r4.test.ts"],
-      "securityTests": ["tests/logic-apps-native-r4.test.ts"],
+      "positiveTests": [
+        "tests/logic-apps-native-r4.test.ts"
+      ],
+      "negativeTests": [
+        "tests/logic-apps-native-r4.test.ts"
+      ],
+      "securityTests": [
+        "tests/logic-apps-native-r4.test.ts"
+      ],
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "logic-apps-list-swagger"
     },
     {
       "id": "app-service.documented-scm-spec-r4",
@@ -866,15 +905,25 @@
         "src/lib/azure/app-service-runtime-client.ts"
       ],
       "contractClass": "authoritative",
-      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "nativeFormats": [
+        "openapi-json",
+        "openapi-yaml"
+      ],
       "requiredCapability": "documented App Service SCM/VFS access",
-      "positiveTests": ["tests/app-service-r4.test.ts"],
-      "negativeTests": ["tests/app-service-r4.test.ts"],
-      "securityTests": ["tests/app-service-r4.test.ts"],
+      "positiveTests": [
+        "tests/app-service-r4.test.ts"
+      ],
+      "negativeTests": [
+        "tests/app-service-r4.test.ts"
+      ],
+      "securityTests": [
+        "tests/app-service-r4.test.ts"
+      ],
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "app-service-apispecpath-runtime"
     },
     {
       "id": "function-bindings.openapi-extension-r4",
@@ -885,15 +934,25 @@
         "src/lib/azure/functions-openapi.ts"
       ],
       "contractClass": "authoritative",
-      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "nativeFormats": [
+        "openapi-json",
+        "openapi-yaml"
+      ],
       "requiredCapability": "documented Functions OpenAPI extension route",
-      "positiveTests": ["tests/functions-openapi-r4.test.ts"],
-      "negativeTests": ["tests/functions-openapi-r4.test.ts"],
-      "securityTests": ["tests/functions-openapi-r4.test.ts"],
+      "positiveTests": [
+        "tests/functions-openapi-r4.test.ts"
+      ],
+      "negativeTests": [
+        "tests/functions-openapi-r4.test.ts"
+      ],
+      "securityTests": [
+        "tests/functions-openapi-r4.test.ts"
+      ],
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": "function-bindings-openapi-extension"
     },
     {
       "id": "runtime-declared.explicit-https-r4",
@@ -904,15 +963,25 @@
         "src/lib/fetch/spec-fetcher.ts"
       ],
       "contractClass": "authoritative",
-      "nativeFormats": ["openapi-json", "openapi-yaml"],
+      "nativeFormats": [
+        "openapi-json",
+        "openapi-yaml"
+      ],
       "requiredCapability": "explicit named runtime target",
-      "positiveTests": ["tests/runtime-declared-r4.test.ts"],
-      "negativeTests": ["tests/runtime-declared-r4.test.ts"],
-      "securityTests": ["tests/runtime-declared-r4.test.ts"],
+      "positiveTests": [
+        "tests/runtime-declared-r4.test.ts"
+      ],
+      "negativeTests": [
+        "tests/runtime-declared-r4.test.ts"
+      ],
+      "securityTests": [
+        "tests/runtime-declared-r4.test.ts"
+      ],
       "paginationTests": [],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     },
     {
       "id": "platform.sovereign-cloud",
@@ -939,7 +1008,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     },
     {
       "id": "platform.multi-subscription-scope",
@@ -970,7 +1040,8 @@
       ],
       "validationState": "unit-only",
       "liveEvidenceCase": null,
-      "unsupportedReason": null
+      "unsupportedReason": null,
+      "plannedLiveEvidenceCase": null
     }
   ]
 }
