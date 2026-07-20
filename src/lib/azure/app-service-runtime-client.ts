@@ -185,8 +185,9 @@ function normalizeVfsPath(apiSpecPath: string): string {
     throw new Error(`ApiSpecPath is not a safe absolute app filesystem path: ${trimmed}`);
   }
   const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-  // VFS API expects paths relative to site root without a duplicated /api/vfs prefix.
-  return withLeading.replace(/^\/+/, '');
+  // Kudu VFS is rooted at /home, so Linux App Service absolute paths must not
+  // duplicate that segment under /api/vfs.
+  return withLeading.replace(/^\/+/, '').replace(/^home\//i, '');
 }
 
 function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
