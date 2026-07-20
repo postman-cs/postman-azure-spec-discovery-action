@@ -1,15 +1,38 @@
 import type { ProviderProbeStatus } from '../../contracts.js';
 import type { AzureApimClient, ApimApiSummary, ApimServiceSummary } from '../azure/clients.js';
 import { normalizeApiBasePath, normalizeHostname } from '../repo/signals.js';
+import {
+  applyNativeDependencyFidelity,
+  assessNativeDependencyFidelity
+} from '../spec/dependency-fidelity.js';
 import { parseAndValidateNativeSpec } from '../spec/native-formats.js';
 import { parseAndValidateOpenApi } from '../spec/validate-openapi.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
 import { toSpecCandidate } from './types.js';
 
 const APIM_API_TYPES = new Set(['http', 'soap', 'graphql', 'websocket', 'grpc', 'odata']);
-/** Current APIs with a supported discovery export path (HTTP OpenAPI, SOAP WSDL, GraphQL SDL). */
-const SUPPORTED_EXPORTABLE_API_TYPES = new Set(['http', 'soap', 'graphql']);
+/**
+ * Current APIs with a supported discovery export path (HTTP OpenAPI, SOAP WSDL,
+ * GraphQL SDL, gRPC protobuf via schema list/get). gRPC is only exportable when a
+ * `text/protobuf` schema is present — see listCandidates.
+ */
+const SUPPORTED_EXPORTABLE_API_TYPES = new Set(['http', 'soap', 'graphql', 'grpc']);
 const SELECT_GRADE_TAG_KEYS = new Set(['postman:repo', 'githuborg', 'githubrepo']);
+
+async function grpcHasProtobufSchema(
+  client: AzureApimClient,
+  resourceGroup: string,
+  serviceName: string,
+  apiId: string,
+  workspaceId?: string
+): Promise<boolean> {
+  try {
+    const schemas = await client.listApiSchemas(resourceGroup, serviceName, apiId, workspaceId);
+    return schemas.some((entry) => (entry.contentType ?? '').trim().toLowerCase() === 'text/protobuf');
+  } catch {
+    return false;
+  }
+}
 
 export interface ApimProviderOptions {
   subscriptionId: string;
@@ -91,7 +114,8 @@ function tagsForApi(service: ApimServiceSummary, eligibleApiCount: number): { ta
 
 /**
  * APIM provider: exports current HTTP revisions as OpenAPI, SOAP as native WSDL,
- * and GraphQL as native SDL. Remaining API types stay visible for manual review.
+ * GraphQL as native SDL, and gRPC as native protobuf when a `text/protobuf`
+ * schema document is present. Remaining API types stay visible for manual review.
  * Explicit `;rev=N` ids are addressable via getApi even when not current.
  */
 export class ApimProvider implements SpecProvider {
@@ -132,19 +156,40 @@ export class ApimProvider implements SpecProvider {
     const services = await this.client.listServices(this.options.resourceGroup);
     for (const service of services) {
       const apis = await this.client.listApis(service.resourceGroup, service.name);
+      // Precompute gRPC protobuf schema presence so eligibility and supported flags agree.
+      const grpcProtobufByApiId = new Map<string, boolean>();
+      for (const api of apis) {
+        if (api.isCurrent === false) continue;
+        if ((api.apiType || 'http').toLowerCase() !== 'grpc') continue;
+        grpcProtobufByApiId.set(
+          api.apiId,
+          await grpcHasProtobufSchema(
+            this.client,
+            service.resourceGroup,
+            service.name,
+            api.apiId,
+            api.workspaceId
+          )
+        );
+      }
       // Inherited service-tag eligibility counts only current, supported/exportable APIs.
-      // Unsupported types (websocket/grpc/odata) stay visible for manual review but must
-      // not turn a sole eligible API into an ambiguous inherited tag.
-      const eligibleApiCount = apis.filter((api) =>
-        api.isCurrent !== false && SUPPORTED_EXPORTABLE_API_TYPES.has((api.apiType || 'http').toLowerCase())
-      ).length;
+      // Unsupported types (websocket/odata, gRPC without protobuf schema) stay visible for
+      // manual review but must not turn a sole eligible API into an ambiguous inherited tag.
+      const eligibleApiCount = apis.filter((api) => {
+        if (api.isCurrent === false) return false;
+        const apiType = (api.apiType || 'http').toLowerCase();
+        if (apiType === 'grpc') return grpcProtobufByApiId.get(api.apiId) === true;
+        return SUPPORTED_EXPORTABLE_API_TYPES.has(apiType);
+      }).length;
       const { tags: serviceTags, tagSource } = tagsForApi(service, eligibleApiCount);
       const hostnames = serviceHostnames(service);
       for (const api of apis) {
         if (api.isCurrent === false) continue;
         const apiType = (api.apiType || 'http').toLowerCase();
-        const supported = SUPPORTED_EXPORTABLE_API_TYPES.has(apiType);
         if (!APIM_API_TYPES.has(apiType)) continue;
+        const hasProtobuf = apiType === 'grpc' ? grpcProtobufByApiId.get(api.apiId) === true : false;
+        const supported =
+          apiType === 'grpc' ? hasProtobuf : SUPPORTED_EXPORTABLE_API_TYPES.has(apiType);
         // When a service has a sole eligible API, unsupported siblings must not
         // carry select-grade repo tags or they would re-poison tag selection.
         const tags =
@@ -157,6 +202,10 @@ export class ApimProvider implements SpecProvider {
           api.workspaceId
         );
         const assignedGatewayIds = assignedGatewaysForApi(service, api);
+        const unsupportedReason =
+          apiType === 'grpc' && !hasProtobuf
+            ? 'APIM gRPC API has no text/protobuf schema document to export'
+            : `APIM API type ${apiType} has no supported discovery export path`;
         candidates.push({
           id: armId,
           name: api.displayName || api.apiId,
@@ -167,7 +216,7 @@ export class ApimProvider implements SpecProvider {
           supported,
           evidence: [
             `APIM service ${service.name} exposes ${apiType.toUpperCase()} API ${api.displayName || api.apiId}`,
-            ...(supported ? [] : [`APIM API type ${apiType} has no supported discovery export path`]),
+            ...(supported ? [] : [unsupportedReason]),
             ...(hostnames.length > 0 ? [`Service hostnames: ${hostnames.join(', ')}`] : []),
             ...(assignedGatewayIds.length > 0
               ? [`Assigned gateways: ${assignedGatewayIds.join(', ')}`]
@@ -233,7 +282,18 @@ export class ApimProvider implements SpecProvider {
       api.workspaceId ?? parsed.workspaceId
     );
     const apiType = (api.apiType || 'http').toLowerCase();
-    const supported = SUPPORTED_EXPORTABLE_API_TYPES.has(apiType);
+    const hasProtobuf =
+      apiType === 'grpc'
+        ? await grpcHasProtobufSchema(
+            this.client,
+            parsed.resourceGroup,
+            parsed.serviceName,
+            api.apiId,
+            api.workspaceId ?? parsed.workspaceId
+          )
+        : false;
+    const supported =
+      apiType === 'grpc' ? hasProtobuf : SUPPORTED_EXPORTABLE_API_TYPES.has(apiType);
     const hostnames = serviceHostnames(service);
     const assignedGatewayIds = assignedGatewaysForApi(service, api);
     return {
@@ -244,7 +304,12 @@ export class ApimProvider implements SpecProvider {
       resourceGroup: parsed.resourceGroup,
       tags: service.tags ?? {},
       supported,
-      evidence: [`Explicit APIM API ${api.apiId} resolved from service ${parsed.serviceName}`],
+      evidence: [
+        `Explicit APIM API ${api.apiId} resolved from service ${parsed.serviceName}`,
+        ...(apiType === 'grpc' && !hasProtobuf
+          ? ['APIM gRPC API has no text/protobuf schema document to export']
+          : [])
+      ],
       meta: {
         serviceName: parsed.serviceName,
         resourceGroup: parsed.resourceGroup,
@@ -285,13 +350,18 @@ export class ApimProvider implements SpecProvider {
       if (validated.format !== 'wsdl') {
         throw new Error(`APIM SOAP export detected ${validated.format}, expected wsdl`);
       }
-      return {
-        content,
-        format: 'wsdl',
-        filename: 'service.wsdl',
-        contractClass: 'authoritative',
-        evidence: [`Exported revision of APIM SOAP API ${apiId} from service ${serviceName} as WSDL`]
-      };
+      // APIM wsdl-link returns a single primary document; unresolved XSD/WSDL
+      // imports have no authoritative companion-byte route → partial.
+      return applyNativeDependencyFidelity(
+        {
+          content,
+          format: 'wsdl',
+          filename: 'service.wsdl',
+          contractClass: 'authoritative',
+          evidence: [`Exported revision of APIM SOAP API ${apiId} from service ${serviceName} as WSDL`]
+        },
+        assessNativeDependencyFidelity({ content, format: 'wsdl' })
+      );
     }
     if (candidate.meta.apiType === 'graphql') {
       const content = await this.client.getGraphqlSchema(resourceGroup, serviceName, apiId, candidate.meta.workspaceId);
@@ -313,6 +383,42 @@ export class ApimProvider implements SpecProvider {
         evidence: [`Read GraphQL SDL for APIM API ${apiId} from service ${serviceName}`]
       };
     }
+    if (candidate.meta.apiType === 'grpc') {
+      const content = await this.client.getProtobufSchema(
+        resourceGroup,
+        serviceName,
+        apiId,
+        candidate.meta.workspaceId
+      );
+      let validated;
+      try {
+        // Content-path validation only: do not apply a `.proto` filename hint that
+        // would accept message-only IDL. Bootstrap-usable protobuf requires
+        // syntax=proto[23] or a service/rpc block.
+        validated = parseAndValidateNativeSpec(content, 'protobuf');
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`APIM gRPC export failed native validation: ${detail}`, { cause: error });
+      }
+      if (validated.format !== 'protobuf') {
+        throw new Error(`APIM gRPC export detected ${validated.format}, expected protobuf`);
+      }
+      // Schema list/get returns one primary text/protobuf document. Imports are
+      // not an APIM export-format surface; mark partial when present.
+      return applyNativeDependencyFidelity(
+        {
+          content,
+          format: 'protobuf',
+          filename: 'service.proto',
+          contractClass: 'authoritative',
+          evidence: [
+            `Read text/protobuf schema for APIM gRPC API ${apiId} from service ${serviceName}`,
+            'APIM export format was not used; schema list/get is the documented protobuf byte route'
+          ]
+        },
+        assessNativeDependencyFidelity({ content, format: 'protobuf' })
+      );
+    }
     const content = await this.client.exportApi(resourceGroup, serviceName, apiId, candidate.meta.workspaceId);
     const parsed = parseAndValidateOpenApi(content);
     const normalized = `${JSON.stringify(parsed.document, null, 2)}\n`;
@@ -320,6 +426,7 @@ export class ApimProvider implements SpecProvider {
       content: normalized,
       format: 'openapi-json',
       filename: 'index.json',
+      contractClass: 'authoritative',
       evidence: [`Exported revision of APIM API ${apiId} from service ${serviceName} as OpenAPI JSON`]
     };
   }

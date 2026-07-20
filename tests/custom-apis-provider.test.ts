@@ -19,6 +19,7 @@ function connector(overrides: Partial<CustomApiSummary> = {}): CustomApiSummary 
     resourceGroup: 'rg-pay',
     tags: { 'postman:repo': 'contoso/payments' },
     hasSwagger: true,
+    hasWsdl: false,
     backendServiceUrl: 'https://api.contoso.com/payments',
     ...overrides
   };
@@ -28,6 +29,7 @@ function client(overrides: Partial<AzureCustomApisClient> = {}): AzureCustomApis
   return {
     listCustomApis: vi.fn(async () => [connector()]),
     getSwagger: vi.fn(async () => `${SWAGGER}\n`),
+    getWsdl: vi.fn(async () => ({ content: '' })),
     probeCustomApisReadAccess: vi.fn(async () => undefined),
     ...overrides
   };
@@ -71,11 +73,11 @@ describe('CustomApisProvider', () => {
     expect(candidate.evidence.join(' ')).toContain('inline swagger');
   });
 
-  it('AZ-CAPI-003: connectors without inline swagger stay visible as unsupported, never exported', async () => {
+  it('AZ-CAPI-003: connectors without inline swagger or WSDL stay visible as unsupported, never exported', async () => {
     const provider = new CustomApisProvider(
       client({
         listCustomApis: vi.fn(async () => [
-          connector({ hasSwagger: false, originalSwaggerUrl: 'https://example.com/swagger.json' })
+          connector({ hasSwagger: false, hasWsdl: false, originalSwaggerUrl: 'https://example.com/swagger.json' })
         ])
       })
     );
@@ -83,7 +85,7 @@ describe('CustomApisProvider', () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0]!.supported).toBe(false);
     expect(candidates[0]!.evidence.join(' ')).toContain('not auto-fetched');
-    await expect(provider.exportSpec(candidates[0]!)).rejects.toThrow(/no inline swagger/);
+    await expect(provider.exportSpec(candidates[0]!)).rejects.toThrow(/no inline swagger or WSDL/i);
   });
 
   it('AZ-CAPI-004: exportSpec validates and normalizes the inline swagger document', async () => {
@@ -132,6 +134,85 @@ describe('CustomApisProvider', () => {
     const [candidate] = await provider.listCandidates();
     expect(candidate?.meta.backendServiceUrl).toBeUndefined();
     expect(JSON.stringify(candidate)).not.toContain('not a URL');
+  });
+
+  const VALID_WSDL = `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://postman.example/payments"
+             name="PaymentsSoap"
+             targetNamespace="http://postman.example/payments">
+  <types/>
+  <message name="GetHealthRequest"/>
+  <message name="GetHealthResponse"/>
+  <portType name="PaymentsPortType">
+    <operation name="GetHealth">
+      <input message="tns:GetHealthRequest"/>
+      <output message="tns:GetHealthResponse"/>
+    </operation>
+  </portType>
+  <binding name="PaymentsBinding" type="tns:PaymentsPortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+  </binding>
+  <service name="PaymentsService">
+    <port name="PaymentsPort" binding="tns:PaymentsBinding"/>
+  </service>
+</definitions>`;
+
+  it('AZ-CAPI-014: WSDL-only connector exports authoritative service.wsdl', async () => {
+    const provider = new CustomApisProvider(
+      client({
+        listCustomApis: vi.fn(async () => [
+          connector({ hasSwagger: false, hasWsdl: true, wsdlImportMethod: 'SoapPassThrough' })
+        ]),
+        getWsdl: vi.fn(async () => ({ content: VALID_WSDL, importMethod: 'SoapPassThrough' }))
+      })
+    );
+    const [candidate] = await provider.listCandidates();
+    expect(candidate!.supported).toBe(true);
+    expect(candidate!.meta.preferredFormat).toBe('wsdl');
+    const exported = await provider.exportSpec(candidate!);
+    expect(exported).toMatchObject({
+      format: 'wsdl',
+      filename: 'service.wsdl',
+      contractClass: 'authoritative',
+      completeness: 'full'
+    });
+    expect(exported.content).toContain('PaymentsSoap');
+  });
+
+  it('AZ-CAPI-015: when both swagger and WSDL exist, swagger wins and WSDL is demoted', async () => {
+    const getWsdl = vi.fn(async () => ({ content: VALID_WSDL }));
+    const provider = new CustomApisProvider(
+      client({
+        listCustomApis: vi.fn(async () => [connector({ hasSwagger: true, hasWsdl: true })]),
+        getWsdl
+      })
+    );
+    const [candidate] = await provider.listCandidates();
+    expect(candidate!.meta.preferredFormat).toBe('swagger');
+    expect(candidate!.evidence.join(' ')).toMatch(/demoted/i);
+    const exported = await provider.exportSpec(candidate!);
+    expect(exported.format).toBe('openapi-json');
+    expect(exported.contractClass).toBe('authoritative');
+    expect(exported.evidence.join(' ')).toMatch(/demoted/i);
+    expect(getWsdl).not.toHaveBeenCalled();
+  });
+
+  it('AZ-CAPI-016: SoapToRest WSDL is reconstructed/partial, never authoritative', async () => {
+    const provider = new CustomApisProvider(
+      client({
+        listCustomApis: vi.fn(async () => [
+          connector({ hasSwagger: false, hasWsdl: true, wsdlImportMethod: 'SoapToRest' })
+        ]),
+        getWsdl: vi.fn(async () => ({ content: VALID_WSDL, importMethod: 'SoapToRest' }))
+      })
+    );
+    const [candidate] = await provider.listCandidates();
+    expect(candidate!.evidence.join(' ')).toMatch(/SoapToRest|reconstructed/i);
+    const exported = await provider.exportSpec(candidate!);
+    expect(exported.contractClass).toBe('reconstructed');
+    expect(exported.completeness).toBe('partial');
   });
 });
 

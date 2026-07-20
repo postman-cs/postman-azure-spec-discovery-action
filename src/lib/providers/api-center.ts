@@ -1,8 +1,15 @@
-import type { ContractClass, ProviderProbeStatus, SpecFormat } from '../../contracts.js';
+import type { ContractClass, ProviderProbeStatus } from '../../contracts.js';
 import type { ApiCenterDefinitionSummary, AzureApiCenterClient } from '../azure/api-center-client.js';
+import {
+  applyNativeDependencyFidelity,
+  assessNativeDependencyFidelity
+} from '../spec/dependency-fidelity.js';
 import { parseAndValidateNativeSpec } from '../spec/native-formats.js';
+import { safeNativeFilename } from '../spec/native-filenames.js';
 import type { SpecCandidate, SpecCandidateHeader, SpecExportResult, SpecProvider } from './types.js';
 import { listCandidatesViaHydration, toSpecCandidate } from './types.js';
+
+export { safeNativeFilename } from '../spec/native-filenames.js';
 
 export interface ApiCenterProviderOptions {
   subscriptionId: string;
@@ -38,30 +45,6 @@ export function parseApiCenterDefinitionArmId(value: string): {
     versionName: match[6]!,
     definitionName: match[7]!
   };
-}
-
-/** Stable, safe artifact filenames for preserved native API Center exports. */
-export function safeNativeFilename(format: SpecFormat): string {
-  switch (format) {
-    case 'openapi-json':
-      return 'index.json';
-    case 'openapi-yaml':
-      return 'index.yaml';
-    case 'asyncapi-json':
-      return 'asyncapi.json';
-    case 'asyncapi-yaml':
-      return 'asyncapi.yaml';
-    case 'wsdl':
-      return 'service.wsdl';
-    case 'wadl':
-      return 'application.wadl';
-    case 'xsd':
-      return 'schema.xsd';
-    case 'protobuf':
-      return 'service.proto';
-    case 'graphql-sdl':
-      return 'schema.graphql';
-  }
 }
 
 function associationEvidence(definition: ApiCenterDefinitionSummary): string[] {
@@ -322,15 +305,20 @@ export class ApiCenterProvider implements SpecProvider {
       content = `${JSON.stringify(validated.document, null, 2)}\n`;
     }
 
-    return {
-      content,
-      format: validated.format,
-      filename: safeNativeFilename(validated.format),
-      contractClass: 'authoritative',
-      evidence: [
-        `Exported API Center definition ${coords.definitionName} from service ${coords.serviceName} as ${validated.format} (${exported.source})`,
-        ...candidate.evidence.filter((line) => /association evidence/i.test(line))
-      ]
-    };
+    // exportSpecification materializes a single primary document (inline or link).
+    // Unresolved protobuf/WSDL/XSD dependency refs have no companion-byte route.
+    return applyNativeDependencyFidelity(
+      {
+        content,
+        format: validated.format,
+        filename: safeNativeFilename(validated.format),
+        contractClass: 'authoritative',
+        evidence: [
+          `Exported API Center definition ${coords.definitionName} from service ${coords.serviceName} as ${validated.format} (${exported.source})`,
+          ...candidate.evidence.filter((line) => /association evidence/i.test(line))
+        ]
+      },
+      assessNativeDependencyFidelity({ content, format: validated.format })
+    );
   }
 }

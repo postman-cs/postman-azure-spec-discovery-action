@@ -308,6 +308,13 @@ describe('R1 APIM metadata and explicit revision export', () => {
       getApi: vi.fn(async () => {
         throw new Error('unused');
       }),
+      listApiSchemas: vi.fn(async () => []),
+      getApiSchemaDocument: vi.fn(async () => {
+        throw new Error('schema document unused');
+      }),
+      getProtobufSchema: vi.fn(async () => {
+        throw new Error('protobuf unused');
+      }),
       probeApimReadAccess: vi.fn(async () => undefined)
     };
 
@@ -355,6 +362,13 @@ describe('R1 APIM metadata and explicit revision export', () => {
       getGraphqlSchema: vi.fn(async () => 'type Query { x: String }'),
       getApi: vi.fn(async () => {
         throw new Error('unused');
+      }),
+      listApiSchemas: vi.fn(async () => []),
+      getApiSchemaDocument: vi.fn(async () => {
+        throw new Error('schema document unused');
+      }),
+      getProtobufSchema: vi.fn(async () => {
+        throw new Error('protobuf unused');
       }),
       probeApimReadAccess: vi.fn(async () => undefined)
     };
@@ -412,6 +426,13 @@ describe('R1 APIM metadata and explicit revision export', () => {
       getApi: vi.fn(async () => {
         throw new Error('unused');
       }),
+      listApiSchemas: vi.fn(async () => []),
+      getApiSchemaDocument: vi.fn(async () => {
+        throw new Error('schema document unused');
+      }),
+      getProtobufSchema: vi.fn(async () => {
+        throw new Error('protobuf unused');
+      }),
       probeApimReadAccess: vi.fn(async () => undefined)
     };
 
@@ -448,6 +469,13 @@ describe('R1 APIM metadata and explicit revision export', () => {
       getApi: vi.fn(async () =>
         api({ apiId: 'payments;rev=1', path: 'payments', isCurrent: false, apiRevision: '1' })
       ),
+      listApiSchemas: vi.fn(async () => []),
+      getApiSchemaDocument: vi.fn(async () => {
+        throw new Error('schema document unused');
+      }),
+      getProtobufSchema: vi.fn(async () => {
+        throw new Error('protobuf unused');
+      }),
       probeApimReadAccess: vi.fn(async () => undefined)
     };
     const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
@@ -488,6 +516,13 @@ describe('R1 APIM metadata and explicit revision export', () => {
       exportApi: vi.fn(async () => OPENAPI),
       getGraphqlSchema: vi.fn(async () => 'unused'),
       getApi: vi.fn(async () => api({ apiId: 'payments;rev=1', isCurrent: false, apiRevision: '1' })),
+      listApiSchemas: vi.fn(async () => []),
+      getApiSchemaDocument: vi.fn(async () => {
+        throw new Error('schema document unused');
+      }),
+      getProtobufSchema: vi.fn(async () => {
+        throw new Error('protobuf unused');
+      }),
       probeApimReadAccess: vi.fn(async () => undefined)
     };
     const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
@@ -534,6 +569,13 @@ describe('R1 APIM metadata and explicit revision export', () => {
       }),
       getApi: vi.fn(async () => {
         throw new Error('unused');
+      }),
+      listApiSchemas: vi.fn(async () => []),
+      getApiSchemaDocument: vi.fn(async () => {
+        throw new Error('schema document unused');
+      }),
+      getProtobufSchema: vi.fn(async () => {
+        throw new Error('protobuf unused');
       }),
       probeApimReadAccess: vi.fn(async () => undefined)
     };

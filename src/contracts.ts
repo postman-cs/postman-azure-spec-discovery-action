@@ -63,7 +63,8 @@ export type SpecFormat =
   | 'wadl'
   | 'xsd'
   | 'protobuf'
-  | 'graphql-sdl';
+  | 'graphql-sdl'
+  | 'mcp-json';
 
 /**
  * Provider/output contract fidelity class. Association metadata must never be
@@ -309,7 +310,7 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
 
     'spec-format': {
       description:
-        'Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, or graphql-sdl.'
+        'Format of the resolved spec: openapi-yaml, openapi-json, asyncapi-yaml, asyncapi-json, wsdl, wadl, xsd, protobuf, graphql-sdl, or mcp-json.'
     },
     'contract-origin': {
       description: 'Compatibility output; always empty in v1.'

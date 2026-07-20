@@ -52,12 +52,19 @@ function clientForApiType(apiType: string): AzureApimClient {
     getGraphqlSchema: vi.fn(async () => {
       throw new Error('schema read must never be attempted for unsupported types');
     }),
+    listApiSchemas: vi.fn(async () => []),
+    getApiSchemaDocument: vi.fn(async () => {
+      throw new Error('schema document unused');
+    }),
+    getProtobufSchema: vi.fn(async () => {
+      throw new Error('protobuf unused');
+    }),
     probeApimReadAccess: vi.fn(async () => undefined)
   };
 }
 
 describe('APIM unsupported API types', () => {
-  it.each(['websocket', 'grpc', 'odata'])(
+  it.each(['websocket', 'odata'])(
     'AZ-APIM-004: selected %s candidate resolves to manual review without writes',
     async (apiType) => {
       const provider = new ApimProvider(clientForApiType(apiType), { subscriptionId: 'sub-1' });
@@ -87,6 +94,34 @@ describe('APIM unsupported API types', () => {
       expect(writeSpecFile).not.toHaveBeenCalled();
     }
   );
+
+  it('AZ-APIM-004b: gRPC without text/protobuf schema stays manual-review', async () => {
+    const provider = new ApimProvider(clientForApiType('grpc'), { subscriptionId: 'sub-1' });
+    const writeSpecFile = vi.fn();
+    const dependencies: AzureDependencies = {
+      core: reporter,
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
+      createApimClient: () => {
+        throw new Error('unused');
+      },
+      createAppServiceClient: () => {
+        throw new Error('unused');
+      },
+      writeSpecFile,
+      providers: [provider]
+    };
+
+    const inputs = resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_EXPECTED_SERVICE_NAME: 'payments' });
+    const result = await execute(inputs, dependencies);
+
+    expect(result.resolution?.status).toBe('unresolved');
+    expect(result.resolution?.sourceType).toBe('manual-review');
+    expect(JSON.stringify(result.resolution)).toMatch(/no text\/protobuf schema/i);
+    expect(writeSpecFile).not.toHaveBeenCalled();
+  });
 });
 
 const REALISTIC_WSDL = `<?xml version="1.0"?>
@@ -120,6 +155,15 @@ const REALISTIC_GRAPHQL = `type Query {
 type Health {
   status: String!
 }
+`;
+
+const REALISTIC_PROTO = `syntax = "proto3";
+package payments;
+service Payments {
+  rpc GetHealth (HealthRequest) returns (HealthReply);
+}
+message HealthRequest {}
+message HealthReply { string status = 1; }
 `;
 
 describe('APIM SOAP and GraphQL exports', () => {
@@ -180,6 +224,82 @@ describe('APIM SOAP and GraphQL exports', () => {
     const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
     const candidate = (await provider.listCandidates())[0]!;
     await expect(provider.exportSpec(candidate)).rejects.toThrow(/native validation|wrong kind|empty|GraphQL|wsdl/i);
+  });
+});
+
+describe('APIM gRPC protobuf schema list/get', () => {
+  function grpcClientWithProtobuf(content: string): AzureApimClient {
+    const client = clientForApiType('grpc');
+    vi.mocked(client.listApiSchemas).mockResolvedValue([{ name: 'default', contentType: 'text/protobuf' }]);
+    vi.mocked(client.getProtobufSchema).mockResolvedValue(content);
+    return client;
+  }
+
+  it('AZ-APIM-GRPC-001: list marks gRPC supported only when text/protobuf schema header is present', async () => {
+    const withSchema = new ApimProvider(grpcClientWithProtobuf(REALISTIC_PROTO), { subscriptionId: 'sub-1' });
+    const supported = (await withSchema.listCandidates())[0]!;
+    expect(supported.supported).toBe(true);
+    expect(supported.meta.apiType).toBe('grpc');
+
+    const without = new ApimProvider(clientForApiType('grpc'), { subscriptionId: 'sub-1' });
+    const unsupported = (await without.listCandidates())[0]!;
+    expect(unsupported.supported).toBe(false);
+    expect(unsupported.evidence.join(' ')).toMatch(/no text\/protobuf schema/i);
+  });
+
+  it('AZ-APIM-GRPC-002: export uses getProtobufSchema (not APIM export format) and writes service.proto', async () => {
+    const client = grpcClientWithProtobuf(REALISTIC_PROTO);
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+    const exported = await provider.exportSpec(candidate);
+    expect(exported).toMatchObject({
+      content: REALISTIC_PROTO,
+      format: 'protobuf',
+      filename: 'service.proto',
+      contractClass: 'authoritative'
+    });
+    expect(client.getProtobufSchema).toHaveBeenCalledWith('rg', 'svc', 'payments', undefined);
+    expect(client.exportApi).not.toHaveBeenCalled();
+  });
+
+  it('AZ-APIM-GRPC-003: malformed/message-only protobuf stays unsupported at export', async () => {
+    const client = grpcClientWithProtobuf('message Ping { string id = 1; }\n');
+    // Force list-time support so export path is exercised.
+    vi.mocked(client.listApiSchemas).mockResolvedValue([{ name: 'default', contentType: 'text/protobuf' }]);
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const candidate = (await provider.listCandidates())[0]!;
+    expect(candidate.supported).toBe(true);
+    await expect(provider.exportSpec(candidate)).rejects.toThrow(/native validation|protobuf/i);
+  });
+
+  it('AZ-APIM-GRPC-004: end-to-end resolve-one writes service.proto with contractClass', async () => {
+    const client = grpcClientWithProtobuf(REALISTIC_PROTO);
+    const provider = new ApimProvider(client, { subscriptionId: 'sub-1' });
+    const writeSpecFile = vi.fn(async () => undefined);
+    const dependencies: AzureDependencies = {
+      core: reporter,
+      subscriptions: {
+        get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+        list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+      },
+      createApimClient: () => {
+        throw new Error('unused');
+      },
+      createAppServiceClient: () => {
+        throw new Error('unused');
+      },
+      writeSpecFile,
+      providers: [provider]
+    };
+    const inputs = resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_EXPECTED_SERVICE_NAME: 'payments' });
+    const result = await execute(inputs, dependencies);
+    expect(result.resolution?.status).toBe('resolved');
+    expect(result.resolution?.specFormat).toBe('protobuf');
+    expect(result.resolution?.contractClass).toBe('authoritative');
+    expect(result.resolution?.specPath).toMatch(/service\.proto$/);
+    expect(writeSpecFile).toHaveBeenCalled();
+    const firstCall = writeSpecFile.mock.calls[0] as unknown as [string, string, string] | undefined;
+    expect(firstCall?.[1]).toContain('service Payments');
   });
 });
 

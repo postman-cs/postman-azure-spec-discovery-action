@@ -39,6 +39,13 @@ function stubApimClient(): AzureApimClient {
     }),
     exportApi: vi.fn(async () => VALID_OPENAPI),
     getGraphqlSchema: vi.fn(async () => ''),
+    listApiSchemas: vi.fn(async () => []),
+    getApiSchemaDocument: vi.fn(async () => {
+      throw new Error('schema document unused');
+    }),
+    getProtobufSchema: vi.fn(async () => {
+      throw new Error('protobuf unused');
+    }),
     probeApimReadAccess: vi.fn(async () => undefined)
   };
 }
@@ -78,6 +85,13 @@ function apimClientWithApis(
     getApi: vi.fn(async (_rg, _svc, apiId: string) => apimSummary(apiId, !/;rev=\d+/i.test(apiId))),
     exportApi: vi.fn(async () => VALID_OPENAPI),
     getGraphqlSchema: vi.fn(async () => ''),
+    listApiSchemas: vi.fn(async () => []),
+    getApiSchemaDocument: vi.fn(async () => {
+      throw new Error('schema document unused');
+    }),
+    getProtobufSchema: vi.fn(async () => {
+      throw new Error('protobuf unused');
+    }),
     probeApimReadAccess: vi.fn(async () => undefined)
   };
 }
@@ -280,6 +294,13 @@ describe('R6 multi-scope discovery', () => {
           getApi: subscriptionId === SUB_B ? getApiB : getApiA,
           exportApi: vi.fn(async () => VALID_OPENAPI),
           getGraphqlSchema: vi.fn(async () => ''),
+          listApiSchemas: vi.fn(async () => []),
+          getApiSchemaDocument: vi.fn(async () => {
+            throw new Error('schema document unused');
+          }),
+          getProtobufSchema: vi.fn(async () => {
+            throw new Error('protobuf unused');
+          }),
           probeApimReadAccess: vi.fn(async () => undefined)
         })
       })
@@ -312,6 +333,13 @@ describe('R6 multi-scope discovery', () => {
           getApi: subscriptionId === SUB_B ? getApiB : getApiA,
           exportApi: vi.fn(async () => VALID_OPENAPI),
           getGraphqlSchema: vi.fn(async () => ''),
+          listApiSchemas: vi.fn(async () => []),
+          getApiSchemaDocument: vi.fn(async () => {
+            throw new Error('schema document unused');
+          }),
+          getProtobufSchema: vi.fn(async () => {
+            throw new Error('protobuf unused');
+          }),
           probeApimReadAccess: vi.fn(async () => undefined)
         })
       })
@@ -367,6 +395,13 @@ describe('R6 multi-scope discovery', () => {
               }),
               exportApi: vi.fn(async () => VALID_OPENAPI),
               getGraphqlSchema: vi.fn(async () => ''),
+              listApiSchemas: vi.fn(async () => []),
+              getApiSchemaDocument: vi.fn(async () => {
+                throw new Error('schema document unused');
+              }),
+              getProtobufSchema: vi.fn(async () => {
+                throw new Error('protobuf unused');
+              }),
               probeApimReadAccess: vi.fn(async () => {
                 throw new Error('403 Forbidden');
               })
@@ -521,6 +556,13 @@ describe('R6 multi-scope discovery', () => {
           if (subscriptionId === SUB_A) {
             return {
               ...stubApimClient(),
+              listApiSchemas: vi.fn(async () => []),
+              getApiSchemaDocument: vi.fn(async () => {
+                throw new Error('schema document unused');
+              }),
+              getProtobufSchema: vi.fn(async () => {
+                throw new Error('protobuf unused');
+              }),
               probeApimReadAccess: vi.fn(async () => {
                 throw new Error('AuthorizationFailed: insufficient RBAC on SUB_A');
               }),

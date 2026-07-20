@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   corroborateRuntimeDeclaredTargets,
   execute,
+  normalizeTargetUrlKey,
   resolveInputs,
   type AzureDependencies,
   type ReporterLike,
@@ -399,6 +400,37 @@ describe('runtime execute', () => {
     );
     expect(corroborated).toHaveLength(1);
     expect(JSON.stringify(corroborated)).not.toMatch(/secret|token=/i);
+
+    // Caller query substitution against an authorized path must fail closed.
+    expect(() =>
+      corroborateRuntimeDeclaredTargets(
+        resolveInputs({
+          INPUT_REPO_ROOT: repoRoot,
+          INPUT_ENABLE_RUNTIME_DECLARED_SPEC_ROUTES: 'true',
+          INPUT_RUNTIME_DECLARED_SPEC_TARGETS_JSON: JSON.stringify([
+            {
+              id: 'app1',
+              name: 'app1',
+              workloadKind: 'app-service',
+              url: 'https://app.example.com/openapi.json?caller=substituted'
+            }
+          ])
+        }),
+        binding.binding
+      )
+    ).toThrow(/Uncorroborated runtime-declared/);
+  });
+
+  it('normalizeTargetUrlKey keeps exact path and query for authorization', () => {
+    expect(normalizeTargetUrlKey('https://App.Example.com/openapi.json?a=1')).toBe(
+      'https://app.example.com/openapi.json?a=1'
+    );
+    expect(normalizeTargetUrlKey('https://app.example.com/openapi.json?a=1')).not.toBe(
+      normalizeTargetUrlKey('https://app.example.com/openapi.json')
+    );
+    expect(normalizeTargetUrlKey('https://app.example.com/openapi.json#frag')).toBe(
+      'https://app.example.com/openapi.json'
+    );
   });
 
   it('C4/Q12: matching Azure source-control association narrows but never resolves without a spec', async () => {
@@ -591,6 +623,13 @@ describe('runtime execute', () => {
         }),
         exportApi: vi.fn(async () => ''),
         getGraphqlSchema: vi.fn(async () => ''),
+        listApiSchemas: vi.fn(async () => []),
+        getApiSchemaDocument: vi.fn(async () => {
+          throw new Error('schema document unused');
+        }),
+        getProtobufSchema: vi.fn(async () => {
+          throw new Error('protobuf unused');
+        }),
         probeApimReadAccess: vi.fn(async () => undefined)
       }),
       createAppServiceClient: () => ({

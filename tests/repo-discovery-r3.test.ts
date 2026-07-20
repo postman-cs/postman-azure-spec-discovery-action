@@ -77,6 +77,15 @@ message Ping { string id = 1; }
 service Greeter { rpc SayHello (Ping) returns (Ping); }
 `;
 
+const MCP_JSON = JSON.stringify({
+  mcpServers: {
+    weather: {
+      command: 'npx',
+      args: ['-y', '@example/weather-mcp']
+    }
+  }
+});
+
 const FULL_APIM =
   '/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-demo/providers/Microsoft.ApiManagement/service/apim-demo/apis/orders;rev=2';
 
@@ -102,18 +111,30 @@ describe('R3 repository discovery', () => {
     await writeFile(path.join(repoRoot, 'types.model.xml'), XSD);
     await writeFile(path.join(repoRoot, 'schema.sdl'), GRAPHQL);
     await writeFile(path.join(repoRoot, 'messages.txt'), PROTO);
+    await writeFile(path.join(repoRoot, 'tools.config.json'), MCP_JSON);
+    await writeFile(path.join(repoRoot, 'random.json'), JSON.stringify({ name: 'not-mcp', foo: 1 }));
+    // Cross-action negatives: oddly named message-only protobuf and non-object MCP remotes.
+    await writeFile(path.join(repoRoot, 'idl.notes'), 'message Ping { string id = 1; }\n');
+    await writeFile(
+      path.join(repoRoot, 'broken-mcp.json'),
+      JSON.stringify({ name: 'io.github.example/weather', remotes: ['https://example.com'] })
+    );
 
     const specs = await findAllRepoSpecs(repoRoot);
     const formats = specs.map((spec) => spec.format).sort();
     expect(formats).toEqual([
       'asyncapi-yaml',
       'graphql-sdl',
+      'mcp-json',
       'openapi-yaml',
       'protobuf',
       'wadl',
       'wsdl',
       'xsd'
     ]);
+    expect(specs.some((spec) => spec.path === 'random.json')).toBe(false);
+    expect(specs.some((spec) => spec.path === 'idl.notes')).toBe(false);
+    expect(specs.some((spec) => spec.path === 'broken-mcp.json')).toBe(false);
   });
 
   it('returns two valid specs in stable ranked order and never first-match selects', async () => {
@@ -128,6 +149,18 @@ describe('R3 repository discovery', () => {
     expect(first[0]?.path).toBe('openapi.yaml');
     expect(first[1]?.path).toBe('docs/secondary.yaml');
     expect(first[0]!.rankScore).toBeGreaterThan(first[1]!.rankScore);
+  });
+
+  it('ranks named MCP JSON above content-detected unusual filenames and leaves ambiguity intact', async () => {
+    await writeFile(path.join(repoRoot, 'tools.config.json'), MCP_JSON);
+    await writeFile(path.join(repoRoot, 'mcp.json'), MCP_JSON);
+
+    const specs = await findAllRepoSpecs(repoRoot);
+    expect(specs).toHaveLength(2);
+    expect(specs[0]?.path).toBe('mcp.json');
+    expect(specs[0]?.format).toBe('mcp-json');
+    expect(specs[1]?.path).toBe('tools.config.json');
+    expect(specs[0]!.rankScore).toBeGreaterThan(specs[1]!.rankScore);
   });
 
   it('parses azure.yaml and .azure env allowlisted coordinates', () => {
