@@ -393,7 +393,7 @@ describe('R4 App Service ApiSpecPath + SCM opt-in', () => {
       sleep: async () => undefined
     });
     const fetchSpy = mockArmAndScmFetch(async (url, init) => {
-      expect(url).toBe('https://orders-api.scm.azurewebsites.net/api/vfs/home/data/.ai/apispec.json');
+      expect(url).toBe('https://orders-api.scm.azurewebsites.net/api/vfs/data/.ai/apispec.json');
       const headers = new Headers(init?.headers);
       expect(headers.get('authorization')).toBe('Bearer arm-token');
       expect(init?.redirect).toBe('manual');

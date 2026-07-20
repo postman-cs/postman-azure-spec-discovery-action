@@ -2600,6 +2600,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
   let cleanupFailure;
   let validationFailure;
   let stubUrl = '';
+  let resourceLocation = location;
   try {
     if (flags.provision) {
       if (ownsResourceGroup) {
@@ -2621,6 +2622,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
         if (groupShow?.name !== resourceGroup || groupSubscription !== subscriptionId) {
           throw new Error(`AZURE_RESOURCE_GROUP ${resourceGroup} is not in the selected subscription`);
         }
+        resourceLocation = String(groupShow?.location || location);
       }
       provisioned = true;
       await writeFile(
@@ -2773,7 +2775,7 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
               log,
               manifest,
               subscriptionId,
-              location,
+              location: resourceLocation,
               provisionFlags,
               capabilities,
               siteHostname
