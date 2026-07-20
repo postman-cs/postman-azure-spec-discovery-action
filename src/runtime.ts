@@ -2200,6 +2200,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     const untouched = partitioned.filter((candidate) => !selectedIdSet.has(candidate.id));
     workingCandidates = [...hydratedSelected, ...untouched];
     workingRanked = rankServiceCandidates(workingCandidates.map(toCandidateInput), signals);
+    workingBest = undefined;
     if (narrowing?.mode === 'select' && narrowing.apiIds.length === 1) {
       workingBest = workingRanked.find((candidate) => candidate.resourceId === narrowing.apiIds[0]);
       if (workingBest) {
@@ -2292,6 +2293,7 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           ...(target.apiId ? { apiId: target.apiId } : {}),
           providerType: target.providerType,
           specFormat: written.specFormat,
+          ...(exportResult.contractClass ? { contractClass: exportResult.contractClass } : {}),
           ...(written.derived
             ? {
                 derivedOpenApiPath: written.derived.path,

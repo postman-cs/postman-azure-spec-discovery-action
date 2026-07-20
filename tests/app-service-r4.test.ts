@@ -133,6 +133,33 @@ describe('R4 App Service ApiSpecPath + SCM opt-in', () => {
     expect(runtime.fetchApiSpecFromScm).not.toHaveBeenCalled();
   });
 
+  it('AZ-APP-R4-001b: concrete client reads built-in MCP ApiSpecPath from the 2026-03-15 site surface', async () => {
+    const requested: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      requested.push(url);
+      if (/\/sites\/orders-api\?/.test(url)) {
+        return jsonResponse({
+          properties: {
+            ...((armSitePayload() as { properties: Record<string, unknown> }).properties),
+            aiIntegration: { ApiSpecPath: '/home/site/wwwroot/openapi.json' }
+          }
+        });
+      }
+      if (url.includes('/config/web')) return jsonResponse({ properties: {} });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const client = new AppServiceRuntimeSdkClient(fakeCredential(), 'sub-1', {
+      requestTimeoutMs: 30_000,
+      maxAttempts: 1,
+      sleep: async () => undefined
+    });
+
+    const runtime = await client.getSiteRuntimeConfig('rg', 'orders-api');
+    expect(runtime.apiSpecPath).toBe('/home/site/wwwroot/openapi.json');
+    expect(requested.some((url) => /\/sites\/orders-api\?api-version=2026-03-15/.test(url))).toBe(true);
+  });
+
   it('AZ-APP-R4-002: opt-in SCM fetch retrieves authoritative bytes from site VFS only', async () => {
     const runtime = runtimeClient();
     const provider = new AppServiceProvider(appClient(), {
