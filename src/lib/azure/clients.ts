@@ -748,7 +748,9 @@ export class ApimSdkClient implements AzureApimClient {
       } catch (error) {
         if (!isHttp403(error)) throw error;
         if (attempt === this.maxAttempts) {
-          throw new Error(`APIM export fetch failed with HTTP 403 after ${attempt} attempt(s)`);
+          throw new Error(`APIM export fetch failed with HTTP 403 after ${attempt} attempt(s)`, {
+            cause: error
+          });
         }
       }
     }

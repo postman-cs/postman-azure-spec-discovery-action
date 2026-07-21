@@ -26,7 +26,7 @@ export function parseAndValidateOpenApi(content: string): ValidatedOpenApi {
     parsed = isJson ? JSON.parse(trimmed) : parse(trimmed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Specification is not parseable JSON or YAML: ${detail}`);
+    throw new Error(`Specification is not parseable JSON or YAML: ${detail}`, { cause: error });
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Specification did not parse to an object document');

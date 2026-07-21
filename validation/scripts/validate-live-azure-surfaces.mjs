@@ -409,7 +409,7 @@ export async function defaultAsyncRunner(command, args, options = {}) {
     const stderr = error?.stderr != null ? String(error.stderr) : '';
     const stdout = error?.stdout != null ? String(error.stdout) : '';
     const base = error instanceof Error ? error.message : String(error ?? 'command failed');
-    throw new Error([base, stdout, stderr].filter(Boolean).join('\n'));
+    throw new Error([base, stdout, stderr].filter(Boolean).join('\n'), { cause: error });
   }
 }
 
@@ -1401,7 +1401,7 @@ export async function teardownSharedGroupResources({
   }
 
   const cleanupDeadline = now() + CLEANUP_READY_TIMEOUT_MS;
-  let residual = [];
+  let residual;
   for (;;) {
     const groupResources =
       azJson(runner, ['resource', 'list', '--resource-group', resourceGroup]) ?? [];
@@ -1438,7 +1438,7 @@ export async function teardownDedicatedResourceGroup({
 }) {
   const resourceGroup = manifest.resourceGroup;
   const runMarker = manifest.runMarker;
-  let groupShow = null;
+  let groupShow;
   try {
     groupShow = azJson(runner, ['group', 'show', '--name', resourceGroup]);
   } catch (error) {
@@ -1446,7 +1446,9 @@ export async function teardownDedicatedResourceGroup({
       log(`Dedicated resource group already absent`);
       const graphCount = await residualResourceGraphAudit({ runner, log, subscriptionId, runMarker });
       if (graphCount > 0) {
-        throw new Error('Dedicated-group teardown residual audit reported remaining run-marked resources');
+        throw new Error('Dedicated-group teardown residual audit reported remaining run-marked resources', {
+          cause: error
+        });
       }
       return;
     }
@@ -2837,7 +2839,9 @@ export async function runLiveValidation({ argv = process.argv.slice(2), env = pr
               } catch (error) {
                 lastProbeError = redactSecrets(error instanceof Error ? error.message : String(error));
                 if (classifyProbeError(lastProbeError) === 'fatal') {
-                  throw new Error(`APIM export probe failed with a non-retryable error: ${lastProbeError}`);
+                  throw new Error(`APIM export probe failed with a non-retryable error: ${lastProbeError}`, {
+                    cause: error
+                  });
                 }
                 log(`APIM export probe not ready yet: ${lastProbeError}`);
               }

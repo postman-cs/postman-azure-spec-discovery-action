@@ -289,7 +289,7 @@ function validateAsyncApi(content: string, expected?: SpecFormat): NativeValidat
     parsed = isJson ? JSON.parse(trimmed) : parse(trimmed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Specification is not parseable JSON or YAML: ${detail}`);
+    throw new Error(`Specification is not parseable JSON or YAML: ${detail}`, { cause: error });
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Specification did not parse to an object document');
@@ -388,7 +388,7 @@ function validateMcpJson(content: string, expected?: SpecFormat): NativeValidati
     parsed = JSON.parse(trimmed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Specification is not parseable JSON or YAML: ${detail}`);
+    throw new Error(`Specification is not parseable JSON or YAML: ${detail}`, { cause: error });
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Specification did not parse to an object document');
@@ -456,7 +456,7 @@ export function parseAndValidateNativeSpec(
         else parse(trimmed);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(`Specification is not parseable JSON or YAML: ${detail}`);
+        throw new Error(`Specification is not parseable JSON or YAML: ${detail}`, { cause: error });
       }
       // Near-match MCP shells (empty mcpServers, schema-only, name without servers).
       try {

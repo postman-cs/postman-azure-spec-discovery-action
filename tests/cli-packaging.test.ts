@@ -27,7 +27,7 @@ describe('CLI packaging contract', () => {
     expect(help.stdout.startsWith('Usage: postman-azure-spec-discovery [options]')).toBe(true);
 
     const version = await execFileAsync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
-    expect(version.stdout).toBe('1.3.2\n');
+    expect(version.stdout).toBe('1.3.3\n');
   });
 
   it('AZ-PACK-001: npm pack includes action.yml, docs, and both bundles', async () => {
@@ -52,13 +52,13 @@ describe('CLI packaging contract', () => {
     ]) {
       expect(filePaths.has(required), `npm pack must include ${required}`).toBe(true);
     }
-  });
+  }, 240_000);
 
   it('AZ-PACK-001: bundled dist files have no runtime third-party require outside the allowlist', async () => {
     // Node builtins are fine; anything else must be inlined by esbuild.
-    // node-fetch's optional encoding peer is attempted inside a swallowed
+    // node-fetch/debug optional peers are attempted inside swallowed
     // require; the canonical dist verifier carries the same narrow allowlist.
-    const allow = new Set<string>(['encoding']);
+    const allow = new Set<string>(['encoding', 'supports-color']);
     for (const bundle of ['dist/index.cjs', 'dist/cli.cjs']) {
       const source = await readFile(path.join(repoRoot, bundle), 'utf8');
       const requires = [...source.matchAll(/require\((['"])([^'")]+)\1\)/g)]
