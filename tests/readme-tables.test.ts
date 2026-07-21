@@ -46,7 +46,7 @@ describe('README action tables', () => {
       expect(readme).toContain(nonGoal);
     }
     expect(readme).toContain('manual review');
-    expect(readme).toContain('Emit all 24 outputs');
+    expect(readme).toContain('Emit all 25 outputs');
     expect(providersDoc).toContain('## Security and IAM');
     expect(providersDoc).toContain('API Management Service Reader');
     expect(providersDoc).toContain('Inaccessible providers fail-soft');

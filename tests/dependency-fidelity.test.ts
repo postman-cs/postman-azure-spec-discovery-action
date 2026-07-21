@@ -169,6 +169,48 @@ describe('dependency fidelity helpers', () => {
     expect(exported.artifacts).toBeUndefined();
     expect(exported.evidence.join(' ')).toMatch(/unresolved dependency/i);
   });
+
+  it('bundles transitive protobuf companions and stays partial when a transitive ref is missing', async () => {
+    const closedRoot = await mkdtemp(path.join(tmpdir(), 'az-dep-proto-closure-'));
+    await writeFile(path.join(closedRoot, 'service.proto'), PROTO_WITH_IMPORT);
+    await writeFile(
+      path.join(closedRoot, 'common.proto'),
+      'syntax = "proto3";\nimport "shared.proto";\nmessage Shared { string id = 1; }\n'
+    );
+    await writeFile(
+      path.join(closedRoot, 'shared.proto'),
+      'syntax = "proto3";\nmessage SharedLeaf { string id = 1; }\n'
+    );
+    const closed = await buildRepoNativeExportBundle({
+      repoRoot: closedRoot,
+      primaryRelativePath: 'service.proto',
+      primaryContent: PROTO_WITH_IMPORT,
+      format: 'protobuf'
+    });
+    expect(closed.contractClass).toBe('authoritative');
+    expect(closed.completeness).toBe('full');
+    expect(closed.artifacts?.map((artifact) => artifact.relativePath).sort()).toEqual([
+      'common.proto',
+      'shared.proto'
+    ]);
+
+    const openRoot = await mkdtemp(path.join(tmpdir(), 'az-dep-proto-open-'));
+    await writeFile(path.join(openRoot, 'service.proto'), PROTO_WITH_IMPORT);
+    await writeFile(
+      path.join(openRoot, 'common.proto'),
+      'syntax = "proto3";\nimport "shared.proto";\nmessage Shared { string id = 1; }\n'
+    );
+    const open = await buildRepoNativeExportBundle({
+      repoRoot: openRoot,
+      primaryRelativePath: 'service.proto',
+      primaryContent: PROTO_WITH_IMPORT,
+      format: 'protobuf'
+    });
+    expect(open.contractClass).toBe('partial');
+    expect(open.completeness).toBe('partial');
+    expect(open.artifacts).toBeUndefined();
+    expect(open.evidence.join(' ')).toMatch(/shared\.proto|transitive/i);
+  });
 });
 
 describe('artifact bundle materialization', () => {
@@ -238,7 +280,71 @@ describe('artifact bundle materialization', () => {
     expect(result.resolution?.status).toBe('resolved');
     expect(result.resolution?.specPath).toMatch(/service\.proto$/);
     expect(result.resolution?.contractClass).toBe('authoritative');
+    expect(result.outputs['spec-files-json']).toContain('common.proto');
+    expect(result.outputs['spec-files-json']).toContain('"completeness":"full"');
     expect([...written.keys()].some((key) => key.endsWith('common.proto'))).toBe(true);
     expect([...written.values()].some((value) => value.includes('message Shared'))).toBe(true);
+  });
+
+  it('incomplete provider native source set blanks spec-path and inventory', async () => {
+    const repoRoot = await mkdtemp(path.join(tmpdir(), 'az-artifact-incomplete-'));
+    const writeSpecFile = vi.fn(async () => undefined);
+    const provider: SpecProvider = {
+      type: 'apim',
+      probe: async () => 'available',
+      listCandidates: async () => [
+        {
+          id: '/subscriptions/sub-1/resourceGroups/rg/providers/Microsoft.ApiManagement/service/svc/apis/pay',
+          name: 'payments',
+          providerType: 'apim',
+          resourceGroup: 'rg',
+          tags: { 'postman:project-name': 'payments' },
+          supported: true,
+          evidence: ['fixture'],
+          meta: {
+            serviceName: 'svc',
+            resourceGroup: 'rg',
+            apiId: 'pay',
+            apiType: 'grpc'
+          }
+        }
+      ],
+      exportSpec: async () => ({
+        content: PROTO_WITH_IMPORT,
+        format: 'protobuf',
+        filename: 'service.proto',
+        contractClass: 'partial',
+        completeness: 'partial',
+        evidence: ['unresolved dependency reference(s): common.proto']
+      })
+    };
+    const reporter: ReporterLike = {
+      group: async (_name, fn) => fn(),
+      info: () => undefined,
+      warning: () => undefined
+    };
+    const result = await execute(
+      resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_EXPECTED_SERVICE_NAME: 'payments' }),
+      {
+        core: reporter,
+        subscriptions: {
+          get: vi.fn(async (subscriptionId: string) => ({ subscriptionId, state: 'Enabled' })),
+          list: vi.fn(async () => [{ subscriptionId: 'sub-1', state: 'Enabled' }])
+        },
+        createApimClient: () => {
+          throw new Error('unused');
+        },
+        createAppServiceClient: () => {
+          throw new Error('unused');
+        },
+        writeSpecFile,
+        providers: [provider]
+      }
+    );
+    expect(result.resolution?.status).toBe('unresolved');
+    expect(result.resolution?.contractClass).toBe('partial');
+    expect(result.outputs['spec-path']).toBe('');
+    expect(result.outputs['spec-files-json']).toBe('');
+    expect(writeSpecFile).not.toHaveBeenCalled();
   });
 });

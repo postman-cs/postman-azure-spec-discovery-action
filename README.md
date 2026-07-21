@@ -149,6 +149,7 @@ The CLI exposes every action input as a `--kebab-case` flag plus CLI-only flags 
 | `source-type` | Resolved source type: repo-spec, apim-export, api-center-export, app-service-api-definition, iac-embedded, custom-api-swagger, logic-apps-workflow, template-spec-embedded, event-grid-webhook, service-bus-topic, function-bindings-trigger, runtime-declared-spec, manual-review, discover-many, or discover-estate. |
 | `mapping-confidence` | Numeric confidence score for the selected service candidate. |
 | `spec-path` | Path to the resolved or generated specification when available. |
+| `spec-files-json` | Optional JSON inventory of an authoritative multi-file definition set (schemaVersion 1: root, format, completeness, provenance, sorted files with path/role/bytes/sha256). Empty for single-file, unresolved, or incomplete/partial source sets. Never embeds file content. |
 | `api-id` | Full APIM API ARM resource ID or API Center definition ARM resource ID when those providers resolve; empty for App Service or IaC-local resolutions. |
 | `service-name` | Resolved service name. |
 | `services-json` | discover-many output: JSON array of exported services. |
@@ -224,7 +225,7 @@ APIM SOAP and GraphQL APIs are exportable. APIM gRPC is authoritative native pro
 3. Probe providers fail-soft: an unauthorized provider is skipped (`skipped:iam`), an erroring one is skipped (`skipped:error`), and discovery continues with the rest.
 4. Enumerate lightweight candidate headers (bounded concurrency), narrow with the six-tier pipeline across the full header set (including association-only App Service / Container Apps source-control correlation when available), then hydrate only the selected partition in `resolve-one` (or the post-cap set in `discover-many`). See [Enumeration cost and hydration](docs/providers.md#enumeration-cost-and-hydration) and [Ordering and narrowing](docs/providers.md#ordering-and-narrowing).
 5. Export the winner (APIM ARM export, API Center definition export, guarded HTTPS fetch, or IaC extraction). Repository and API Center native formats are preserved and validated for their detected kind (not OpenAPI-only); OpenAPI/Swagger exports still require at least one path. Write under `output-dir` confined to the repository root.
-6. Emit all 24 outputs; ambiguous resolutions additionally render a ranked Step Summary table.
+6. Emit all 25 outputs; ambiguous resolutions additionally render a ranked Step Summary table.
 
 ## Resources
 
