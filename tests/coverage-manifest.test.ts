@@ -169,11 +169,15 @@ describe('coverage claim manifest contract', () => {
   });
 
   it('AZ-COV-003: npm run verify:coverage passes against the committed tree', () => {
-    const result = spawnSync('npm', ['run', 'verify:coverage'], {
+    const result = spawnSync(
+      process.platform === 'win32' ? process.execPath : 'npm',
+      [...(process.platform === 'win32' ? [process.env.npm_execpath ?? ''] : []), 'run', 'verify:coverage'],
+      {
       cwd: repoRoot,
       encoding: 'utf8',
       env: process.env
-    });
+      }
+    );
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stdout).toContain('verify-coverage-manifest: ok');
   });
