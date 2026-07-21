@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 
 import {
   actionContract,
@@ -13,6 +14,13 @@ import {
   type SpecFormat
 } from './contracts.js';
 import { getProviderRegistration } from './lib/providers/registry.js';
+import {
+  buildDefinitionFileInventory,
+  emptyDefinitionFileInventoryOutput,
+  serializeDefinitionFileInventory,
+  sha256HexOfUtf8,
+  utf8ByteLength
+} from './lib/spec/definition-file-inventory.js';
 import { applyDeclaredFidelity, deriveOpenApiDocument } from './lib/spec/oas-derivation.js';
 import type {
   AzureApimClient,
@@ -57,9 +65,15 @@ import {
 import { runNarrowingPipeline, type NarrowingCandidate, type NarrowingResult } from './lib/resolve/narrowing-pipeline.js';
 import { buildCandidateQuery } from './lib/resolve/resource-graph-query.js';
 import { enumerateEstate, parseRepoSlug, type EstateRepo } from './lib/estate/enumerate.js';
-import { assessNativeDependencyFidelity } from './lib/spec/dependency-fidelity.js';
+import {
+  assessNativeDependencyFidelity,
+  listNativeDependencyRefs
+} from './lib/spec/dependency-fidelity.js';
 import { parseAndValidateNativeSpec } from './lib/spec/native-formats.js';
-import { resolveRepoNativeDependencyCompanions } from './lib/repo/native-dependency-bundle.js';
+import {
+  buildRepoNativeExportBundle,
+  NATIVE_CLOSURE_LIMITS
+} from './lib/repo/native-dependency-bundle.js';
 import { ApimProvider, parseApimApiArmId } from './lib/providers/apim.js';
 import { ApiCenterProvider } from './lib/providers/api-center.js';
 import { AppServiceProvider } from './lib/providers/app-service.js';
@@ -70,7 +84,11 @@ import { EventGridProvider } from './lib/providers/event-grid.js';
 import { ServiceBusProvider } from './lib/providers/service-bus.js';
 import { FunctionBindingsProvider } from './lib/providers/function-bindings.js';
 import { IacLocalProvider } from './lib/providers/iac-local.js';
-import { resolvePathWithinRoot, writeFileWithinRoot } from './lib/utils/resolve-path-within-root.js';
+import {
+  assertNoSymlinkEscape,
+  resolvePathWithinRoot,
+  writeFileWithinRoot
+} from './lib/utils/resolve-path-within-root.js';
 import type {
   HydratingSpecProvider,
   SpecCandidate,
@@ -152,6 +170,24 @@ export interface AzureDependencies {
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile: (outputPath: string, content: string, rootPath: string) => Promise<void>;
   providers?: SpecProvider[];
+  /**
+   * Test-only staging hook. Invoked after each definition member is written into
+   * the stage directory and hash-validated, before the atomic swap.
+   */
+  afterStageMemberWrite?: (info: {
+    index: number;
+    total: number;
+    relativePath: string;
+    stageDir: string;
+  }) => Promise<void>;
+  /**
+   * Test-only hook. Invoked after stage-to-canonical rename and before final
+   * canonical hash/inventory verification (backup still available for rollback).
+   */
+  afterCanonicalSwap?: (info: {
+    canonicalDir: string;
+    backupDir: string;
+  }) => Promise<void>;
 }
 
 export interface ExecutionResult {
@@ -724,7 +760,10 @@ function selectUniqueDiscoveryNativeSpecPath(
 async function resolveBoundNativeSpec(
   inputs: ResolvedInputs,
   binding: AzureResolverBinding | undefined,
-  discovery?: RepositoryDiscoveryResult
+  discovery: RepositoryDiscoveryResult | undefined,
+  writeSpecFile: AzureDependencies['writeSpecFile'],
+  afterStageMemberWrite?: AzureDependencies['afterStageMemberWrite'],
+  afterCanonicalSwap?: AzureDependencies['afterCanonicalSwap']
 ): Promise<ResolutionResult | undefined> {
   const discoverySelection = discovery ? selectUniqueDiscoveryNativeSpecPath(discovery) : undefined;
   const relativePath = binding?.nativeSpecPath
@@ -732,10 +771,47 @@ async function resolveBoundNativeSpec(
     : discoverySelection?.path;
   if (!relativePath) return undefined;
 
-  const absolutePath = resolvePathWithinRoot(inputs.repoRoot, relativePath, 'nativeSpecPath');
+  const serviceName =
+    inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop() ?? 'repository-spec';
+  const matchedLocal = discovery?.localSpecs.find(
+    (spec) => normalizeRepoRelativePath(spec.path) === relativePath
+  );
+  const bindingEvidence = [
+    ...(binding?.evidence ?? []),
+    ...(discoverySelection?.evidence ?? []),
+    ...(matchedLocal?.evidence ?? [])
+  ];
+
   let content: string;
   let format: SpecFormat;
   try {
+    const absolutePath = await assertNoSymlinkEscape(inputs.repoRoot, relativePath, 'nativeSpecPath');
+    // Stat before readFile: reject oversized roots without loading all bytes into memory.
+    const rootStat = await stat(absolutePath);
+    if (!rootStat.isFile()) {
+      throw new Error(`nativeSpecPath is not a regular file: ${relativePath}`);
+    }
+    if (
+      rootStat.size > NATIVE_CLOSURE_LIMITS.maxBytesPerFile ||
+      rootStat.size > NATIVE_CLOSURE_LIMITS.maxTotalBytes
+    ) {
+      return {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName,
+        confidence: 0,
+        specPath: '',
+        specFilesJson: '',
+        ...(matchedLocal ? { specFormat: matchedLocal.format } : {}),
+        contractClass: 'partial',
+        evidence: [
+          ...bindingEvidence,
+          `Resolved exact native repository specification ${relativePath}`,
+          'native specification primary root exceeds native closure per-file or total byte ceiling',
+          'Export fidelity is partial; no authoritative/full closure when the root alone exceeds per-file or total byte limits'
+        ]
+      };
+    }
     content = await readFile(absolutePath, 'utf8');
     const validated = parseAndValidateNativeSpec(content, undefined, path.posix.basename(relativePath));
     format = validated.format;
@@ -747,35 +823,86 @@ async function resolveBoundNativeSpec(
       )
     );
   }
-  const companions = await resolveRepoNativeDependencyCompanions({
+
+  const baseEvidence = [
+    ...bindingEvidence,
+    `Resolved exact native repository specification ${relativePath} as ${format}`
+  ];
+
+  // Production-wire the repo native bundle (not tests-only).
+  const bundle = await buildRepoNativeExportBundle({
     repoRoot: inputs.repoRoot,
     primaryRelativePath: relativePath,
     primaryContent: content,
     format
   });
-  const fidelity = assessNativeDependencyFidelity({
-    content,
-    format,
-    availableDependencyKeys: companions.availableKeys
-  });
-  const matchedLocal = discovery?.localSpecs.find(
-    (spec) => normalizeRepoRelativePath(spec.path) === relativePath
-  );
+
+  if (isIncompleteNativeSourceSet(bundle) || bundle.completeness === 'partial') {
+    return {
+      status: 'unresolved',
+      sourceType: 'manual-review',
+      serviceName,
+      confidence: 0,
+      specPath: '',
+      specFilesJson: '',
+      specFormat: format,
+      contractClass: bundle.contractClass ?? 'partial',
+      evidence: [...baseEvidence, ...bundle.evidence]
+    };
+  }
+
+  if ((bundle.artifacts?.length ?? 0) > 0) {
+    const written = await writeSpecExport(
+      inputs,
+      serviceName,
+      bundle,
+      writeSpecFile,
+      'iac-local',
+      afterStageMemberWrite,
+      afterCanonicalSwap
+    );
+    if (written.incompleteSourceSet) {
+      return resolutionFromIncompleteExport({
+        serviceName,
+        written,
+        sourceType: 'repo-spec',
+        confidence: 0,
+        evidence: baseEvidence
+      });
+    }
+    return {
+      status: 'resolved',
+      sourceType: 'repo-spec',
+      serviceName,
+      confidence: 100,
+      specPath: written.specPath,
+      specFilesJson: written.specFilesJson,
+      specFormat: written.specFormat,
+      contractClass: written.contractClass,
+      ...(written.derived
+        ? {
+            derivedOpenApiPath: written.derived.path,
+            derivedOpenApiVersion: written.derived.version,
+            derivedOpenApiCompleteness: written.derived.completeness,
+            derivedOpenApiFormat: written.derived.format,
+            derivedOpenApiEvidence: written.derived.evidence
+          }
+        : {}),
+      evidence: [...baseEvidence, ...written.evidence]
+    };
+  }
+
+  // Single-file closed native: preserve legacy repo-relative spec-path behavior.
   return {
     status: 'resolved',
     sourceType: 'repo-spec',
-    serviceName: inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop() ?? 'repository-spec',
+    serviceName,
     confidence: 100,
     specPath: relativePath,
+    specFilesJson: '',
     specFormat: format,
-    contractClass: fidelity.contractClass,
-    evidence: [
-      ...(binding?.evidence ?? []),
-      ...(discoverySelection?.evidence ?? []),
-      ...(matchedLocal?.evidence ?? []),
-      `Resolved exact native repository specification ${relativePath} as ${format}`,
-      ...fidelity.evidence
-    ]
+    contractClass: bundle.contractClass ?? 'authoritative',
+    evidence: [...baseEvidence, ...bundle.evidence]
   };
 }
 
@@ -941,9 +1068,15 @@ function resolveServiceName(candidate: SpecCandidate, serviceMapping: Record<str
 }
 
 interface WrittenExport {
+  /** Empty when the export is an incomplete native dependency source set. */
   specPath: string;
   specFormat: SpecFormat;
   contractClass: ContractClass;
+  /** Multi-file inventory JSON or '' (single-file / incomplete / unresolved). */
+  specFilesJson: string;
+  /** True when unresolved protobuf/WSDL/XSD companions block authoritative export. */
+  incompleteSourceSet: boolean;
+  evidence: string[];
   derived?: {
     path: string;
     version: '3.0.3' | '3.1.0';
@@ -951,6 +1084,17 @@ interface WrittenExport {
     format: 'openapi-json';
     evidence: string[];
   };
+}
+
+/** Sidecars written beside definition members; never inventoried or GC'd as owned members. */
+const NON_DEFINITION_SIDECAR_NAMES = new Set(['openapi.derived.json']);
+
+function isPreservedNonDefinitionSidecar(relativePath: string): boolean {
+  const base = path.posix.basename(relativePath.replace(/\\/g, '/'));
+  if (NON_DEFINITION_SIDECAR_NAMES.has(base)) return true;
+  // Generic metadata sidecars must survive staged replacement / stale-member GC.
+  if (base.endsWith('.metadata.json')) return true;
+  return false;
 }
 
 /**
@@ -984,31 +1128,311 @@ function assertSafeArtifactRelativePath(relativePath: string): string {
   return normalized;
 }
 
+/**
+ * Incomplete required native source set: protobuf/WSDL/XSD with unresolved
+ * dependency refs and no covering companion bytes. Synthesized/partial OpenAPI
+ * families are unaffected.
+ */
+export function isIncompleteNativeSourceSet(exportResult: SpecExportResult): boolean {
+  const format = exportResult.format;
+  if (format !== 'protobuf' && format !== 'wsdl' && format !== 'xsd') return false;
+  const refs = listNativeDependencyRefs(exportResult.content, format);
+  if (refs.length === 0) return false;
+  const availableKeys = (exportResult.artifacts ?? []).flatMap((artifact) => {
+    const rel = assertSafeArtifactRelativePath(artifact.relativePath);
+    return [rel, path.posix.basename(rel)];
+  });
+  return assessNativeDependencyFidelity({
+    content: exportResult.content,
+    format,
+    availableDependencyKeys: availableKeys
+  }).hasUnresolvedDependencies;
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await stat(target);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function listFilesRecursive(rootDir: string): Promise<string[]> {
+  const out: string[] = [];
+  const stack = [rootDir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) break;
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(absolute);
+      } else if (entry.isFile()) {
+        out.push(absolute);
+      }
+    }
+  }
+  return out;
+}
+
+async function writeUtf8Atomic(targetPath: string, content: string): Promise<void> {
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, content, 'utf8');
+}
+
+async function fsyncFile(absolutePath: string): Promise<void> {
+  const handle = await open(absolutePath, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function verifyDefinitionMemberBytes(
+  absolutePath: string,
+  content: string,
+  label: string
+): Promise<void> {
+  const onDisk = await readFile(absolutePath, 'utf8');
+  if (onDisk !== content) {
+    throw new Error(`${label} failed byte verification`);
+  }
+  if (sha256HexOfUtf8(onDisk) !== sha256HexOfUtf8(content)) {
+    throw new Error(`${label} failed hash verification`);
+  }
+  if (utf8ByteLength(onDisk) !== utf8ByteLength(content)) {
+    throw new Error(`${label} failed size verification`);
+  }
+}
+
+async function restoreDirectory(backupDir: string, canonicalDir: string): Promise<void> {
+  if (await pathExists(canonicalDir)) {
+    await rm(canonicalDir, { recursive: true, force: true });
+  }
+  await rename(backupDir, canonicalDir);
+}
+
+/**
+ * Stage all target definition members and preserved sidecars beside the service
+ * folder, hash/size/fsync-verify the complete stage tree, atomically swap into
+ * place, verify the canonical tree, then drop backup. Never mutates canonical
+ * definition members in place after the swap. Stale owned members are removed by
+ * omission from the staged set.
+ */
+async function materializeDefinitionMembersStaged(options: {
+  repoRoot: string;
+  outputDirPosix: string;
+  folder: string;
+  members: Array<{ relativePath: string; content: string }>;
+  ownedRelativePaths: Set<string>;
+  writeSpecFile?: AzureDependencies['writeSpecFile'];
+  afterStageMemberWrite?: AzureDependencies['afterStageMemberWrite'];
+  afterCanonicalSwap?: AzureDependencies['afterCanonicalSwap'];
+}): Promise<void> {
+  const runId = randomUUID().replace(/-/g, '').slice(0, 12);
+  const parentRel = options.outputDirPosix;
+  const canonicalRel = path.posix.join(parentRel, options.folder);
+  const stageRel = path.posix.join(parentRel, `${options.folder}.stage-${runId}`);
+  const backupRel = path.posix.join(parentRel, `${options.folder}.backup-${runId}`);
+  const canonicalDir = resolvePathWithinRoot(options.repoRoot, canonicalRel, 'output-dir');
+  const stageDir = resolvePathWithinRoot(options.repoRoot, stageRel, 'output-dir');
+  const backupDir = resolvePathWithinRoot(options.repoRoot, backupRel, 'output-dir');
+
+  await rm(stageDir, { recursive: true, force: true });
+  await rm(backupDir, { recursive: true, force: true });
+  await mkdir(stageDir, { recursive: true });
+
+  try {
+    let index = 0;
+    for (const member of options.members) {
+      const safeRel = assertSafeArtifactRelativePath(member.relativePath);
+      const absolute = resolvePathWithinRoot(
+        options.repoRoot,
+        path.posix.join(stageRel, safeRel),
+        'output-dir'
+      );
+      // Authoritative stage write + fsync/hash/size verification. The injected
+      // writer is then invoked against the staged path only (never post-swap
+      // canonical replay) so adapters/tests remain observable while rollback
+      // is still available.
+      await writeUtf8Atomic(absolute, member.content);
+      await fsyncFile(absolute);
+      await verifyDefinitionMemberBytes(
+        absolute,
+        member.content,
+        `Staged definition member ${safeRel}`
+      );
+      if (options.writeSpecFile) {
+        await options.writeSpecFile(absolute, member.content, options.repoRoot);
+        await fsyncFile(absolute);
+        await verifyDefinitionMemberBytes(
+          absolute,
+          member.content,
+          `Staged definition member ${safeRel} after writeSpecFile`
+        );
+      }
+      index += 1;
+      if (options.afterStageMemberWrite) {
+        await options.afterStageMemberWrite({
+          index,
+          total: options.members.length,
+          relativePath: safeRel,
+          stageDir
+        });
+      }
+    }
+
+    // Copy preserved non-definition sidecars into stage before rename so the
+    // swap publishes a complete tree (owned members + allowed sidecars) and
+    // stale owned definition members are dropped by omission.
+    const canonicalExisted = await pathExists(canonicalDir);
+    if (canonicalExisted) {
+      const priorFiles = await listFilesRecursive(canonicalDir);
+      for (const absolutePrior of priorFiles) {
+        const rel = path.relative(canonicalDir, absolutePrior).split(path.sep).join('/');
+        if (options.ownedRelativePaths.has(rel)) continue;
+        if (!isPreservedNonDefinitionSidecar(rel)) continue;
+        const destination = resolvePathWithinRoot(
+          options.repoRoot,
+          path.posix.join(stageRel, rel),
+          'output-dir'
+        );
+        await mkdir(path.dirname(destination), { recursive: true });
+        await copyFile(absolutePrior, destination);
+        await fsyncFile(destination);
+      }
+    }
+
+    if (canonicalExisted) {
+      await rename(canonicalDir, backupDir);
+    }
+    try {
+      await rename(stageDir, canonicalDir);
+    } catch (error) {
+      if (canonicalExisted) {
+        await restoreDirectory(backupDir, canonicalDir);
+      }
+      throw error;
+    }
+
+    if (options.afterCanonicalSwap) {
+      await options.afterCanonicalSwap({ canonicalDir, backupDir });
+    }
+
+    // Final canonical verification while backup still exists.
+    for (const member of options.members) {
+      const safeRel = assertSafeArtifactRelativePath(member.relativePath);
+      const absolute = resolvePathWithinRoot(
+        options.repoRoot,
+        path.posix.join(canonicalRel, safeRel),
+        'output-dir'
+      );
+      await verifyDefinitionMemberBytes(
+        absolute,
+        member.content,
+        `Canonical definition member ${safeRel}`
+      );
+    }
+
+    await rm(backupDir, { recursive: true, force: true });
+    await rm(stageDir, { recursive: true, force: true });
+  } catch (error) {
+    await rm(stageDir, { recursive: true, force: true });
+    if (await pathExists(backupDir)) {
+      // Prefer exact prior-tree restore on any post-backup failure (including
+      // after a successful stage->canonical rename that left a new tree).
+      await restoreDirectory(backupDir, canonicalDir);
+    }
+    throw error;
+  }
+}
+
 async function writeSpecExport(
   inputs: ResolvedInputs,
   serviceName: string,
   exportResult: SpecExportResult,
   writeSpecFile: (outputPath: string, content: string, rootPath: string) => Promise<void>,
-  providerType: ProviderType
+  providerType: ProviderType,
+  afterStageMemberWrite?: AzureDependencies['afterStageMemberWrite'],
+  afterCanonicalSwap?: AzureDependencies['afterCanonicalSwap']
 ): Promise<WrittenExport> {
   const classified = applyExportContractClass(providerType, exportResult);
+  if (isIncompleteNativeSourceSet(classified)) {
+    // Never upgrade contractClass; keep partial/reconstructed and blank outputs.
+    return {
+      specPath: '',
+      specFormat: classified.format,
+      contractClass: classified.contractClass,
+      specFilesJson: emptyDefinitionFileInventoryOutput(),
+      incompleteSourceSet: true,
+      evidence: [
+        ...classified.evidence,
+        'Incomplete native dependency source set; refusing spec-path and spec-files-json outputs'
+      ]
+    };
+  }
+
   const folder = projectFolderName(serviceName);
-  const relativeSpecPath = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, classified.filename);
-  const absoluteSpecPath = resolvePathWithinRoot(inputs.repoRoot, relativeSpecPath, 'output-dir');
+  const outputDirPosix = inputs.outputDir.split(path.sep).join('/');
+  const relativeSpecPath = path.posix.join(outputDirPosix, folder, classified.filename);
+  const companionMembers = (classified.artifacts ?? []).map((artifact) => ({
+    relativePath: assertSafeArtifactRelativePath(artifact.relativePath),
+    content: artifact.content
+  }));
+  const definitionMembers = [
+    { relativePath: classified.filename, content: classified.content },
+    ...companionMembers
+  ];
+  const ownedRelativePaths = new Set(definitionMembers.map((member) => member.relativePath));
+
+  const completeness: 'full' | 'partial' = classified.completeness ?? 'full';
+  const inventory = buildDefinitionFileInventory({
+    rootPath: relativeSpecPath,
+    format: classified.format,
+    completeness,
+    members: [
+      { path: relativeSpecPath, role: 'root', content: classified.content },
+      ...companionMembers.map((member) => ({
+        path: path.posix.join(outputDirPosix, folder, member.relativePath),
+        role: 'dependency' as const,
+        content: member.content
+      }))
+    ]
+  });
+  const specFilesJson = serializeDefinitionFileInventory(inventory);
+
   if (!inputs.dryRun) {
-    await writeSpecFile(absoluteSpecPath, classified.content, inputs.repoRoot);
-    for (const artifact of classified.artifacts ?? []) {
-      const safeRel = assertSafeArtifactRelativePath(artifact.relativePath);
-      const relativeArtifactPath = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, safeRel);
-      const absoluteArtifactPath = resolvePathWithinRoot(inputs.repoRoot, relativeArtifactPath, 'output-dir');
-      await writeSpecFile(absoluteArtifactPath, artifact.content, inputs.repoRoot);
+    if (companionMembers.length > 0) {
+      // Multi-file: atomic stage/swap only. writeSpecFile is invoked against staged
+      // paths inside materializeDefinitionMembersStaged — never against canonical
+      // members after backup deletion.
+      await materializeDefinitionMembersStaged({
+        repoRoot: inputs.repoRoot,
+        outputDirPosix,
+        folder,
+        members: definitionMembers,
+        ownedRelativePaths,
+        writeSpecFile,
+        afterStageMemberWrite,
+        afterCanonicalSwap
+      });
+    } else {
+      const absoluteSpecPath = resolvePathWithinRoot(inputs.repoRoot, relativeSpecPath, 'output-dir');
+      await writeSpecFile(absoluteSpecPath, classified.content, inputs.repoRoot);
     }
   }
 
   const written: WrittenExport = {
     specPath: relativeSpecPath,
     specFormat: classified.format,
-    contractClass: classified.contractClass
+    contractClass: classified.contractClass,
+    specFilesJson,
+    incompleteSourceSet: false,
+    evidence: classified.evidence
   };
 
   const rawDerivation = deriveOpenApiDocument({
@@ -1031,9 +1455,13 @@ async function writeSpecExport(
         evidence: derivation.evidence
       };
     } else {
-      const derivedRelative = path.posix.join(inputs.outputDir.split(path.sep).join('/'), folder, 'openapi.derived.json');
+      const derivedRelative = path.posix.join(outputDirPosix, folder, 'openapi.derived.json');
       const derivedAbsolute = resolvePathWithinRoot(inputs.repoRoot, derivedRelative, 'output-dir');
       if (!inputs.dryRun) {
+        // Sidecar: not inventoried and not an owned definition member for GC.
+        if (!NON_DEFINITION_SIDECAR_NAMES.has('openapi.derived.json')) {
+          throw new Error('openapi.derived.json must remain a non-definition sidecar');
+        }
         await writeSpecFile(derivedAbsolute, derivation.content, inputs.repoRoot);
       }
       written.derived = {
@@ -1046,6 +1474,72 @@ async function writeSpecExport(
     }
   }
   return written;
+}
+
+function resolutionFromIncompleteExport(options: {
+  serviceName: string;
+  written: WrittenExport;
+  sourceType: ResolutionResult['sourceType'];
+  confidence: number;
+  evidence: string[];
+  apiId?: string;
+  providerType?: ProviderType;
+  providerProbes?: ProviderProbeResult[];
+}): ResolutionResult {
+  return {
+    status: 'unresolved',
+    sourceType: 'manual-review',
+    serviceName: options.serviceName,
+    confidence: options.confidence,
+    specPath: '',
+    specFilesJson: '',
+    ...(options.apiId ? { apiId: options.apiId } : {}),
+    ...(options.providerType ? { providerType: options.providerType } : {}),
+    specFormat: options.written.specFormat,
+    contractClass: options.written.contractClass,
+    ...(options.providerProbes ? { providerProbes: options.providerProbes } : {}),
+    evidence: [...options.evidence, ...options.written.evidence]
+  };
+}
+
+function resolutionFromWrittenExport(options: {
+  written: WrittenExport;
+  serviceName: string;
+  sourceType: ResolutionResult['sourceType'];
+  confidence: number;
+  evidence: string[];
+  apiId?: string;
+  providerType?: ProviderType;
+  providerProbes?: ProviderProbeResult[];
+  narrowing?: ResolutionResult['narrowing'];
+}): ResolutionResult {
+  if (options.written.incompleteSourceSet) {
+    return resolutionFromIncompleteExport(options);
+  }
+  return {
+    status: 'resolved',
+    sourceType: options.sourceType,
+    serviceName: options.serviceName,
+    confidence: options.confidence,
+    specPath: options.written.specPath,
+    specFilesJson: options.written.specFilesJson,
+    ...(options.apiId ? { apiId: options.apiId } : {}),
+    ...(options.providerType ? { providerType: options.providerType } : {}),
+    specFormat: options.written.specFormat,
+    contractClass: options.written.contractClass,
+    ...(options.written.derived
+      ? {
+          derivedOpenApiPath: options.written.derived.path,
+          derivedOpenApiVersion: options.written.derived.version,
+          derivedOpenApiCompleteness: options.written.derived.completeness,
+          derivedOpenApiFormat: options.written.derived.format,
+          derivedOpenApiEvidence: options.written.derived.evidence
+        }
+      : {}),
+    ...(options.narrowing ? { narrowing: options.narrowing } : {}),
+    ...(options.providerProbes ? { providerProbes: options.providerProbes } : {}),
+    evidence: options.evidence
+  };
 }
 
 function toCandidateInput(candidate: SpecCandidate): AzureCandidateInput {
@@ -1754,7 +2248,14 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
 
   // Exact .postman / unique manifest-pipeline-IaC nativeSpecPath resolves with
   // no Azure/network calls for all supported native formats.
-  const boundNativeSpec = await resolveBoundNativeSpec(inputs, binding, discovery);
+  const boundNativeSpec = await resolveBoundNativeSpec(
+    inputs,
+    binding,
+    discovery,
+    dependencies.writeSpecFile,
+    dependencies.afterStageMemberWrite,
+    dependencies.afterCanonicalSwap
+  );
   if (boundNativeSpec) {
     return {
       mode: inputs.mode,
@@ -1767,26 +2268,125 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
   const localSpecs = discovery.localSpecs;
   if (localSpecs.length === 1 && localSpecs[0]) {
     const only = localSpecs[0];
-    const absolutePath = resolvePathWithinRoot(inputs.repoRoot, only.path, 'nativeSpecPath');
-    const content = await readFile(absolutePath, 'utf8');
-    const companions = await resolveRepoNativeDependencyCompanions({
+    let content: string;
+    try {
+      const absolutePath = await assertNoSymlinkEscape(inputs.repoRoot, only.path, 'nativeSpecPath');
+      content = await readFile(absolutePath, 'utf8');
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const serviceName =
+        inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop() ?? 'repository-spec';
+      const resolution: ResolutionResult = {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName,
+        confidence: 0,
+        specPath: '',
+        specFilesJson: '',
+        specFormat: only.format,
+        contractClass: 'partial',
+        evidence: [
+          ...only.evidence,
+          `Exact nativeSpecPath could not be read safely: ${sanitizeLogMessage(detail)}`
+        ]
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+    const serviceName =
+      inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop() ?? 'repository-spec';
+    const bundle = await buildRepoNativeExportBundle({
       repoRoot: inputs.repoRoot,
       primaryRelativePath: only.path,
       primaryContent: content,
       format: only.format
     });
-    const fidelity = assessNativeDependencyFidelity({
-      content,
-      format: only.format,
-      availableDependencyKeys: companions.availableKeys
-    });
+
+    if (isIncompleteNativeSourceSet(bundle) || bundle.completeness === 'partial') {
+      const resolution: ResolutionResult = {
+        status: 'unresolved',
+        sourceType: 'manual-review',
+        serviceName,
+        confidence: 0,
+        specPath: '',
+        specFilesJson: '',
+        specFormat: only.format,
+        contractClass: bundle.contractClass ?? 'partial',
+        evidence: [...only.evidence, ...bundle.evidence]
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+
+    if ((bundle.artifacts?.length ?? 0) > 0) {
+      const written = await writeSpecExport(
+        inputs,
+        serviceName,
+        bundle,
+        dependencies.writeSpecFile,
+        'iac-local',
+        dependencies.afterStageMemberWrite,
+        dependencies.afterCanonicalSwap
+      );
+      if (written.incompleteSourceSet) {
+        const resolution = resolutionFromIncompleteExport({
+          serviceName,
+          written,
+          sourceType: 'repo-spec',
+          confidence: 0,
+          evidence: only.evidence
+        });
+        return {
+          mode: inputs.mode,
+          discovered: [],
+          resolution,
+          outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+        };
+      }
+      const resolution: ResolutionResult = {
+        status: 'resolved',
+        sourceType: 'repo-spec',
+        serviceName,
+        confidence: 100,
+        specPath: written.specPath,
+        specFilesJson: written.specFilesJson,
+        specFormat: written.specFormat,
+        contractClass: written.contractClass,
+        ...(written.derived
+          ? {
+              derivedOpenApiPath: written.derived.path,
+              derivedOpenApiVersion: written.derived.version,
+              derivedOpenApiCompleteness: written.derived.completeness,
+              derivedOpenApiFormat: written.derived.format,
+              derivedOpenApiEvidence: written.derived.evidence
+            }
+          : {}),
+        evidence: [...only.evidence, ...written.evidence]
+      };
+      return {
+        mode: inputs.mode,
+        discovered: [],
+        resolution,
+        outputs: buildExecutionOutputs({ mode: inputs.mode, discovered: [], resolution })
+      };
+    }
+
     const resolution = chooseSource({
       existingSpecPath: only.path,
       existingSpecFormat: only.format,
-      existingSpecEvidence: [...only.evidence, ...fidelity.evidence],
-      existingContractClass: fidelity.contractClass,
-      fallbackServiceName: inputs.expectedServiceName ?? inputs.repoContext.repoSlug?.split('/').pop()
+      existingSpecEvidence: [...only.evidence, ...bundle.evidence],
+      existingContractClass: bundle.contractClass,
+      fallbackServiceName: serviceName
     });
+    resolution.specFilesJson = '';
     return {
       mode: inputs.mode,
       discovered: [],
@@ -1822,27 +2422,23 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     const provider = new IacLocalProvider(iacScan);
     const exportResult = await provider.exportSpec(only);
     const serviceName = resolveServiceName(only, inputs.serviceMapping);
-    const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile, 'iac-local');
-    const resolution: ResolutionResult = {
-      status: 'resolved',
-      sourceType: 'iac-embedded',
+    const written = await writeSpecExport(
+      inputs,
       serviceName,
+      exportResult,
+      dependencies.writeSpecFile,
+      'iac-local',
+      dependencies.afterStageMemberWrite,
+      dependencies.afterCanonicalSwap
+    );
+    const resolution = resolutionFromWrittenExport({
+      written,
+      serviceName,
+      sourceType: 'iac-embedded',
       confidence: 100,
-      specPath: written.specPath,
       providerType: 'iac-local',
-      specFormat: written.specFormat,
-      contractClass: written.contractClass,
-      ...(written.derived
-        ? {
-            derivedOpenApiPath: written.derived.path,
-            derivedOpenApiVersion: written.derived.version,
-            derivedOpenApiCompleteness: written.derived.completeness,
-            derivedOpenApiFormat: written.derived.format,
-            derivedOpenApiEvidence: written.derived.evidence
-          }
-        : {}),
-      evidence: [...only.evidence, ...exportResult.evidence]
-    };
+      evidence: [...only.evidence, ...exportResult.evidence, ...written.evidence]
+    });
     return {
       mode: inputs.mode,
       discovered: [],
@@ -1970,33 +2566,29 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
     }
     const exportResult = await provider.exportSpec(target);
     const serviceName = resolveServiceName(target, inputs.serviceMapping);
-    const written = await writeSpecExport(inputs, serviceName, exportResult, dependencies.writeSpecFile, 'api-center');
+    const written = await writeSpecExport(
+      inputs,
+      serviceName,
+      exportResult,
+      dependencies.writeSpecFile,
+      'api-center',
+      dependencies.afterStageMemberWrite,
+      dependencies.afterCanonicalSwap
+    );
     const selectionEvidence =
       selectors.bindingEvidence.length > 0
         ? selectors.bindingEvidence
         : ['Caller-selected API Center definition ID'];
-    const resolution: ResolutionResult = {
-      status: 'resolved',
-      sourceType: 'api-center-export',
+    const resolution = resolutionFromWrittenExport({
+      written,
       serviceName,
+      sourceType: 'api-center-export',
       confidence: 100,
-      specPath: written.specPath,
       ...(target.apiId ? { apiId: target.apiId } : {}),
       providerType: 'api-center',
-      specFormat: written.specFormat,
-      contractClass: written.contractClass,
-      ...(written.derived
-        ? {
-            derivedOpenApiPath: written.derived.path,
-            derivedOpenApiVersion: written.derived.version,
-            derivedOpenApiCompleteness: written.derived.completeness,
-            derivedOpenApiFormat: written.derived.format,
-            derivedOpenApiEvidence: written.derived.evidence
-          }
-        : {}),
       providerProbes: probes,
-      evidence: [...selectionEvidence, ...target.evidence, ...exportResult.evidence]
-    };
+      evidence: [...selectionEvidence, ...target.evidence, ...exportResult.evidence, ...written.evidence]
+    });
     return {
       mode: inputs.mode,
       discovered: [],
@@ -2182,38 +2774,29 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           serviceName,
           exportResult,
           dependencies.writeSpecFile,
-          target.providerType
+          target.providerType,
+          dependencies.afterStageMemberWrite,
+          dependencies.afterCanonicalSwap
         );
         const selectionEvidence = selectors.bindingEvidence.length > 0
           ? selectors.bindingEvidence
           : [`Caller-selected API ID`];
-        const resolution: ResolutionResult = {
-          status: 'resolved',
-          sourceType: sourceTypeFor(target.providerType),
+        const resolution = resolutionFromWrittenExport({
+          written,
           serviceName,
+          sourceType: sourceTypeFor(target.providerType),
           confidence: 100,
-          specPath: written.specPath,
           ...(target.apiId ? { apiId: target.apiId } : {}),
           providerType: target.providerType,
-          specFormat: written.specFormat,
-          contractClass: written.contractClass,
-          ...(written.derived
-            ? {
-                derivedOpenApiPath: written.derived.path,
-                derivedOpenApiVersion: written.derived.version,
-                derivedOpenApiCompleteness: written.derived.completeness,
-                derivedOpenApiFormat: written.derived.format,
-                derivedOpenApiEvidence: written.derived.evidence
-              }
-            : {}),
           providerProbes: probes,
           evidence: [
             ...selectionEvidence,
             ...target.evidence,
             ...exportResult.evidence,
+            ...written.evidence,
             ...metricsEvidence(hydrationMetrics)
           ]
-        };
+        });
         return {
           mode: inputs.mode,
           discovered: [],
@@ -2402,31 +2985,21 @@ async function runResolveOne(inputs: ResolvedInputs, dependencies: AzureDependen
           serviceName,
           exportResult,
           dependencies.writeSpecFile,
-          target.providerType
+          target.providerType,
+          dependencies.afterStageMemberWrite,
+          dependencies.afterCanonicalSwap
         );
-        const resolution: ResolutionResult = {
-          status: 'resolved',
-          sourceType: sourceTypeFor(target.providerType),
+        const resolution = resolutionFromWrittenExport({
+          written,
           serviceName,
+          sourceType: sourceTypeFor(target.providerType),
           confidence: workingBest.confidence,
-          specPath: written.specPath,
           ...(target.apiId ? { apiId: target.apiId } : {}),
           providerType: target.providerType,
-          specFormat: written.specFormat,
-          contractClass: written.contractClass,
-          ...(written.derived
-            ? {
-                derivedOpenApiPath: written.derived.path,
-                derivedOpenApiVersion: written.derived.version,
-                derivedOpenApiCompleteness: written.derived.completeness,
-                derivedOpenApiFormat: written.derived.format,
-                derivedOpenApiEvidence: written.derived.evidence
-              }
-            : {}),
           ...(narrowingMetadata ? { narrowing: narrowingMetadata } : {}),
           providerProbes: probes,
-          evidence: [...workingBest.evidence, ...metricsEvidence(hydrationMetrics)]
-        };
+          evidence: [...workingBest.evidence, ...written.evidence, ...metricsEvidence(hydrationMetrics)]
+        });
         return {
           mode: inputs.mode,
           discovered: [],
@@ -2627,8 +3200,19 @@ async function runDiscoverMany(inputs: ResolvedInputs, dependencies: AzureDepend
         serviceName,
         exportResult,
         dependencies.writeSpecFile,
-        candidate.providerType
+        candidate.providerType,
+        dependencies.afterStageMemberWrite,
+        dependencies.afterCanonicalSwap
       );
+      if (written.incompleteSourceSet || !written.specPath) {
+        summary.failed += 1;
+        core.warning(
+          sanitizeLogMessage(
+            `Export incomplete for ${candidate.name}: native dependency source set is partial; blanking downstream outputs`
+          )
+        );
+        continue;
+      }
       writtenPaths.set(written.specPath, candidate.id);
       discovered.push({
         serviceName,
@@ -2834,6 +3418,7 @@ export function buildExecutionOutputs(result: {
       'source-type': 'discover-estate',
       'mapping-confidence': '0',
       'spec-path': '',
+      'spec-files-json': '',
       'api-id': '',
       'service-name': '',
       'services-json': '[]',
@@ -2871,6 +3456,7 @@ export function buildExecutionOutputs(result: {
       'source-type': 'discover-many',
       'mapping-confidence': unresolved ? '0' : discovered.length > 0 ? '100' : '0',
       'spec-path': '',
+      'spec-files-json': '',
       'api-id': '',
       'service-name': '',
       'services-json': JSON.stringify(discovered),
@@ -2907,6 +3493,7 @@ export function buildExecutionOutputs(result: {
     'source-type': resolution.sourceType,
     'mapping-confidence': String(resolution.confidence),
     'spec-path': resolution.specPath ?? '',
+    'spec-files-json': resolution.specFilesJson ?? '',
     'api-id': resolution.apiId ?? '',
     'service-name': resolution.serviceName,
     'services-json': '[]',

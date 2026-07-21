@@ -230,6 +230,7 @@ export function toDotenv(outputs: Record<string, string>): string {
     POSTMAN_AZURE_SPEC_SOURCE_TYPE: outputs['source-type'] ?? '',
     POSTMAN_AZURE_SPEC_MAPPING_CONFIDENCE: outputs['mapping-confidence'] ?? '',
     POSTMAN_AZURE_SPEC_PATH: outputs['spec-path'] ?? '',
+    POSTMAN_AZURE_SPEC_FILES_JSON: outputs['spec-files-json'] ?? '',
     POSTMAN_AZURE_SPEC_API_ID: outputs['api-id'] ?? '',
     POSTMAN_AZURE_SPEC_SERVICE_NAME: outputs['service-name'] ?? '',
     POSTMAN_AZURE_SPEC_SERVICES_JSON: outputs['services-json'] ?? '',

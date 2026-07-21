@@ -16,7 +16,9 @@ export interface SpecCandidate {
 /**
  * Optional companion artifact already present as exact bytes in a provider
  * response (or path-confined repository sibling). Never synthesized by
- * concatenating or remotely fetching with Azure credentials.
+ * concatenating or remotely fetching with Azure credentials. Relative paths are
+ * NFC-safe POSIX keys under the service export folder; runtime inventory and
+ * staged materialization preserve these exact bytes and normalized paths.
  */
 export interface SpecExportArtifact {
   /** Path relative to the service export folder (no `..`, no absolute). */
