@@ -18,6 +18,7 @@ const LOCKED_OUTPUT_ORDER = [
   'source-type',
   'mapping-confidence',
   'spec-path',
+  'spec-files-json',
   'api-id',
   'service-name',
   'services-json',
@@ -87,7 +88,7 @@ describe('action contract', () => {
     expect(sourceDescription).toContain('discover-estate');
   });
 
-  it('AZ-CONTRACT-005: buildExecutionOutputs emits all 24 keys in every mode with locked empty behavior', () => {
+  it('AZ-CONTRACT-005: buildExecutionOutputs emits all 25 keys in every mode with locked empty behavior', () => {
     const resolveOne = buildExecutionOutputs({
       mode: 'resolve-one',
       discovered: [],
@@ -106,6 +107,7 @@ describe('action contract', () => {
     expect(Object.keys(resolveOne).sort()).toEqual([...LOCKED_OUTPUT_ORDER].sort());
     expect(resolveOne['services-json']).toBe('[]');
     expect(resolveOne['service-count']).toBe('0');
+    expect(resolveOne['spec-files-json']).toBe('');
     expect(resolveOne['export-summary-json']).toBe(JSON.stringify({ attempted: 0, exported: 0, failed: 0, skipped: 0 }));
     expect(resolveOne['contract-origin']).toBe('');
     expect(resolveOne['contract-metadata-path']).toBe('');
@@ -147,6 +149,7 @@ describe('action contract', () => {
     expect(discoverEstate['source-type']).toBe('discover-estate');
     expect(discoverEstate['repo-count']).toBe('1');
     expect(discoverEstate['spec-path']).toBe('');
+    expect(discoverEstate['spec-files-json']).toBe('');
     expect(discoverEstate['services-json']).toBe('[]');
   });
 

@@ -92,6 +92,8 @@ outputs:
     description: Numeric confidence score for the selected service candidate.
   spec-path:
     description: Path to the resolved or generated specification when available.
+  spec-files-json:
+    description: 'Optional JSON inventory of an authoritative multi-file definition set (schemaVersion 1: root, format, completeness, provenance, sorted files with path/role/bytes/sha256). Empty for single-file, unresolved, or incomplete/partial source sets. Never embeds file content.'
   api-id:
     description: Full APIM API ARM resource ID or API Center definition ARM resource ID when those providers resolve; empty for App Service or IaC-local resolutions.
   service-name:
