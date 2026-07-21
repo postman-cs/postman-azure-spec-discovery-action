@@ -85,3 +85,22 @@ jobs:
         with:
           name: expected-dist
           path: dist/
+
+  windows:
+    name: Windows gate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm run lint
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run bundle
+      - run: npm run verify:dist:assert
