@@ -1184,7 +1184,7 @@ async function writeUtf8Atomic(targetPath: string, content: string): Promise<voi
 }
 
 async function fsyncFile(absolutePath: string): Promise<void> {
-  const handle = await open(absolutePath, 'r');
+  const handle = await open(absolutePath, 'r+');
   try {
     await handle.sync();
   } finally {
