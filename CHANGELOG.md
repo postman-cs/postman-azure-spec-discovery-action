@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.0
+
+Multi-protocol and multi-file definition handoff for Postman onboarding.
+
+- Add MCP JSON discovery and preserve complete protobuf and WSDL/XSD dependency sets with a content-free `spec-files-json` inventory.
+- Export documented APIM protobuf schemas, Custom API WSDL, and exact authorized runtime declarations without inferred endpoint probing.
+- Production-wire native dependency bundles with atomic staging, rollback, stale-member cleanup, symlink confinement, and source-set limits.
+- Keep unresolved cloud dependencies partial/manual and preserve explicit fidelity classes through resolution outputs.
+
 ## v1.2.0
 
 Gateway-tag repo resolution: per-service-repo automatic discovery via ownership tags (discovery-hub concept applied at the repo level).
