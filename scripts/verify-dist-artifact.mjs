@@ -36,12 +36,12 @@ const root = path.resolve(process.argv[2] ?? defaultRoot);
 const distDir = path.join(root, 'dist');
 const SHEBANG = '#!/usr/bin/env node\n';
 
-// Optional third-party peers that bundled runtimes (e.g. node-fetch) try to
+// Optional third-party peers that bundled runtimes (e.g. node-fetch/debug) try to
 // require and swallow on failure. These are NOT runtime dependencies of the
 // action: the bundle runs correctly whether or not they resolve, and the
 // catch swallows any error. Kept narrow, explicit, and documented so any NEW
 // third-party require() in code position still fails the gate.
-const OPTIONAL_PEER_ALLOWLIST = Object.freeze(['encoding']);
+const OPTIONAL_PEER_ALLOWLIST = Object.freeze(['encoding', 'supports-color']);
 
 function fail(message) {
   console.error(`verify-dist-artifact: ${message}`);

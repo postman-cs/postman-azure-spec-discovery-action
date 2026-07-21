@@ -306,7 +306,6 @@ export function extractApiCenterExportPayload(body: unknown): { kind: 'inline'; 
               for (const def of boundedChildren(defs)) {
                 if (!def.id || !def.name) continue;
                 if (definitions.length >= MAX_API_CENTER_INVENTORY) {
-                  truncated = true;
                   return markTruncated();
                 }
                 const defProps = asRecord(def.properties) ?? {};
