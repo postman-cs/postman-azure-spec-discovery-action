@@ -820,7 +820,8 @@ async function resolveBoundNativeSpec(
     throw new Error(
       sanitizeLogMessage(
         `Exact nativeSpecPath could not be read as a supported native specification: ${detail}`
-      )
+      ),
+      { cause: error }
     );
   }
 
@@ -943,7 +944,8 @@ export async function resolveSubscriptionId(
       );
       if (!match) {
         throw new Error(
-          'The explicit --subscription-id could not be verified: direct lookup was denied and the subscription is not visible via listing.'
+          'The explicit --subscription-id could not be verified: direct lookup was denied and the subscription is not visible via listing.',
+          { cause: error }
         );
       }
       return explicitSubscriptionId;
@@ -3310,7 +3312,7 @@ async function enrichEstateWithSourceControl(
     }
   }
 
-  let associations: SourceControlAssociation[] = [];
+  let associations: SourceControlAssociation[];
   try {
     associations = await querySourceControlAssociations(targets, dependencies);
   } catch (error) {
