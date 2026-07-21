@@ -169,7 +169,7 @@ describe('discover-estate mode', () => {
     expect(result.estate).toHaveLength(1);
     expect(result.discovered).toEqual([]);
     expect(writes).toHaveLength(1);
-    expect(writes[0]?.path.endsWith('discovered-specs/repos.json')).toBe(true);
+    expect(writes[0]?.path.replace(/\\/g, '/').endsWith('discovered-specs/repos.json')).toBe(true);
     const written = JSON.parse(writes[0]?.content ?? '[]') as unknown[];
     expect(written).toHaveLength(1);
 
