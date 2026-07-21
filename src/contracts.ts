@@ -117,6 +117,11 @@ export interface ResolutionResult {
   serviceName: string;
   confidence: number;
   specPath?: string;
+  /**
+   * Optional multi-file definition inventory JSON (schemaVersion 1). Empty when
+   * single-file, unresolved, or incomplete/partial source sets.
+   */
+  specFilesJson?: string;
   apiId?: string;
   providerType?: ProviderType;
   specFormat?: SpecFormat;
@@ -283,6 +288,10 @@ export const actionContract: AzureSpecDiscoveryActionContract = {
     },
     'spec-path': {
       description: 'Path to the resolved or generated specification when available.'
+    },
+    'spec-files-json': {
+      description:
+        'Optional JSON inventory of an authoritative multi-file definition set (schemaVersion 1: root, format, completeness, provenance, sorted files with path/role/bytes/sha256). Empty for single-file, unresolved, or incomplete/partial source sets. Never embeds file content.'
     },
     'api-id': {
       description:
