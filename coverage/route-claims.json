@@ -598,9 +598,9 @@
       "localOnlyRationale": null
     },
     {
-      "id": "association.github-org-repo-github-org-repo",
+      "id": "association.github-org-repo",
       "provider": "association",
-      "route": "github-org-repo-githuborg-githubrepo-selection",
+      "route": "githuborg-githubrepo-selection",
       "implementationFiles": [
         "src/lib/resolve/narrowing-pipeline.ts",
         "src/lib/estate/enumerate.ts"

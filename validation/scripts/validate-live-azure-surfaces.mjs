@@ -564,7 +564,7 @@ async function seedCanonicalCleanRepo(workspace, { gatewayHostname }) {
   );
 }
 
-/** the customer clean-repo fixture: path-selects orders-live; distinct from canonical path evidence. */
+/** GithubOrg/GithubRepo clean-repo fixture: path-selects orders-live; distinct from canonical path evidence. */
 async function seedGithubOrgRepoCleanRepo(workspace, { gatewayHostname }) {
   await seedCleanRepoGateway(workspace, { gatewayHostname, apiPath: 'orders-live' });
   await writeFile(
@@ -1728,7 +1728,7 @@ async function runDefaultCases({
 
   // --- APIM clean-repo / formats ---
   // No --api-id / --repo-slug: repository context comes from GITHUB_REPOSITORY.
-  // Path fixtures isolate canonical vs the customer; inherited service tags alone do not select.
+  // Path fixtures isolate canonical vs GithubOrg/GithubRepo; inherited service tags alone do not select.
   defineCase('apim-clean-repo-tag', async (workspace) => {
     const gated = capabilityGate('apim-multi');
     if (gated) return gated;

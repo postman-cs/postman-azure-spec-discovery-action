@@ -140,7 +140,7 @@ describe('R1 host+path and tag selection', () => {
   });
 
   it('R1-TAG-001: unique GithubOrg/GithubRepo tag selects; inherited service tag across two APIs narrows only', async () => {
-    const github-org-repo = await runNarrowingPipeline(
+    const githubOrgRepo = await runNarrowingPipeline(
       {
         repoSlug: 'org/payments',
         serviceHints: [],
@@ -154,8 +154,8 @@ describe('R1 host+path and tag selection', () => {
         candidate(arm('orders'), { tags: {}, tagSource: 'api' })
       ]
     );
-    expect(github-org-repo?.mode).toBe('select');
-    expect(github-org-repo?.apiIds).toEqual([arm('payments')]);
+    expect(githubOrgRepo?.mode).toBe('select');
+    expect(githubOrgRepo?.apiIds).toEqual([arm('payments')]);
 
     const inherited = await runNarrowingPipeline(
       {

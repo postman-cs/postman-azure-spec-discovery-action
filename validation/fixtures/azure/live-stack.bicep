@@ -35,7 +35,7 @@ resource apim 'Microsoft.ApiManagement/service@2023-05-01-preview' = {
     'postman:project-name': 'payments-live'
     // Canonical association tag (service-inherited under multi-API).
     'postman:repo': repoSlug
-    // the customer association pair (service-inherited under multi-API).
+    // GithubOrg/GithubRepo association pair (service-inherited under multi-API).
     GithubOrg: githubOrg
     GithubRepo: githubRepo
   }

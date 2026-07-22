@@ -244,7 +244,7 @@ describe('resource graph paging (direct ARM REST)', () => {
 });
 
 describe('repo tag lookup query', () => {
-  it('AZ-GRAPH-003: query covers canonical, custom, and GithubOrg/GithubRepo pair keys with case-insensitive value matching', () => {
+  it('AZ-GRAPH-003: query covers canonical, custom, and GithubOrg/GithubRepo keys with case-insensitive value matching', () => {
     const kql = buildRepoTagLookupQuery('Org/Payments.git', ['team:source-repo'], 'my-rg');
 
     // Slug is normalized (trailing .git stripped) and compared with =~.

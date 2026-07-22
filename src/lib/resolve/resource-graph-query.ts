@@ -43,14 +43,14 @@ function tagKeyCaseVariants(key: string): string[] {
   return [...new Set([key, lower, upperFirst, pascalized])];
 }
 
-/** GithubOrg/GithubRepo pair tag-key casings mirrored from estate enumeration's KQL key list. */
+/** GithubOrg/GithubRepo tag-key casings mirrored from estate enumeration's KQL key list. */
 const GITHUB_ORG_KEY_VARIANTS = ['GithubOrg', 'githuborg', 'Githuborg', 'GitHubOrg'];
 const GITHUB_REPO_KEY_VARIANTS = ['GithubRepo', 'githubrepo', 'Githubrepo', 'GitHubRepo'];
 
 /**
  * Targeted tag-association lookup for the narrowing tag-prefilter fallback.
  * Matches resources whose select-grade repo tag equals the repo slug
- * (canonical postman:repo plus any caller-supplied keys), or whose the customer-style
+ * (canonical postman:repo plus any caller-supplied keys), or whose
  * GithubOrg/GithubRepo pair composes to the slug. Values compare
  * case-insensitively; a trailing .git on the tag value is tolerated.
  */
