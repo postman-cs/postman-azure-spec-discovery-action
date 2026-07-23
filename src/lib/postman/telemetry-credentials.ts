@@ -9,6 +9,7 @@ export interface PrepareTelemetryCredentialsOptions {
   onToken?: (token: string) => void;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  onWarning?: (message: string) => void;
 }
 
 export const TELEMETRY_ENRICHMENT_TIMEOUT_MS = 5000;
@@ -58,8 +59,10 @@ export async function prepareTelemetryCredentials(
     if (!accessToken && apiKey && provider.canRefresh()) {
       try {
         await provider.refresh();
-      } catch {
+      } catch (error) {
         // Telemetry-only path: discovery continues without account_type enrichment.
+        options.onWarning?.(`postman: telemetry credential enrichment failed. ${String(error instanceof Error ? error.message : error)}`);
+        return { provider };
       }
     }
 

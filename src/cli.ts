@@ -294,7 +294,8 @@ export async function runCli(
   telemetry.setTeamId(resolveTelemetryTeamId(config.inputEnv));
   const { accountType } = await prepareTelemetryCredentials({
     postmanApiKey: config.inputEnv.INPUT_POSTMAN_API_KEY ?? env.POSTMAN_API_KEY,
-    postmanAccessToken: config.inputEnv.INPUT_POSTMAN_ACCESS_TOKEN ?? env.POSTMAN_ACCESS_TOKEN
+    postmanAccessToken: config.inputEnv.INPUT_POSTMAN_ACCESS_TOKEN ?? env.POSTMAN_ACCESS_TOKEN,
+    onWarning: (message) => reporter.warning(message)
   });
   try {
     const sdkOptions = { requestTimeoutMs: inputs.requestTimeoutMs, maxAttempts: inputs.maxAttempts };
