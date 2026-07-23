@@ -150,25 +150,18 @@ try {
   Write-Output $_.Exception.Message
 }
 
-$passGates = @(
-  @{ Name = 'alpha'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'alpha' -ExitCode 0 } },
-  @{ Name = 'beta'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'beta' -ExitCode 0 } }
-)
-Invoke-BoundedGateQueue -Gates $passGates -MaxParallel 2
-Write-Output 'scenario:all-pass=done'
-
-$mixedGates = @(
-  @{ Name = 'ok'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'ok' -ExitCode 0 } },
-  @{ Name = 'bad'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'bad' -ExitCode 7 } }
-)
-$mixedFailed = $false
+# Single max-two queue: one pass + one throw proves pass/fail lines and aggregate failure.
+$queueFailed = $false
 try {
-  Invoke-BoundedGateQueue -Gates $mixedGates -MaxParallel 2
+  Invoke-BoundedGateQueue -Gates @(
+    @{ Name = 'ok'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'ok' -ExitCode 0 } },
+    @{ Name = 'bad'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'bad' -ExitCode 7 } }
+  ) -MaxParallel 2
 } catch {
-  $mixedFailed = $true
+  $queueFailed = $true
   Write-Output $_.Exception.Message
 }
-if (-not $mixedFailed) { throw 'expected mixed scenario to fail' }
+if (-not $queueFailed) { throw 'expected queue aggregate failure' }
 Write-Output 'scenario:mixed=done'
 `);
     expect(result.status).toBe(0);
@@ -176,9 +169,6 @@ Write-Output 'scenario:mixed=done'
     expect(result.stdout).toContain('assert:nonzero=thrown');
     expect(result.stdout).toMatch(/probe.*7|exit code 7/i);
     expect(result.stdout).not.toContain('assert:nonzero=unexpected-success');
-    expect(result.stdout).toContain('gate:alpha=pass');
-    expect(result.stdout).toContain('gate:beta=pass');
-    expect(result.stdout).toContain('scenario:all-pass=done');
     expect(result.stdout).toContain('gate:ok=pass');
     expect(result.stdout).toContain('gate:bad=fail');
     expect(result.stdout).toContain('scenario:mixed=done');

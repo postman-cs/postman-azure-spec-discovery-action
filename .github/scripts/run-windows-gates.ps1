@@ -1,5 +1,3 @@
-$script:WindowsGatesHelperPath = $MyInvocation.MyCommand.Path
-
 function Assert-NativeGateSucceeded {
   param(
     [Parameter(Mandatory = $true)]
@@ -44,7 +42,7 @@ function Invoke-BoundedGateQueue {
 
   $running = @()
   $results = [ordered]@{}
-  $helperPath = $script:WindowsGatesHelperPath
+  $assertText = ${function:Assert-NativeGateSucceeded}.ToString()
   $previousErrorAction = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
 
@@ -70,10 +68,10 @@ function Invoke-BoundedGateQueue {
 
       $scriptText = $gate.ScriptBlock.ToString()
       $running += Start-ThreadJob -Name $gate.Name -ThrottleLimit $MaxParallel -ScriptBlock {
-        param($HelperPath, $ScriptText)
-        . $HelperPath
+        param($AssertText, $ScriptText)
+        Set-Item -Path function:Assert-NativeGateSucceeded -Value ([scriptblock]::Create($AssertText))
         & ([scriptblock]::Create($ScriptText))
-      } -ArgumentList $helperPath, $scriptText
+      } -ArgumentList $assertText, $scriptText
     }
 
     while ($running.Count -gt 0) {
