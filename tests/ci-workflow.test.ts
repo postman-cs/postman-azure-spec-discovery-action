@@ -5,6 +5,17 @@ import { describe, expect, it } from 'vitest';
 
 const root = process.cwd();
 const ciWorkflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+
+function jobText(workflow: string, jobId: string): string {
+  const jobsBody = workflow.match(/^jobs:\n([\s\S]*)$/m)?.[1] ?? '';
+  const header = `  ${jobId}:\n`;
+  const start = jobsBody.indexOf(header);
+  if (start < 0) return '';
+  const rest = jobsBody.slice(start + header.length);
+  const nextJob = rest.search(/^ {2}[a-zA-Z0-9_-]+:\n/m);
+  return header + (nextJob < 0 ? rest : rest.slice(0, nextJob));
+}
+
 describe('CI workflow contract', () => {
   it('AZ-CI-001: Linux and Windows gates, Node 24, read-only dist assert, no live Azure step', () => {
     const jobsSection = ciWorkflow.slice(ciWorkflow.indexOf('\njobs:\n'));
