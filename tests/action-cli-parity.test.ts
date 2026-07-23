@@ -101,8 +101,6 @@ describe('adapter parity', () => {
     // specs/IaC from the action checkout or CI workspace, and both adapters
     // see identical ambient env (CI sets GITHUB_WORKSPACE; locally unset).
     const emptyRepoRoot = mkdtempSync(join(tmpdir(), 'az-parity-'));
-    const previousCwd = process.cwd();
-    process.chdir(emptyRepoRoot);
     vi.stubEnv('GITHUB_WORKSPACE', emptyRepoRoot);
     vi.stubEnv('POSTMAN_ACTIONS_TELEMETRY', 'off');
     const runtimeDeps = (provider: SpecProvider): Omit<AzureDependencies, 'core'> => ({
@@ -156,7 +154,6 @@ describe('adapter parity', () => {
         expect(cliResult.outputs[name] ?? '', `output ${name}`).toBe(actionOutputs[name] ?? '');
       }
     } finally {
-      process.chdir(previousCwd);
       rmSync(emptyRepoRoot, { recursive: true, force: true });
     }
   });

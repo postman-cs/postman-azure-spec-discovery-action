@@ -6,6 +6,7 @@ export default defineConfig({
     // Telemetry is fire-and-forget; keep it disabled in unit tests so no run
     // ever attempts a network call. Enabled-path tests pass an explicit env.
     env: { POSTMAN_ACTIONS_TELEMETRY: 'off' },
+    pool: process.platform === 'win32' ? 'threads' : 'forks',
     // Live-validation contract tests temporarily replace the committed evidence
     // receipt, so test files must not read that receipt concurrently.
     fileParallelism: false,

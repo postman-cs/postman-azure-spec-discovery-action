@@ -74,16 +74,12 @@ describe('dotenv serialization', () => {
 
 describe('runCli side effects', () => {
   let workspace: string;
-  let previousCwd: string;
 
   beforeEach(async () => {
     workspace = await mkdtemp(path.join(tmpdir(), 'az-cli-run-'));
-    previousCwd = process.cwd();
-    process.chdir(workspace);
   });
 
   afterEach(async () => {
-    process.chdir(previousCwd);
     await rm(workspace, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
