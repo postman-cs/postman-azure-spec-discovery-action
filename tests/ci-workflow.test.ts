@@ -95,6 +95,21 @@ describe('CI workflow contract', () => {
     );
     expect(ciWorkflow).toContain('--from "${{ github.event.pull_request.base.sha }}"');
     expect(ciWorkflow).toContain('--to "${{ github.event.pull_request.head.sha }}"');
+
+    // R10 history-depth matrix: Linux gate needs full history for PR commitlint;
+    // Windows keeps the default/minimum checkout depth.
+    const gate = jobText(ciWorkflow, 'gate');
+    const windows = jobText(ciWorkflow, 'windows');
+    const checkoutIdx = gate.search(/- uses: actions\/checkout@[0-9a-f]{40}/);
+    expect(checkoutIdx).toBeGreaterThanOrEqual(0);
+    const afterCheckout = gate.slice(checkoutIdx);
+    const nextStepRel = afterCheckout.search(/\n {6}- /);
+    const gateCheckout = nextStepRel < 0 ? afterCheckout : afterCheckout.slice(0, nextStepRel);
+    expect(gateCheckout).toMatch(/actions\/checkout@[0-9a-f]{40}/);
+    expect(gateCheckout).toContain('fetch-depth: 0');
+    expect(gate.indexOf('fetch-depth: 0')).toBeGreaterThanOrEqual(0);
+    expect(gate.indexOf('fetch-depth: 0')).toBeLessThan(gate.indexOf('run commitlint'));
+    expect(windows).not.toContain('fetch-depth: 0');
   });
 
   it('AZ-CI-004: Windows composes every npm gate through Assert-NativeGateSucceeded and max=2 queue', () => {
@@ -139,7 +154,7 @@ describe('CI workflow contract', () => {
     expect(windowsHelper).toContain('gate:$($gate.Name)=$status');
   });
 
-  it('AZ-CI-006: Assert-NativeGateSucceeded and bounded queue prove exit mapping without nested natives', () => {
+  it('AZ-CI-006: queue all-pass plus 3-gate drain/refill with one real native failure', () => {
     const result = runHelperScenario(`
 Assert-NativeGateSucceeded -Name 'probe' -ExitCode 0
 Write-Output 'assert:zero=ok'
@@ -158,12 +173,16 @@ Invoke-BoundedGateQueue -Gates @(
 ) -MaxParallel 2
 Write-Output 'scenario:all-pass=done'
 
-# Single max-two queue: one pass + one throw proves pass/fail lines and aggregate failure.
+# Three-gate max-two queue exercises drain/refill; one gate runs a real native failure.
 $queueFailed = $false
 try {
   Invoke-BoundedGateQueue -Gates @(
-    @{ Name = 'ok'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'ok' -ExitCode 0 } },
-    @{ Name = 'bad'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'bad' -ExitCode 7 } }
+    @{ Name = 'ok1'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'ok1' -ExitCode 0 } },
+    @{ Name = 'ok2'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'ok2' -ExitCode 0 } },
+    @{ Name = 'bad'; ScriptBlock = {
+        & node -e "process.exit(7)"
+        Assert-NativeGateSucceeded -Name 'bad' -ExitCode $LASTEXITCODE
+      } }
   ) -MaxParallel 2
 } catch {
   $queueFailed = $true
@@ -180,7 +199,8 @@ Write-Output 'scenario:mixed=done'
     expect(result.stdout).toContain('gate:pass-a=pass');
     expect(result.stdout).toContain('gate:pass-b=pass');
     expect(result.stdout).toContain('scenario:all-pass=done');
-    expect(result.stdout).toContain('gate:ok=pass');
+    expect(result.stdout).toContain('gate:ok1=pass');
+    expect(result.stdout).toContain('gate:ok2=pass');
     expect(result.stdout).toContain('gate:bad=fail');
     expect(result.stdout).toContain('scenario:mixed=done');
   }, 10_000);

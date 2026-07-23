@@ -19,6 +19,21 @@ const parseExactSemver = (value) => {
   return raw.split('.').map((part) => Number(part));
 };
 
+/** True only for an explicit npm E404; outage/auth/timeout/generic errors return false. */
+export function isExplicitNpmE404(output) {
+  const text = String(output ?? '');
+  return /(?:^|\n)npm (?:error|ERR!) code E404(?:\n|$)/m.test(text) || /(?:^|\n)npm error 404\b/m.test(text);
+}
+
+/** True only for major 0, which stays frozen per RELEASE_POLICY. */
+export function isFrozenAliasMajor(major) {
+  const raw = typeof major === 'number' ? String(major) : String(major ?? '').trim();
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`invalid major: ${major}`);
+  }
+  return Number(raw) === 0;
+}
+
 export function validateTagVersion(tag, packageVersion) {
   if (tag !== `v${packageVersion}`) {
     throw new Error(`expected exact immutable tag v${packageVersion}; got ${tag}`);

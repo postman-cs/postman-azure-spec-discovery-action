@@ -8,6 +8,8 @@ export interface ReleaseManifest {
   artifacts: Array<{ path: string; sha256: string }>;
 }
 
+export function isExplicitNpmE404(output: string | null | undefined): boolean;
+export function isFrozenAliasMajor(major: string | number): boolean;
 export function validateTagVersion(tag: string, packageVersion: string): void;
 export function validateManifest(
   manifest: ReleaseManifest,

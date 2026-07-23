@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   decideAliasVersion,
+  isExplicitNpmE404,
+  isFrozenAliasMajor,
   readTarballPackageIdentity,
   validateManifest,
   validateTagVersion,
@@ -168,6 +170,26 @@ describe('release artifact verifier', () => {
     expect(releaseWorkflow).toContain('release-manifest.json');
     expect(releaseWorkflow).not.toMatch(/path:\s*[\s\S]*node_modules/);
     expect(releaseWorkflow).toContain('${{ github.run_id }}-${{ github.run_attempt }}');
+  });
+
+  it('AZ-ARTIFACT-006b: isExplicitNpmE404 is true only for explicit npm E404 forms', () => {
+    expect(isExplicitNpmE404('npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/pkg')).toBe(true);
+    expect(isExplicitNpmE404('npm ERR! code E404\nnpm ERR! 404 Not Found')).toBe(true);
+    expect(isExplicitNpmE404('npm error code E401\nnpm error 401 Unauthorized')).toBe(false);
+    expect(isExplicitNpmE404('npm error code E403')).toBe(false);
+    expect(isExplicitNpmE404('npm error code E500')).toBe(false);
+    expect(isExplicitNpmE404('npm error code ETIMEDOUT')).toBe(false);
+    expect(isExplicitNpmE404('network socket hang up')).toBe(false);
+    expect(isExplicitNpmE404('')).toBe(false);
+  });
+
+  it('AZ-ARTIFACT-006c: isFrozenAliasMajor freezes only major 0', () => {
+    expect(isFrozenAliasMajor(0)).toBe(true);
+    expect(isFrozenAliasMajor('0')).toBe(true);
+    expect(isFrozenAliasMajor(1)).toBe(false);
+    expect(isFrozenAliasMajor(2)).toBe(false);
+    expect(() => isFrozenAliasMajor('x')).toThrow();
+    expect(() => isFrozenAliasMajor(-1)).toThrow();
   });
 
   it('AZ-ARTIFACT-006: verifyReleaseArtifactsDirectory rejects hidden and ordinary extras', () => {

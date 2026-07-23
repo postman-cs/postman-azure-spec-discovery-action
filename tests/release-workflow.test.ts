@@ -31,7 +31,7 @@ describe('release workflow publishing contract', () => {
     expect(releaseWorkflow).not.toContain('PUBLISH_TAGS');
     expect(releaseWorkflow).toContain('if [ "$TAG_VERSION" = "$MAJOR" ] || [ "$TAG_VERSION" = "$MAJOR.$MINOR" ]; then');
     expect(releaseWorkflow).toContain('release_kind=alias');
-    expect(releaseWorkflow).toContain('npm publish ./release.tgz --provenance --access public');
+    expect(releaseWorkflow).toMatch(/['"]publish['"]\s*,\s*['"]\.\/release\.tgz['"]\s*,\s*['"]--provenance['"]\s*,\s*['"]--access['"]\s*,\s*['"]public['"]/);
     expect(releaseWorkflow).toContain('uses: softprops/action-gh-release@');
     expect(releaseWorkflow).toContain('files: release-artifacts/release.tgz');
     expect(releaseWorkflow).toContain('git fetch --depth=1 origin main --no-tags');
@@ -98,36 +98,50 @@ describe('release workflow publishing contract', () => {
     expect(releaseWorkflow).not.toContain('go install github.com/rhysd/actionlint');
   });
 
-  it('AZ-RELEASE-005: publish hardens an executable byte verifier without comment-only script matches', () => {
+  it('AZ-RELEASE-005: publish extracts and executes the packaged canonical verifier before mutations', () => {
     const publish = section('\n  publish:', '\n  advance-rolling-aliases:');
-    const verifyStep = publish.match(/- name: Verify release artifacts\n([\s\S]*?)(?=\n {6}- name: |\n?$)/)?.[1] ?? '';
-    expect(verifyStep).toContain('working-directory: release-artifacts');
-    expect(verifyStep).toContain('run: |');
-    expect(verifyStep).toContain("readdirSync('.').sort()");
-    expect(verifyStep).not.toContain("startsWith('.')");
-    expect(verifyStep).not.toMatch(/readdirSync\('\.'\)\.filter/);
-    expect(verifyStep).toContain('release-manifest.json');
-    expect(verifyStep).toContain('release.tgz');
-    expect(verifyStep).toContain("path !== 'release.tgz'");
-    expect(verifyStep).not.toContain('Equivalent to node scripts/verify-release-artifacts.mjs');
-    expect(verifyStep).not.toMatch(/manifest\.artifacts\.map\(\s*(?:\(|\{)?\s*(?:\{\s*)?path/);
-    expect(verifyStep).not.toMatch(/readFileSync\(\s*path\s*\)/);
+    expect(publish).toContain('package/scripts/verify-release-artifacts.mjs');
+    expect(publish).toContain('"$RUNNER_TEMP/verify-release-artifacts.mjs"');
+    expect(publish).toMatch(/tar\s+-xOf\s+release\.tgz\s+package\/scripts\/verify-release-artifacts\.mjs\s*>\s*"\$RUNNER_TEMP\/verify-release-artifacts\.mjs"/);
+    expect(publish).toContain('working-directory: release-artifacts');
+    expect(publish).toContain('node "$RUNNER_TEMP/verify-release-artifacts.mjs"');
+    expect(publish).not.toContain('node scripts/verify-release-artifacts.mjs');
+    expect(publish).not.toContain("readdirSync('.').sort()");
+    expect(publish).not.toContain('createHash');
+    expect(publish).not.toMatch(/manifest\.artifacts\.map\(\s*(?:\(|\{)?\s*(?:\{\s*)?path/);
     expect(publish).not.toMatch(/#\s*Equivalent to node scripts\/verify-release-artifacts\.mjs/);
+    assertOrder(
+      'node "$RUNNER_TEMP/verify-release-artifacts.mjs"',
+      'Publish or verify npm package identity',
+      publish
+    );
+    assertOrder(
+      'node "$RUNNER_TEMP/verify-release-artifacts.mjs"',
+      'Publish GitHub release',
+      publish
+    );
   });
 
-  it('AZ-RELEASE-006: npm SRI/identity runs before softprops, and aliases run after publish', () => {
+  it('AZ-RELEASE-006: npm SRI/identity uses explicit E404 only, before softprops; aliases after publish', () => {
     const publish = section('\n  publish:', '\n  advance-rolling-aliases:');
     assertOrder('Publish or verify npm package identity', 'Publish GitHub release', publish);
-    assertOrder('npm publish ./release.tgz --provenance --access public', 'softprops/action-gh-release', releaseWorkflow);
+    assertOrder("['publish', './release.tgz', '--provenance', '--access', 'public']", 'softprops/action-gh-release', releaseWorkflow);
     assertOrder('\n  publish:', '\n  advance-rolling-aliases:');
     expect(publish).toContain('dist.integrity');
-    expect(publish).toContain('sha512-');
-    expect(publish).toContain('npm integrity differs from staged tarball');
-    expect(publish).toContain('npm publish ./release.tgz --provenance --access public');
+    expect(publish).toContain('isExplicitNpmE404');
+    expect(publish).toContain('verifyNpmSri');
+    expect(publish).toContain('set +e');
+    expect(publish).toMatch(/['"]publish['"]\s*,\s*['"]\.\/release\.tgz['"]\s*,\s*['"]--provenance['"]\s*,\s*['"]--access['"]\s*,\s*['"]public['"]/);
+    expect(publish).toMatch(/non-E404|refusing to publish/i);
+    expect(publish).not.toMatch(/cat\s+\/tmp\/npm-view\.err/);
+    expect(publish).not.toContain('console.error(errText');
   });
 
-  it('AZ-RELEASE-007: alias job fetches only the two alias refs and decides with the pure helper', () => {
+  it('AZ-RELEASE-007: alias job freezes major 0, fetches only two alias refs, and uses pure helpers', () => {
     const alias = section('\n  advance-rolling-aliases:');
+    expect(alias).toContain('isFrozenAliasMajor');
+    expect(alias.indexOf('isFrozenAliasMajor')).toBeLessThan(alias.indexOf('for ALIAS in'));
+    expect(alias).toMatch(/frozen|v0/i);
     expect(alias).toContain('for ALIAS in "v$MAJOR" "v$MAJOR.$MINOR"; do');
     expect(alias).toContain('refs/tags/$ALIAS');
     expect(alias).toContain('--no-tags');

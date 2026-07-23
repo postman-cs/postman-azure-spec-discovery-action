@@ -14,7 +14,8 @@
     "docs",
     "SECURITY.md",
     "SUPPORT.md",
-    "RELEASE_POLICY.md"
+    "RELEASE_POLICY.md",
+    "scripts/verify-release-artifacts.mjs"
   ],
   "scripts": {
     "setup:hooks": "git config core.hooksPath .githooks",

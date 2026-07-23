@@ -43,7 +43,16 @@ describe('package contract', () => {
       expect(lock.packages[`node_modules/${name}`]?.version, `${name} lockfile pin`).toBe(version);
     }
 
-    for (const entry of ['action.yml', 'dist', 'README.md', 'docs', 'SECURITY.md', 'SUPPORT.md', 'RELEASE_POLICY.md']) {
+    for (const entry of [
+      'action.yml',
+      'dist',
+      'README.md',
+      'docs',
+      'SECURITY.md',
+      'SUPPORT.md',
+      'RELEASE_POLICY.md',
+      'scripts/verify-release-artifacts.mjs'
+    ]) {
       expect(pkg.files, `files must include ${entry}`).toContain(entry);
     }
   });
