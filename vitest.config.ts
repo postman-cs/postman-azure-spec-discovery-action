@@ -25,6 +25,8 @@ export default defineConfig({
               // Vitest 4: former poolOptions.forks.singleFork
               maxWorkers: 1,
               isolate: false,
+              // Distinct from windows-fast (different maxWorkers).
+              sequence: { groupOrder: 1 },
               include: [...windowsCwdSensitiveTests, ...windowsSerialReceiptTests]
             }
           },
@@ -34,6 +36,7 @@ export default defineConfig({
               environment: 'node',
               env: { POSTMAN_ACTIONS_TELEMETRY: 'off' },
               pool: 'threads',
+              sequence: { groupOrder: 0 },
               include: ['tests/**/*.test.ts'],
               exclude: [
                 ...configDefaults.exclude,
