@@ -9,25 +9,44 @@ import { describe, expect, it } from 'vitest';
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/** Resolve npm so Windows can invoke via `node <npm-cli.js>` without a shell. */
+function resolveNpmInvocation(): { command: string; argsPrefix: string[] } {
+  if (process.platform !== 'win32') {
+    return { command: 'npm', argsPrefix: [] };
+  }
+  const npmExecPath = process.env.npm_execpath;
+  if (!npmExecPath || !path.isAbsolute(npmExecPath)) {
+    throw new Error('npm_execpath must be set to an absolute path on Windows');
+  }
+  return { command: process.execPath, argsPrefix: [npmExecPath] };
+}
+
+const { command: npmCommand, argsPrefix: npmCliArgs } = resolveNpmInvocation();
+
 describe('CLI packaging contract', () => {
   it('AZ-PACK-001: dist/cli.cjs has a Node shebang, is executable, and answers --help/--version directly', async () => {
     const cliPath = path.join(repoRoot, 'dist', 'cli.cjs');
     const contents = await readFile(cliPath, 'utf8');
     expect(contents.startsWith('#!/usr/bin/env node\n')).toBe(true);
 
-    const mode = (await stat(cliPath)).mode & 0o777;
-    expect(mode & 0o111).not.toBe(0);
-    await access(cliPath, constants.X_OK);
+    if (process.platform !== 'win32') {
+      const mode = (await stat(cliPath)).mode & 0o777;
+      expect(mode & 0o111).not.toBe(0);
+      await access(cliPath, constants.X_OK);
+    }
 
     const help = await execFileAsync(process.execPath, [cliPath, '--help'], { encoding: 'utf8' });
     expect(help.stdout.startsWith('Usage: postman-azure-spec-discovery [options]')).toBe(true);
 
+    const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      version: string;
+    };
     const version = await execFileAsync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
-    expect(version.stdout).toBe('1.2.1\n');
+    expect(version.stdout).toBe(`${packageJson.version}\n`);
   });
 
   it('AZ-PACK-001: npm pack includes action.yml, docs, and both bundles', async () => {
-    const packOutput = await execFileAsync('npm', ['pack', '--dry-run', '--json'], {
+    const packOutput = await execFileAsync(npmCommand, [...npmCliArgs, 'pack', '--dry-run', '--json'], {
       cwd: repoRoot,
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024
