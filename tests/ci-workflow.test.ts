@@ -83,7 +83,7 @@ describe('CI workflow contract', () => {
     expect(windowsCheckout).not.toMatch(/^\s*fetch-depth\s*:/m);
   });
 
-  it('AZ-CI-004: Windows exact cache pin, miss-only install, sole direct npm test, no queue', () => {
+  it('AZ-CI-004: Windows exact cache pin, miss-only install, sole direct node --run test, no queue', () => {
     const windows = jobText(ciWorkflow, 'windows');
     expect(windows).toContain('name: Windows gate');
     expect(windows).toContain('runs-on: windows-latest');
@@ -104,10 +104,10 @@ describe('CI workflow contract', () => {
     expect(windows.match(/npm ci --prefer-offline --no-audit --no-fund/g) ?? []).toHaveLength(1);
     expect(windows.match(/^\s*- run: npm ci\s*$/gm) ?? []).toHaveLength(0);
 
-    expect(windows.match(/^\s*- run: npm test\s*$/gm) ?? []).toHaveLength(1);
+    expect(windows.match(/^\s*- run: node --run test\s*$/gm) ?? []).toHaveLength(1);
     expect(windows.match(/\bnpm test\b/g) ?? []).toHaveLength(1);
-    expect(windows).not.toMatch(/npm test --/);
-    expect(windows).not.toMatch(/npm test -/);
+    expect(windows).not.toMatch(/node --run test --/);
+    expect(windows).not.toMatch(/node --run test -/);
 
     expect(windows).not.toContain('Run gates');
     expect(windows).not.toContain('MAX_PARALLEL_GATES');
