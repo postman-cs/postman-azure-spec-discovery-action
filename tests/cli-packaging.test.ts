@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
-const npmCliArgs = process.platform === 'win32' ? [process.env.npm_execpath || ''] : [];
+const npmCliFallback = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+const npmCliArgs = process.platform === 'win32' ? [process.env.npm_execpath || npmCliFallback] : [];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 describe('CLI packaging contract', () => {
@@ -31,6 +32,7 @@ describe('CLI packaging contract', () => {
   });
 
   it('AZ-PACK-001: npm pack includes action.yml, docs, and both bundles', async () => {
+    expect(npmCliArgs.every((arg) => arg.length > 0)).toBe(true);
     const packOutput = await execFileAsync(npmCommand, [...npmCliArgs, 'pack', '--dry-run', '--json'], {
       cwd: repoRoot,
       encoding: 'utf8',
