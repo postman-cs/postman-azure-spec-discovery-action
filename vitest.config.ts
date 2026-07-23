@@ -6,18 +6,26 @@ const windowsCwdSensitiveTests = [
   'tests/definition-file-inventory.test.ts'
 ];
 
+const windowsSerialReceiptTests = [
+  'tests/live-validation-contract.test.ts',
+  'tests/coverage-manifest.test.ts'
+];
+
 export default defineConfig({
   test: process.platform === 'win32'
     ? {
         projects: [
           {
             test: {
-              name: 'windows-cwd-sensitive',
+              name: 'windows-serial',
               environment: 'node',
               env: { POSTMAN_ACTIONS_TELEMETRY: 'off' },
               pool: 'forks',
               fileParallelism: false,
-              include: windowsCwdSensitiveTests
+              // Vitest 4: former poolOptions.forks.singleFork
+              maxWorkers: 1,
+              isolate: false,
+              include: [...windowsCwdSensitiveTests, ...windowsSerialReceiptTests]
             }
           },
           {
@@ -26,9 +34,13 @@ export default defineConfig({
               environment: 'node',
               env: { POSTMAN_ACTIONS_TELEMETRY: 'off' },
               pool: 'threads',
-              fileParallelism: false,
               include: ['tests/**/*.test.ts'],
-              exclude: [...configDefaults.exclude, 'tests/live/**', ...windowsCwdSensitiveTests]
+              exclude: [
+                ...configDefaults.exclude,
+                'tests/live/**',
+                ...windowsCwdSensitiveTests,
+                ...windowsSerialReceiptTests
+              ]
             }
           }
         ]
