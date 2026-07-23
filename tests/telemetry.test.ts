@@ -13,6 +13,7 @@ import {
   prepareTelemetryCredentials,
   TELEMETRY_ENRICHMENT_TIMEOUT_MS
 } from '../src/lib/postman/telemetry-credentials.js';
+import { __resetPmakDiagnosticMemo, inspectPmakIdentity } from '../src/lib/postman/pmak-diagnostics.js';
 
 let repoRoot: string;
 
@@ -108,6 +109,85 @@ describe('telemetry contract', () => {
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     } finally {
       __resetIdentityMemo();
+      vi.useRealTimers();
+    }
+  });
+
+  it('classifies a rejected telemetry mint once, masks credentials, and continues discovery enrichment', async () => {
+    __resetPmakDiagnosticMemo();
+    const warnings: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/service-account-tokens')) {
+        return new Response('', { status: 401 });
+      }
+      return new Response(JSON.stringify({ user: { username: 'jane-doe', email: 'jane@example.com' } }), {
+        status: 200
+      });
+    });
+
+    const result = await prepareTelemetryCredentials({
+      postmanApiKey: 'PMAK-sentinel',
+      fetchImpl: fetchImpl as typeof fetch,
+      onWarning: (message) => warnings.push(message)
+    });
+
+    expect(result.accountType).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(warnings).toEqual([
+      expect.stringContaining('Personal API key detected, cannot mint a service-account access token')
+    ]);
+    expect(warnings[0]).not.toContain('PMAK-sentinel');
+    expect(warnings[0]).not.toContain('jane-doe');
+    expect(warnings[0]).not.toContain('jane@example.com');
+    __resetPmakDiagnosticMemo();
+  });
+
+  it('reuses the normalized-host PMAK diagnosis cache for concurrent rejected mints', async () => {
+    __resetPmakDiagnosticMemo();
+    let meCalls = 0;
+    const fetchImpl = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/service-account-tokens')) {
+        return new Response('', { status: 403 });
+      }
+      meCalls += 1;
+      return new Response(JSON.stringify({ user: { username: null, email: null } }), { status: 200 });
+    });
+    const options = {
+      postmanApiKey: 'PMAK-sentinel',
+      apiBaseUrl: 'https://api.getpostman.com/',
+      fetchImpl: fetchImpl as typeof fetch
+    };
+
+    await Promise.all([
+      prepareTelemetryCredentials(options),
+      prepareTelemetryCredentials({ ...options, apiBaseUrl: 'https://api.getpostman.com' })
+    ]);
+
+    expect(meCalls).toBe(1);
+    __resetPmakDiagnosticMemo();
+  });
+
+  it('bounds a rejected-mint PMAK diagnosis to two seconds inside Azure enrichment', async () => {
+    vi.useFakeTimers();
+    __resetPmakDiagnosticMemo();
+    let signal: AbortSignal | undefined;
+    try {
+      const pending = inspectPmakIdentity({
+        apiBaseUrl: 'https://api.getpostman.com',
+        apiKey: 'PMAK-sentinel',
+        fetchImpl: vi.fn((_input, init) => {
+          signal = init?.signal ?? undefined;
+          return new Promise<Response>(() => undefined);
+        }) as typeof fetch
+      });
+
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({ kind: 'inconclusive' });
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      __resetPmakDiagnosticMemo();
       vi.useRealTimers();
     }
   });

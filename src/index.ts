@@ -94,7 +94,8 @@ export async function runAction(
   const { accountType } = await prepareTelemetryCredentials({
     postmanApiKey,
     postmanAccessToken,
-    onToken: (token) => actionCore.setSecret?.(token)
+    onToken: (token) => actionCore.setSecret?.(token),
+    onWarning: (message) => actionCore.warning(message)
   });
   try {
     const result = await runActionInner(actionCore, dependencies);

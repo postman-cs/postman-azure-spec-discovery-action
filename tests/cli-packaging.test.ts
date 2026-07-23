@@ -48,7 +48,8 @@ describe('CLI packaging contract', () => {
       'docs/LIVE_TESTING_RUNBOOK.md',
       'SECURITY.md',
       'SUPPORT.md',
-      'RELEASE_POLICY.md'
+      'RELEASE_POLICY.md',
+      'scripts/verify-release-artifacts.mjs'
     ]) {
       expect(filePaths.has(required), `npm pack must include ${required}`).toBe(true);
     }

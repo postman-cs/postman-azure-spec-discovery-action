@@ -7,6 +7,11 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -28,20 +33,22 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       # Bundle once before fan-out so pack tests and the dist assert only read
       # dist/. Typecheck stays in the fan-out so it runs exactly once.
       - run: npm run bundle
+      - name: Install actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.11 "$RUNNER_TEMP"
       # Keep at most two checks active on the two-vCPU runner. Failures aggregate
       # under ::group:: logs so one pass still shows every result.
       - name: Run gates
         run: |
           set -uo pipefail
           declare -A pid=()
-          declare -A result=()
-          declare -a names=()
-          MAX_PARALLEL_GATES=2
+           declare -A result=()
+           declare -a names=()
+           MAX_PARALLEL_GATES=2
+           ACTIONLINT_BIN="$RUNNER_TEMP/actionlint"
           finish_one() {
             local finished_pid status n
             if wait -n -p finished_pid "${pid[@]}"; then status=0; else status=$?; fi
@@ -63,9 +70,10 @@ jobs:
           run lint       npm run lint
           run typecheck  npm run typecheck
           run test       npm test
-          run dist       npm run verify:dist:assert
+           run dist       npm run verify:dist:assert
+           run actionlint "$ACTIONLINT_BIN"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            run commitlint npx commitlint \
+            run commitlint ./node_modules/.bin/commitlint \
               --from "${{ github.event.pull_request.base.sha }}" \
               --to "${{ github.event.pull_request.head.sha }}"
           fi
@@ -97,10 +105,27 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: npm run lint
-      - run: npm test
-      - run: npm run typecheck
       - run: npm run bundle
-      - run: npm run verify:dist:assert
+      - name: Run gates
+        shell: pwsh
+        run: |
+          . ./.github/scripts/run-windows-gates.ps1
+          $gates = @(
+            @{
+              Name = 'lint'
+              ScriptBlock = { npm run lint; Assert-NativeGateSucceeded -Name 'lint' -ExitCode $LASTEXITCODE }
+            },
+            @{
+              Name = 'test'
+              ScriptBlock = { npm test; Assert-NativeGateSucceeded -Name 'test' -ExitCode $LASTEXITCODE }
+            },
+            @{
+              Name = 'typecheck'
+              ScriptBlock = { npm run typecheck; Assert-NativeGateSucceeded -Name 'typecheck' -ExitCode $LASTEXITCODE }
+            },
+            @{
+              Name = 'dist'
+              ScriptBlock = { npm run verify:dist:assert; Assert-NativeGateSucceeded -Name 'dist' -ExitCode $LASTEXITCODE }
+            }
+          )
+          Invoke-BoundedGateQueue -Gates $gates -MaxParallel 2
