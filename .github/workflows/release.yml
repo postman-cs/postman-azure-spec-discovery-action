@@ -198,6 +198,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           IFS='.' read -r MAJOR MINOR _ <<< "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           FROZEN=$(MAJOR="$MAJOR" node --input-type=module -e 'import { isFrozenAliasMajor } from "./scripts/verify-release-artifacts.mjs"; process.stdout.write(isFrozenAliasMajor(process.env.MAJOR) ? "true" : "false");')
           if [ "$FROZEN" = "true" ]; then
             echo "::notice::v0 aliases stay frozen; not moving v0 or v0.$MINOR"
