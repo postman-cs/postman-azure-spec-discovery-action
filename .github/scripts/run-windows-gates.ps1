@@ -40,53 +40,49 @@ function Invoke-BoundedGateQueue {
     }
   }
 
-  $running = @()
+  $running = [System.Collections.Generic.List[object]]::new()
   $results = [ordered]@{}
   $assertText = ${function:Assert-NativeGateSucceeded}.ToString()
   $previousErrorAction = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
 
+  function Drain-FinishedJobs {
+    $i = 0
+    while ($i -lt $running.Count) {
+      $job = $running[$i]
+      if ($job.State -eq 'Running' -or $job.State -eq 'NotStarted') {
+        $i += 1
+        continue
+      }
+      Receive-Job -Job $job -ErrorAction SilentlyContinue | Write-Output
+      $results[$job.Name] = if ($job.State -eq 'Completed') { 'pass' } else { 'fail' }
+      Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+      $running.RemoveAt($i)
+    }
+  }
+
   try {
     foreach ($gate in $Gates) {
-      while ($true) {
-        $active = 0
-        $nextRunning = @()
-        foreach ($job in $running) {
-          if ($job.State -eq 'Running' -or $job.State -eq 'NotStarted') {
-            $active += 1
-            $nextRunning += $job
-            continue
-          }
-          Receive-Job -Job $job -ErrorAction SilentlyContinue | Write-Output
-          $results[$job.Name] = if ($job.State -eq 'Completed') { 'pass' } else { 'fail' }
-          Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+      while ($running.Count -ge $MaxParallel) {
+        Drain-FinishedJobs
+        if ($running.Count -ge $MaxParallel) {
+          Start-Sleep -Milliseconds 5
         }
-        $running = $nextRunning
-        if ($active -lt $MaxParallel) { break }
-        Start-Sleep -Milliseconds 10
       }
 
       $scriptText = $gate.ScriptBlock.ToString()
-      $running += Start-ThreadJob -Name $gate.Name -ThrottleLimit $MaxParallel -ScriptBlock {
+      $running.Add((Start-ThreadJob -Name $gate.Name -ThrottleLimit $MaxParallel -ScriptBlock {
         param($AssertText, $ScriptText)
         Set-Item -Path function:Assert-NativeGateSucceeded -Value ([scriptblock]::Create($AssertText))
         & ([scriptblock]::Create($ScriptText))
-      } -ArgumentList $assertText, $scriptText
+      } -ArgumentList $assertText, $scriptText))
     }
 
     while ($running.Count -gt 0) {
-      $nextRunning = @()
-      foreach ($job in $running) {
-        if ($job.State -eq 'Running' -or $job.State -eq 'NotStarted') {
-          $nextRunning += $job
-          continue
-        }
-        Receive-Job -Job $job -ErrorAction SilentlyContinue | Write-Output
-        $results[$job.Name] = if ($job.State -eq 'Completed') { 'pass' } else { 'fail' }
-        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+      Drain-FinishedJobs
+      if ($running.Count -gt 0) {
+        Start-Sleep -Milliseconds 5
       }
-      $running = $nextRunning
-      if ($running.Count -gt 0) { Start-Sleep -Milliseconds 10 }
     }
   } finally {
     $ErrorActionPreference = $previousErrorAction

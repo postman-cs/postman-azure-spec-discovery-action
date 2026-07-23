@@ -35,9 +35,10 @@ function runHelperScenario(scriptBody: string): { status: number | null; stdout:
     ].join('\n')
   );
   try {
-    const result = spawnSync('pwsh', ['-NoProfile', '-File', scriptPath], {
+    // Keep cwd at the repo root: ThreadJob under an empty temp cwd stalls for seconds.
+    const result = spawnSync('pwsh', ['-NoLogo', '-NonInteractive', '-NoProfile', '-File', scriptPath], {
       encoding: 'utf8',
-      cwd: directory,
+      cwd: root,
       timeout: 10_000,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -150,6 +151,13 @@ try {
   Write-Output $_.Exception.Message
 }
 
+# All-pass queue: aggregate success / no-throw must be observable before mixed failure.
+Invoke-BoundedGateQueue -Gates @(
+  @{ Name = 'pass-a'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'pass-a' -ExitCode 0 } },
+  @{ Name = 'pass-b'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'pass-b' -ExitCode 0 } }
+) -MaxParallel 2
+Write-Output 'scenario:all-pass=done'
+
 # Single max-two queue: one pass + one throw proves pass/fail lines and aggregate failure.
 $queueFailed = $false
 try {
@@ -169,6 +177,9 @@ Write-Output 'scenario:mixed=done'
     expect(result.stdout).toContain('assert:nonzero=thrown');
     expect(result.stdout).toMatch(/probe.*7|exit code 7/i);
     expect(result.stdout).not.toContain('assert:nonzero=unexpected-success');
+    expect(result.stdout).toContain('gate:pass-a=pass');
+    expect(result.stdout).toContain('gate:pass-b=pass');
+    expect(result.stdout).toContain('scenario:all-pass=done');
     expect(result.stdout).toContain('gate:ok=pass');
     expect(result.stdout).toContain('gate:bad=fail');
     expect(result.stdout).toContain('scenario:mixed=done');
