@@ -1,59 +1,10 @@
-import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 const root = process.cwd();
 const ciWorkflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
-const helperPath = join(root, '.github/scripts/run-windows-gates.ps1');
-const windowsHelper = readFileSync(helperPath, 'utf8');
-
-function jobText(workflow: string, jobId: string): string {
-  const jobsBody = workflow.match(/^jobs:\n([\s\S]*)$/m)?.[1] ?? '';
-  const header = `  ${jobId}:\n`;
-  const start = jobsBody.indexOf(header);
-  if (start < 0) return '';
-  const rest = jobsBody.slice(start + header.length);
-  const nextJob = rest.search(/^ {2}[a-zA-Z0-9_-]+:\n/m);
-  return header + (nextJob < 0 ? rest : rest.slice(0, nextJob));
-}
-
-function runHelperScenario(scriptBody: string): { status: number | null; stdout: string; stderr: string } {
-  expect(existsSync(helperPath)).toBe(true);
-  const directory = mkdtempSync(join(tmpdir(), 'windows-gates-'));
-  const scriptPath = join(directory, 'scenario.ps1');
-  writeFileSync(
-    scriptPath,
-    [
-      `$ErrorActionPreference = 'Stop'`,
-      `. '${helperPath.replace(/'/g, "''")}'`,
-      scriptBody,
-      `exit 0`,
-      ''
-    ].join('\n')
-  );
-  try {
-    // Keep cwd at the repo root: ThreadJob under an empty temp cwd stalls for seconds.
-    const result = spawnSync('pwsh', ['-NoLogo', '-NonInteractive', '-NoProfile', '-File', scriptPath], {
-      encoding: 'utf8',
-      cwd: root,
-      timeout: 10_000,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    if (result.error) throw result.error;
-    return {
-      status: result.status,
-      stdout: `${result.stdout ?? ''}`,
-      stderr: `${result.stderr ?? ''}`
-    };
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-}
-
 describe('CI workflow contract', () => {
   it('AZ-CI-001: Linux and Windows gates, Node 24, read-only dist assert, no live Azure step', () => {
     const jobsSection = ciWorkflow.slice(ciWorkflow.indexOf('\njobs:\n'));
@@ -143,6 +94,7 @@ describe('CI workflow contract', () => {
     expect(windows.match(/^\s*- run: npm ci\s*$/gm) ?? []).toHaveLength(0);
 
     expect(windows.match(/^\s*- run: npm test\s*$/gm) ?? []).toHaveLength(1);
+    expect(windows.match(/\bnpm test\b/g) ?? []).toHaveLength(1);
     expect(windows).not.toMatch(/npm test --/);
     expect(windows).not.toMatch(/npm test -/);
 
@@ -151,7 +103,9 @@ describe('CI workflow contract', () => {
     expect(windows).not.toContain('Start-Job');
     expect(windows).not.toContain('Start-ThreadJob');
     expect(windows).not.toContain('shell: pwsh');
+    expect(windows).not.toContain('.github/scripts/');
     expect(windows).not.toContain('run-windows-gates.ps1');
+    expect(windows).not.toContain('windows-gates');
     expect(windows).not.toContain('Invoke-BoundedGateQueue');
     expect(windows).not.toContain('Assert-NativeGateSucceeded');
     expect(windows).not.toContain('npm run bundle');
@@ -163,63 +117,4 @@ describe('CI workflow contract', () => {
     expect(windows).not.toContain('commitlint');
   });
 
-  it('AZ-CI-005: helper uses Start-ThreadJob with ThrottleLimit and Assert-NativeGateSucceeded', () => {
-    expect(windowsHelper).toContain('function Assert-NativeGateSucceeded');
-    expect(windowsHelper).toContain('Start-ThreadJob');
-    expect(windowsHelper).toContain('-ThrottleLimit $MaxParallel');
-    expect(windowsHelper).not.toMatch(/\bStart-Job\b/);
-    expect(windowsHelper).toContain('Invoke-BoundedGateQueue');
-    expect(windowsHelper).toContain('gate:$($gate.Name)=$status');
-  });
-
-  it('AZ-CI-006: queue all-pass plus 3-gate drain/refill with one real native failure', () => {
-    const result = runHelperScenario(`
-Assert-NativeGateSucceeded -Name 'probe' -ExitCode 0
-Write-Output 'assert:zero=ok'
-try {
-  Assert-NativeGateSucceeded -Name 'probe' -ExitCode 7
-  Write-Output 'assert:nonzero=unexpected-success'
-} catch {
-  Write-Output 'assert:nonzero=thrown'
-  Write-Output $_.Exception.Message
-}
-
-# All-pass queue: aggregate success / no-throw must be observable before mixed failure.
-Invoke-BoundedGateQueue -Gates @(
-  @{ Name = 'pass-a'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'pass-a' -ExitCode 0 } },
-  @{ Name = 'pass-b'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'pass-b' -ExitCode 0 } }
-) -MaxParallel 2
-Write-Output 'scenario:all-pass=done'
-
-# Three-gate max-two queue exercises drain/refill; one gate runs a real native failure.
-$queueFailed = $false
-try {
-  Invoke-BoundedGateQueue -Gates @(
-    @{ Name = 'ok1'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'ok1' -ExitCode 0 } },
-    @{ Name = 'ok2'; ScriptBlock = { Assert-NativeGateSucceeded -Name 'ok2' -ExitCode 0 } },
-    @{ Name = 'bad'; ScriptBlock = {
-        & node -e "process.exit(7)"
-        Assert-NativeGateSucceeded -Name 'bad' -ExitCode $LASTEXITCODE
-      } }
-  ) -MaxParallel 2
-} catch {
-  $queueFailed = $true
-  Write-Output $_.Exception.Message
-}
-if (-not $queueFailed) { throw 'expected queue aggregate failure' }
-Write-Output 'scenario:mixed=done'
-`);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('assert:zero=ok');
-    expect(result.stdout).toContain('assert:nonzero=thrown');
-    expect(result.stdout).toMatch(/probe.*7|exit code 7/i);
-    expect(result.stdout).not.toContain('assert:nonzero=unexpected-success');
-    expect(result.stdout).toContain('gate:pass-a=pass');
-    expect(result.stdout).toContain('gate:pass-b=pass');
-    expect(result.stdout).toContain('scenario:all-pass=done');
-    expect(result.stdout).toContain('gate:ok1=pass');
-    expect(result.stdout).toContain('gate:ok2=pass');
-    expect(result.stdout).toContain('gate:bad=fail');
-    expect(result.stdout).toContain('scenario:mixed=done');
-  }, 10_000);
 });
