@@ -61,8 +61,8 @@ describe('CI workflow contract', () => {
     expect(jobMatches).toEqual(['  gate:', '  windows:']);
 
     expect(ciWorkflow).toContain("node-version: '24'");
-    expect(ciWorkflow.match(/npm ci/g)).toHaveLength(2);
-    expect(ciWorkflow.match(/npm run bundle/g)).toHaveLength(2);
+    expect(ciWorkflow.match(/^\s*- run: npm ci\s*$/gm) ?? []).toHaveLength(1);
+    expect(ciWorkflow.match(/npm run bundle/g)).toHaveLength(1);
     expect(ciWorkflow).toContain('runs-on: windows-latest');
     expect(ciWorkflow).toContain('MAX_PARALLEL_GATES=2');
     expect(ciWorkflow).toContain('run dist       npm run verify:dist:assert');
@@ -78,6 +78,10 @@ describe('CI workflow contract', () => {
     expect(ciWorkflow).toContain('group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
     expect(ciWorkflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
     expect(ciWorkflow).toContain('workflow_dispatch:');
+    expect(ciWorkflow).toContain(
+      'https://raw.githubusercontent.com/rhysd/actionlint/393031adb9afb225ee52ae2ccd7a5af5525e03e8/scripts/download-actionlint.bash'
+    );
+    expect(ciWorkflow).not.toContain('/main/scripts/download-actionlint.bash');
     expect(ciWorkflow).toContain('1.7.11 "$RUNNER_TEMP"');
     expect(ciWorkflow).toContain('ACTIONLINT_BIN="$RUNNER_TEMP/actionlint"');
     expect(ciWorkflow).toContain('run actionlint "$ACTIONLINT_BIN"');
@@ -117,37 +121,46 @@ describe('CI workflow contract', () => {
     expect(windowsCheckout).not.toMatch(/^\s*fetch-depth\s*:/m);
   });
 
-  it('AZ-CI-004: Windows composes every npm gate through Assert-NativeGateSucceeded and max=2 queue', () => {
+  it('AZ-CI-004: Windows exact cache pin, miss-only install, sole direct npm test, no queue', () => {
     const windows = jobText(ciWorkflow, 'windows');
-    expect(windows).toContain('shell: pwsh');
-    expect(windows).toContain('.github/scripts/run-windows-gates.ps1');
-    expect(windows).toContain('Invoke-BoundedGateQueue');
-    expect(windows).toContain('-MaxParallel 2');
-    expect(windows).toContain("Name = 'lint'");
-    expect(windows).toContain("Name = 'test'");
-    expect(windows).toContain("Name = 'typecheck'");
-    expect(windows).toContain("Name = 'dist'");
-    expect(windows).toContain('npm run lint');
-    expect(windows).toContain('npm test');
-    expect(windows).toContain('npm run typecheck');
-    expect(windows).toContain('npm run verify:dist:assert');
-    for (const [command, name] of [
-      ['npm run lint', 'lint'],
-      ['npm test', 'test'],
-      ['npm run typecheck', 'typecheck'],
-      ['npm run verify:dist:assert', 'dist']
-    ] as const) {
-      expect(windows).toMatch(
-        new RegExp(
-          `${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*;\\s*Assert-NativeGateSucceeded\\s+-Name\\s+'${name}'\\s+-ExitCode\\s+\\$LASTEXITCODE`
-        )
-      );
-    }
-    expect(windows).not.toContain('if ($LASTEXITCODE -ne 0)');
-    expect(windows).not.toContain('Invoke-Expression');
-    expect(windows).not.toContain('Job.State -eq \'Completed\'');
-    expect(windows.indexOf('npm run bundle')).toBeLessThan(windows.indexOf('Invoke-BoundedGateQueue'));
-    expect(windows.match(/npm run bundle/g)).toHaveLength(1);
+    expect(windows).toContain('name: Windows gate');
+    expect(windows).toContain('runs-on: windows-latest');
+    expect(windows).not.toMatch(/^\s*fetch-depth:\s*/m);
+
+    expect(windows).toContain("node-version: '24'");
+    expect(windows).not.toMatch(/^\s*cache:\s*npm\s*$/m);
+
+    expect(windows).toContain('actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0');
+    expect(windows).toContain('id: windows-node-modules');
+    expect(windows).toContain('path: node_modules');
+    expect(windows).toContain("key: Windows/node-24/exact-${{ hashFiles('package-lock.json') }}");
+    expect(windows).not.toContain('restore-keys');
+    expect(windows).not.toContain('enableCrossOsArchive');
+
+    expect(windows).toContain("if: steps.windows-node-modules.outputs.cache-hit != 'true'");
+    expect(windows).toContain('run: npm ci --prefer-offline --no-audit --no-fund');
+    expect(windows.match(/npm ci --prefer-offline --no-audit --no-fund/g) ?? []).toHaveLength(1);
+    expect(windows.match(/^\s*- run: npm ci\s*$/gm) ?? []).toHaveLength(0);
+
+    expect(windows.match(/^\s*- run: npm test\s*$/gm) ?? []).toHaveLength(1);
+    expect(windows).not.toMatch(/npm test --/);
+    expect(windows).not.toMatch(/npm test -/);
+
+    expect(windows).not.toContain('Run gates');
+    expect(windows).not.toContain('MAX_PARALLEL_GATES');
+    expect(windows).not.toContain('Start-Job');
+    expect(windows).not.toContain('Start-ThreadJob');
+    expect(windows).not.toContain('shell: pwsh');
+    expect(windows).not.toContain('run-windows-gates.ps1');
+    expect(windows).not.toContain('Invoke-BoundedGateQueue');
+    expect(windows).not.toContain('Assert-NativeGateSucceeded');
+    expect(windows).not.toContain('npm run bundle');
+    expect(windows).not.toContain('npm run build');
+    expect(windows).not.toContain('npm run lint');
+    expect(windows).not.toContain('npm run typecheck');
+    expect(windows).not.toContain('verify:dist');
+    expect(windows).not.toContain('actionlint');
+    expect(windows).not.toContain('commitlint');
   });
 
   it('AZ-CI-005: helper uses Start-ThreadJob with ThrottleLimit and Assert-NativeGateSucceeded', () => {
