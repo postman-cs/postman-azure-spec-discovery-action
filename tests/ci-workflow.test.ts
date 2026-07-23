@@ -97,19 +97,24 @@ describe('CI workflow contract', () => {
     expect(ciWorkflow).toContain('--to "${{ github.event.pull_request.head.sha }}"');
 
     // R10 history-depth matrix: Linux gate needs full history for PR commitlint;
-    // Windows keeps the default/minimum checkout depth.
+    // Windows keeps checkout default/minimum depth (no explicit fetch-depth key).
     const gate = jobText(ciWorkflow, 'gate');
     const windows = jobText(ciWorkflow, 'windows');
-    const checkoutIdx = gate.search(/- uses: actions\/checkout@[0-9a-f]{40}/);
-    expect(checkoutIdx).toBeGreaterThanOrEqual(0);
-    const afterCheckout = gate.slice(checkoutIdx);
-    const nextStepRel = afterCheckout.search(/\n {6}- /);
-    const gateCheckout = nextStepRel < 0 ? afterCheckout : afterCheckout.slice(0, nextStepRel);
+    const isolateCheckout = (job: string): string => {
+      const checkoutIdx = job.search(/- uses: actions\/checkout@[0-9a-f]{40}/);
+      expect(checkoutIdx).toBeGreaterThanOrEqual(0);
+      const afterCheckout = job.slice(checkoutIdx);
+      const nextStepRel = afterCheckout.search(/\n {6}- /);
+      return nextStepRel < 0 ? afterCheckout : afterCheckout.slice(0, nextStepRel);
+    };
+    const gateCheckout = isolateCheckout(gate);
+    const windowsCheckout = isolateCheckout(windows);
     expect(gateCheckout).toMatch(/actions\/checkout@[0-9a-f]{40}/);
     expect(gateCheckout).toContain('fetch-depth: 0');
     expect(gate.indexOf('fetch-depth: 0')).toBeGreaterThanOrEqual(0);
     expect(gate.indexOf('fetch-depth: 0')).toBeLessThan(gate.indexOf('run commitlint'));
-    expect(windows).not.toContain('fetch-depth: 0');
+    expect(windowsCheckout).toMatch(/actions\/checkout@[0-9a-f]{40}/);
+    expect(windowsCheckout).not.toMatch(/^\s*fetch-depth\s*:/m);
   });
 
   it('AZ-CI-004: Windows composes every npm gate through Assert-NativeGateSucceeded and max=2 queue', () => {

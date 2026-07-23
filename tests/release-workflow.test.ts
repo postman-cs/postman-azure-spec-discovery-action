@@ -27,6 +27,26 @@ describe('release workflow publishing contract', () => {
   });
 
   it('AZ-RELEASE-001: immutable releases require origin/main, publish npm once, and move only rolling aliases', () => {
+    const classify = section('\n  classify:', '\n  verify-package:');
+    const classifyStep = classify.match(
+      /^\s+- name: Classify release tag\n([\s\S]*)$/m
+    )?.[1] ?? '';
+    expect(classify).toContain('release_kind: ${{ steps.release_tag.outputs.release_kind }}');
+    expect(classify).toContain('npm_publish: ${{ steps.release_tag.outputs.npm_publish }}');
+    expect(classifyStep).toContain('id: release_tag');
+    expect(classifyStep).toContain('release_kind=alias');
+    expect(classifyStep).toContain('npm_publish=false');
+    expect(classifyStep).toContain('release_kind=immutable');
+    expect(classifyStep).toContain('npm_publish=true');
+    expect(classifyStep.indexOf('release_kind=alias')).toBeLessThan(classifyStep.indexOf('npm_publish=false'));
+    expect(classifyStep.indexOf('npm_publish=false')).toBeLessThan(classifyStep.indexOf('exit 0'));
+    expect(classifyStep.indexOf('git fetch --depth=1 origin main --no-tags')).toBeLessThan(
+      classifyStep.indexOf('release_kind=immutable')
+    );
+    expect(classifyStep.indexOf('release_kind=immutable')).toBeLessThan(classifyStep.indexOf('npm_publish=true'));
+    expect(classifyStep.match(/npm_publish=true/g)).toHaveLength(1);
+    expect(classifyStep.match(/npm_publish=false/g)).toHaveLength(1);
+
     expect(releaseWorkflow).toContain('release_kind=immutable');
     expect(releaseWorkflow).not.toContain('PUBLISH_TAGS');
     expect(releaseWorkflow).toContain('if [ "$TAG_VERSION" = "$MAJOR" ] || [ "$TAG_VERSION" = "$MAJOR.$MINOR" ]; then');
@@ -41,6 +61,7 @@ describe('release workflow publishing contract', () => {
     expect(releaseWorkflow).toContain('advance-rolling-aliases:');
     expect(releaseWorkflow).toContain('for ALIAS in "v$MAJOR" "v$MAJOR.$MINOR"; do');
     expect(releaseWorkflow).toContain("if: ${{ needs.classify.outputs.release_kind == 'immutable' }}");
+    expect(releaseWorkflow).not.toMatch(/needs\.classify\.outputs\.npm_publish/);
     for (const gate of ['npm test', 'npm run typecheck', 'npm run lint', 'npm run verify:dist:assert']) {
       expect(releaseWorkflow).toContain(gate);
     }
