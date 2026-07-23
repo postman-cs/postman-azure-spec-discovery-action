@@ -105,7 +105,7 @@ describe('CI workflow contract', () => {
     expect(windows.match(/^\s*- run: npm ci\s*$/gm) ?? []).toHaveLength(0);
 
     expect(windows.match(/^\s*- run: node --run test\s*$/gm) ?? []).toHaveLength(1);
-    expect(windows.match(/\bnpm test\b/g) ?? []).toHaveLength(1);
+    expect(windows.match(/\bnpm test\b/g) ?? []).toHaveLength(0);
     expect(windows).not.toMatch(/node --run test --/);
     expect(windows).not.toMatch(/node --run test -/);
 
