@@ -46,9 +46,13 @@ jobs:
           fi
           git fetch --depth=1 origin main --no-tags
           TAG_COMMIT=$(git rev-parse 'HEAD^{commit}')
-          MAIN_COMMIT=$(git rev-parse 'origin/main^{commit}')
-          if [ "$TAG_COMMIT" != "$MAIN_COMMIT" ]; then
-            echo "::error::Release tag commit differs from protected origin/main"
+          # The release commit is cut by auto-release.yml and lives only on the
+          # tag: it carries the version bump and rebuilt dist, and main requires
+          # pull requests. Its PARENT is the reviewed main commit it was cut
+          # from, so ancestry is what proves these bytes came from main.
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${TAG_COMMIT}^" origin/main; then
+            echo "::error::Release tag commit $TAG_COMMIT was not cut from protected origin/main"
             exit 1
           fi
           echo "release_kind=immutable" >> "$GITHUB_OUTPUT"

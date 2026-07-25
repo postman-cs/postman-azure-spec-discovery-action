@@ -55,8 +55,15 @@ describe('release workflow publishing contract', () => {
     expect(releaseWorkflow).toContain('uses: softprops/action-gh-release@');
     expect(releaseWorkflow).toContain('files: release-artifacts/release.tgz');
     expect(releaseWorkflow).toContain('git fetch --depth=1 origin main --no-tags');
-    expect(releaseWorkflow).toContain("git rev-parse 'origin/main^{commit}'");
-    expect(releaseWorkflow).toContain('if [ "$TAG_COMMIT" != "$MAIN_COMMIT" ]; then');
+    expect(releaseWorkflow).toContain("git rev-parse 'HEAD^{commit}'");
+    // The release commit is cut by auto-release.yml and is reachable only from
+    // the tag, so equality with main is the wrong test. Its parent is the
+    // reviewed main commit it was cut from: ancestry is what proves the
+    // released bytes came from protected main.
+    expect(releaseWorkflow).not.toContain('if [ "$TAG_COMMIT" != "$MAIN_COMMIT" ]; then');
+    expect(releaseWorkflow).toContain(
+      'if ! git merge-base --is-ancestor "${TAG_COMMIT}^" origin/main; then'
+    );
     expect(releaseWorkflow).toContain('git push origin "refs/tags/$ALIAS"');
     expect(releaseWorkflow).toContain('advance-rolling-aliases:');
     expect(releaseWorkflow).toContain('for ALIAS in "v$MAJOR" "v$MAJOR.$MINOR"; do');
