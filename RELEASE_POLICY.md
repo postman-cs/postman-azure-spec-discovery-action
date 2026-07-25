@@ -9,7 +9,7 @@ Git tags and GitHub releases are the public release identifiers for this action.
 - Immutable releases use `vMAJOR.MINOR.PATCH` tags.
 - The rolling major and minor aliases (`vMAJOR` and `vMAJOR.MINOR`, i.e. `v1` and `v1.0`) are force-moved by the release workflow's `advance-rolling-aliases` job after a successful immutable publish.
 - Existing immutable release tags are never force-pushed or rewritten.
-- Every release tag commit must equal protected `origin/main`; the release workflow verifies this before publication.
+- Every release tag commit is cut from protected `origin/main` by `.github/workflows/auto-release.yml`; the release workflow verifies that ancestry before publication. The tagged commit carries the version bump and rebuilt `dist/` and is not pushed onto `main`.
 - `v0` tags stay frozen at the last `v0` release.
 - Every immutable release tag has a GitHub release with generated notes.
 
