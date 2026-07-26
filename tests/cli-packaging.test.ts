@@ -28,7 +28,8 @@ describe('CLI packaging contract', () => {
     expect(help.stdout.startsWith('Usage: postman-azure-spec-discovery [options]')).toBe(true);
 
     const version = await execFileAsync(process.execPath, [cliPath, '--version'], { encoding: 'utf8' });
-    expect(version.stdout).toBe('1.3.5\n');
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as { version: string };
+    expect(version.stdout).toBe(`${pkg.version}\n`);
   });
 
   it('AZ-PACK-001: npm pack includes action.yml, docs, and both bundles', async () => {
