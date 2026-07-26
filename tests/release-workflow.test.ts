@@ -40,7 +40,9 @@ describe('release workflow publishing contract', () => {
     expect(classifyStep).toContain('npm_publish=true');
     expect(classifyStep.indexOf('release_kind=alias')).toBeLessThan(classifyStep.indexOf('npm_publish=false'));
     expect(classifyStep.indexOf('npm_publish=false')).toBeLessThan(classifyStep.indexOf('exit 0'));
-    expect(classifyStep.indexOf('git fetch --depth=1 origin main --no-tags')).toBeLessThan(
+    expect(classify).toContain('fetch-depth: 2');
+    expect(classifyStep).not.toContain('git fetch --depth=1 origin main --no-tags');
+    expect(classifyStep.indexOf('git fetch --no-tags origin main')).toBeLessThan(
       classifyStep.indexOf('release_kind=immutable')
     );
     expect(classifyStep.indexOf('release_kind=immutable')).toBeLessThan(classifyStep.indexOf('npm_publish=true'));
@@ -54,7 +56,7 @@ describe('release workflow publishing contract', () => {
     expect(releaseWorkflow).toMatch(/['"]publish['"]\s*,\s*['"]\.\/release\.tgz['"]\s*,\s*['"]--provenance['"]\s*,\s*['"]--access['"]\s*,\s*['"]public['"]/);
     expect(releaseWorkflow).toContain('uses: softprops/action-gh-release@');
     expect(releaseWorkflow).toContain('files: release-artifacts/release.tgz');
-    expect(releaseWorkflow).toContain('git fetch --depth=1 origin main --no-tags');
+    expect(releaseWorkflow).toContain('fetch-depth: 2');
     expect(releaseWorkflow).toContain("git rev-parse 'HEAD^{commit}'");
     // The release commit is cut by auto-release.yml and is reachable only from
     // the tag, so equality with main is the wrong test. Its parent is the
