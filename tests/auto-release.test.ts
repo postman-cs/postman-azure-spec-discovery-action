@@ -20,6 +20,7 @@ const selectNextVersion = releaseCut.selectNextVersion as (input: {
   bump: string;
   takenTags: string[];
 }) => { version: string; skipped: string[] };
+const latestReleaseTag = releaseCut.latestReleaseTag as (tags: string[]) => string | null;
 
 const repoRoot = process.cwd();
 const autoReleaseWorkflow = readFileSync(
@@ -45,6 +46,13 @@ describe('release version selection', () => {
     const plan = selectNextVersion({ current: '1.0.0', bump: 'patch', takenTags: taken });
     expect(taken).not.toContain(`v${plan.version}`);
     expect(plan.version).toBe('1.0.4');
+  });
+
+  it('normalizes accepted zero-patch minor tags', () => {
+    expect(latestReleaseTag(['v2.9.9', 'v3.0', 'v3'])).toBe('v3.0');
+    expect(
+      selectNextVersion({ current: '2.9.9', bump: 'major', takenTags: ['v3.0'] })
+    ).toEqual({ version: '3.0.1', skipped: ['3.0.0'] });
   });
 
   it('maps conventional commits onto semver bumps', () => {
@@ -83,6 +91,7 @@ describe('release-cut ordering contract', () => {
 
   it('rebuilds dist before committing and verifies committed dist before tagging', () => {
     expect(releaseCutSource).toContain("run('npm', ['run', 'bundle'])");
+    expect(releaseCutSource).toContain("run('npm', ['run', 'verify:dist'])");
     const rebuild = releaseCutSource.indexOf('rebuildDist();');
     const commit = releaseCutSource.indexOf("'commit', '-m'");
     const assertDist = releaseCutSource.indexOf('assertCommittedDistMatchesSource();');
@@ -104,6 +113,10 @@ describe('auto-release workflow', () => {
   it('cuts from main pushes instead of hand-pushed tags', () => {
     expect(autoReleaseWorkflow).toContain('branches: [main]');
     expect(autoReleaseWorkflow).not.toMatch(/on:\n\s+push:\n\s+tags:/);
+  });
+
+  it('rejects manually dispatched cuts outside main', () => {
+    expect(autoReleaseWorkflow).toContain("if: github.ref == 'refs/heads/main'");
   });
 
   it('fetches full history and tags so burnt versions are visible', () => {
@@ -135,8 +148,13 @@ describe('auto-release workflow', () => {
     expect(autoReleaseWorkflow).toContain('PLAN_FILE: ${{ runner.temp }}/plan.json');
   });
 
-  it('starts release.yml explicitly after the tag push', () => {
-    expect(autoReleaseWorkflow).toContain('gh workflow run release.yml --ref "v${VERSION}"');
+  it('starts or recovers release.yml after the tag push', () => {
+    const push = autoReleaseWorkflow.indexOf('name: Push release tag');
+    const dispatch = autoReleaseWorkflow.indexOf('name: Start or recover release workflow');
+    expect(dispatch).toBeGreaterThan(push);
+    expect(autoReleaseWorkflow).toContain('require(process.env.PLAN_FILE).previous');
+    expect(autoReleaseWorkflow).toContain('gh release view "$TAG"');
+    expect(autoReleaseWorkflow).toContain('gh workflow run release.yml --ref "$TAG"');
   });
 });
 
