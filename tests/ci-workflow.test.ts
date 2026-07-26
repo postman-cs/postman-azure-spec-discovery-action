@@ -92,7 +92,7 @@ describe('CI workflow contract', () => {
     expect(windows).toContain("node-version: '24'");
     expect(windows).not.toMatch(/^\s*cache:\s*npm\s*$/m);
 
-    expect(windows).toContain('actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0');
+    expect(windows).toContain('actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0');
     expect(windows).toContain('id: windows-node-modules');
     expect(windows).toContain('path: node_modules');
     expect(windows).toContain("key: Windows/node-24/exact-${{ hashFiles('package-lock.json') }}");
