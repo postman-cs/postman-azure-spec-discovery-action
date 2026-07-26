@@ -21,6 +21,8 @@ jobs:
       npm_publish: ${{ steps.release_tag.outputs.npm_publish }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: '24'
@@ -44,7 +46,6 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match package version $PKG_VERSION; expected v$PKG_VERSION, v$MAJOR.$MINOR, or v$MAJOR"
             exit 1
           fi
-          git fetch --depth=1 origin main --no-tags
           TAG_COMMIT=$(git rev-parse 'HEAD^{commit}')
           # The release commit is cut by auto-release.yml and lives only on the
           # tag: it carries the version bump and rebuilt dist, and main requires
