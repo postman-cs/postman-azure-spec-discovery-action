@@ -1,7 +1,7 @@
 // GitHub Action shell -- see runtime.ts for the core execution logic (execute, resolveInputs).
 import * as core from '@actions/core';
 
-import { createTelemetryContext } from '@postman-cse/automation-core';
+import { actionSink, createLogger, createTelemetryContext, type Logger } from '@postman-cse/automation-core';
 
 import { contractOutputNames, type DiscoveredService } from './contracts.js';
 import { resolveActionVersion } from './action-version.js';
@@ -71,34 +71,54 @@ export interface GitHubActionDependencies {
   createResourceGraphClient?: () => AzureResourceGraphClient;
   writeSpecFile?: (outputPath: string, content: string, rootPath: string) => Promise<void>;
   providers?: SpecProvider[];
+  /** Injected by tests; otherwise built over `actionCore` when the run starts. */
+  logger?: Logger;
 }
 
 export async function runAction(
   actionCore: CoreLike = core,
   dependencies: GitHubActionDependencies = {}
 ): Promise<DiscoveredService[]> {
+  const actionVersion = resolveActionVersion();
+  const logger =
+    dependencies.logger ??
+    createLogger({
+      sink: actionSink(actionCore),
+      fields: { action: 'azure-spec-discovery', action_version: actionVersion }
+    });
   const telemetry = createTelemetryContext({
     action: 'azure-spec-discovery',
-    actionVersion: resolveActionVersion(),
+    actionVersion,
     logger: actionCore
   });
   telemetry.setTeamId(resolveTelemetryTeamId(process.env));
   const postmanApiKey = getInput('postman-api-key');
   const postmanAccessToken = getInput('postman-access-token');
+  // Register before any phase can run: a credential that reaches the logger
+  // after the first line is a credential that already leaked once.
+  logger.addSecret(postmanApiKey);
+  logger.addSecret(postmanAccessToken);
   if (postmanApiKey) {
     actionCore.setSecret?.(postmanApiKey);
   }
   if (postmanAccessToken) {
     actionCore.setSecret?.(postmanAccessToken);
   }
-  const { accountType } = await prepareTelemetryCredentials({
-    postmanApiKey,
-    postmanAccessToken,
-    onToken: (token) => actionCore.setSecret?.(token),
-    onWarning: (message) => actionCore.warning(message)
-  });
+  const { accountType } = await logger.phase('prepare-telemetry-credentials', async () =>
+    prepareTelemetryCredentials({
+      postmanApiKey,
+      postmanAccessToken,
+      onToken: (token) => {
+        logger.addSecret(token);
+        actionCore.setSecret?.(token);
+      },
+      onWarning: (message) => actionCore.warning(message)
+    })
+  );
   try {
-    const result = await runActionInner(actionCore, dependencies);
+    const result = await logger.phase('discover', async () =>
+      runActionInner(actionCore, dependencies, logger)
+    );
     telemetry.setAccountType(accountType);
     telemetry.emitCompletion('success');
     return result;
@@ -111,9 +131,16 @@ export async function runAction(
 
 async function runActionInner(
   actionCore: CoreLike = core,
-  dependencies: GitHubActionDependencies = {}
+  dependencies: GitHubActionDependencies = {},
+  logger?: Logger
 ): Promise<DiscoveredService[]> {
   const inputs = readActionInputs(actionCore);
+  logger?.debug('resolved inputs', {
+    mode: inputs.mode,
+    dry_run: inputs.dryRun,
+    max_attempts: inputs.maxAttempts,
+    request_timeout_ms: inputs.requestTimeoutMs
+  });
   const useProductionProviders = !dependencies.providers;
   const credential = !dependencies.subscriptions || useProductionProviders ? createAzureCredential() : undefined;
   const sdkOptions = { requestTimeoutMs: inputs.requestTimeoutMs, maxAttempts: inputs.maxAttempts };

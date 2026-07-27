@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 
-import { createTelemetryContext } from '@postman-cse/automation-core';
+import { actionSink, createLogger, createTelemetryContext } from '@postman-cse/automation-core';
 
 import { resolveActionVersion } from './action-version.js';
 import {
@@ -53,8 +53,19 @@ class ConsoleReporter implements ReporterLike {
     console.error(message);
   }
 
+  // Diagnostics stay on stderr so the result JSON on stdout remains parseable.
+  // Whether they are emitted at all is the logger's level decision, driven by
+  // POSTMAN_ACTIONS_LOG_LEVEL / RUNNER_DEBUG.
+  public debug(message: string): void {
+    console.error(sanitizeLogMessage(message));
+  }
+
   public warning(message: string): void {
     console.error(`warning: ${sanitizeLogMessage(message)}`);
+  }
+
+  public error(message: string): void {
+    console.error(`error: ${sanitizeLogMessage(message)}`);
   }
 }
 
@@ -286,17 +297,30 @@ export async function runCli(
   const config = parsed;
   const inputs = resolveInputs(config.inputEnv);
   const reporter = new ConsoleReporter();
+  const actionVersion = resolveActionVersion();
+  const logger = createLogger({
+    sink: actionSink(reporter),
+    env,
+    fields: { action: 'azure-spec-discovery', action_version: actionVersion }
+  });
   const telemetry = createTelemetryContext({
     action: 'azure-spec-discovery',
-    actionVersion: resolveActionVersion(),
+    actionVersion,
     logger: reporter
   });
   telemetry.setTeamId(resolveTelemetryTeamId(config.inputEnv));
-  const { accountType } = await prepareTelemetryCredentials({
-    postmanApiKey: config.inputEnv.INPUT_POSTMAN_API_KEY ?? env.POSTMAN_API_KEY,
-    postmanAccessToken: config.inputEnv.INPUT_POSTMAN_ACCESS_TOKEN ?? env.POSTMAN_ACCESS_TOKEN,
-    onWarning: (message) => reporter.warning(message)
-  });
+  const postmanApiKey = config.inputEnv.INPUT_POSTMAN_API_KEY ?? env.POSTMAN_API_KEY;
+  const postmanAccessToken = config.inputEnv.INPUT_POSTMAN_ACCESS_TOKEN ?? env.POSTMAN_ACCESS_TOKEN;
+  logger.addSecret(postmanApiKey);
+  logger.addSecret(postmanAccessToken);
+  const { accountType } = await logger.phase('prepare-telemetry-credentials', async () =>
+    prepareTelemetryCredentials({
+      postmanApiKey,
+      postmanAccessToken,
+      onToken: (token) => logger.addSecret(token),
+      onWarning: (message) => reporter.warning(message)
+    })
+  );
   try {
     const sdkOptions = { requestTimeoutMs: inputs.requestTimeoutMs, maxAttempts: inputs.maxAttempts };
     const injected = runtime.dependencies;

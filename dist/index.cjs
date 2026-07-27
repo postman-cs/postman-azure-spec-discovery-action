@@ -58076,7 +58076,7 @@ var require_truncate = __commonJS({
     var parse10 = require_parse3();
     var constants6 = require_constants14();
     var SemVer = require_semver();
-    var truncate = (version3, truncation, options) => {
+    var truncate2 = (version3, truncation, options) => {
       if (!constants6.RELEASE_TYPES.includes(truncation)) {
         return null;
       }
@@ -58106,7 +58106,7 @@ var require_truncate = __commonJS({
     var isPrerelease = (type) => {
       return type.startsWith("pre");
     };
-    module2.exports = truncate;
+    module2.exports = truncate2;
   }
 });
 
@@ -59152,7 +59152,7 @@ var require_semver2 = __commonJS({
     var lte = require_lte();
     var cmp = require_cmp();
     var coerce = require_coerce();
-    var truncate = require_truncate();
+    var truncate2 = require_truncate();
     var Comparator = require_comparator();
     var Range = require_range();
     var satisfies = require_satisfies();
@@ -59191,7 +59191,7 @@ var require_semver2 = __commonJS({
       lte,
       cmp,
       coerce,
-      truncate,
+      truncate: truncate2,
       Comparator,
       Range,
       satisfies,
@@ -97482,6 +97482,186 @@ function createTelemetryContext(options) {
       }
     }
   };
+}
+
+// node_modules/@postman-cse/automation-core/dist/logger.js
+var LEVEL_ORDER = {
+  debug: 10,
+  info: 20,
+  warning: 30,
+  error: 40
+};
+function defaultCorrelationId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+function resolveLogLevel(env = process.env) {
+  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
+  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
+    return "debug";
+  if (explicit === "info")
+    return "info";
+  if (explicit === "warn" || explicit === "warning")
+    return "warning";
+  if (explicit === "error" || explicit === "quiet")
+    return "error";
+  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
+    return "debug";
+  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
+    return "debug";
+  return "info";
+}
+function isTruthyFlag(value) {
+  if (!value)
+    return false;
+  const flag = value.trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+}
+function actionSink(core) {
+  return {
+    debug: (message) => core.debug?.(message),
+    info: (message) => core.info(message),
+    warning: (message) => (core.warning ?? core.info)(message),
+    error: (message) => (core.error ?? core.warning ?? core.info)(message),
+    startGroup: core.startGroup ? (name3) => core.startGroup?.(name3) : void 0,
+    endGroup: core.endGroup ? () => core.endGroup?.() : void 0,
+    isDebug: core.isDebug ? () => core.isDebug?.() ?? false : void 0
+  };
+}
+var MIN_SECRET_LENGTH = 4;
+function renderValue(value, maxLength = 512) {
+  if (value === void 0)
+    return "undefined";
+  if (value === null)
+    return "null";
+  if (typeof value === "string")
+    return truncate(value, maxLength);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (value instanceof Error)
+    return truncate(describeError(value), maxLength);
+  if (Array.isArray(value)) {
+    return truncate(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
+  }
+  try {
+    return truncate(JSON.stringify(value) ?? String(value), maxLength);
+  } catch {
+    return "<unserializable>";
+  }
+}
+function truncate(text, maxLength) {
+  if (text.length <= maxLength)
+    return text;
+  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
+}
+function describeError(error2, maxDepth = 5) {
+  const parts = [];
+  let current = error2;
+  let depth = 0;
+  while (current !== void 0 && current !== null && depth < maxDepth) {
+    if (current instanceof Error) {
+      const code = current.code;
+      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
+      current = current.cause;
+    } else if (typeof current === "object") {
+      try {
+        parts.push(JSON.stringify(current) ?? String(current));
+      } catch {
+        parts.push(String(current));
+      }
+      current = void 0;
+    } else {
+      parts.push(String(current));
+      current = void 0;
+    }
+    depth += 1;
+  }
+  if (parts.length === 0)
+    return "unknown error";
+  return parts.join(" <- caused by ");
+}
+function createLogger(options) {
+  const env = options.env ?? process.env;
+  const level = options.level ?? resolveLogLevel(env);
+  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
+  const correlationId = options.correlationId ?? defaultCorrelationId();
+  const now = options.now ?? (() => Date.now());
+  const threshold = LEVEL_ORDER[level];
+  function addSecret(value) {
+    if (typeof value !== "string")
+      return;
+    const trimmed = value.trim();
+    if (trimmed.length < MIN_SECRET_LENGTH)
+      return;
+    secrets.add(trimmed);
+  }
+  function redact(text) {
+    let output = typeof text === "string" ? text : renderValue(text, 4096);
+    for (const secret of secrets) {
+      if (!secret)
+        continue;
+      output = output.split(secret).join("***");
+      const encoded = encodeURIComponent(secret);
+      if (encoded !== secret)
+        output = output.split(encoded).join("***");
+    }
+    return output;
+  }
+  function build(baseFields) {
+    function emit(target, message, fields) {
+      if (LEVEL_ORDER[target] < threshold)
+        return;
+      const merged = { ...baseFields, ...fields ?? {} };
+      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
+      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
+      switch (target) {
+        case "debug":
+          options.sink.debug(line);
+          break;
+        case "info":
+          options.sink.info(line);
+          break;
+        case "warning":
+          options.sink.warning(line);
+          break;
+        case "error":
+          options.sink.error(line);
+          break;
+      }
+    }
+    const logger30 = {
+      level,
+      correlationId,
+      addSecret,
+      redact,
+      isDebug: () => threshold <= LEVEL_ORDER.debug,
+      debug: (message, fields) => emit("debug", message, fields),
+      info: (message, fields) => emit("info", message, fields),
+      warning: (message, fields) => emit("warning", message, fields),
+      error: (message, fields) => emit("error", message, fields),
+      failure: (message, error2, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error2) }),
+      child: (fields) => build({ ...baseFields, ...fields }),
+      async phase(name3, fn, fields) {
+        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name3 });
+        const started = now();
+        scoped.debug("phase start");
+        options.sink.startGroup?.(name3);
+        try {
+          const result = await fn();
+          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
+          return result;
+        } catch (error2) {
+          scoped.failure("phase failed", error2, { duration_ms: Math.round(now() - started) });
+          throw error2;
+        } finally {
+          options.sink.endGroup?.();
+        }
+      }
+    };
+    return logger30;
+  }
+  const root = build({ run: correlationId, ...options.fields ?? {} });
+  return root;
 }
 
 // src/contracts.ts
@@ -247079,28 +247259,44 @@ async function execute(inputs, dependencies) {
 
 // src/index.ts
 async function runAction(actionCore = core_exports, dependencies = {}) {
+  const actionVersion = resolveActionVersion2();
+  const logger30 = dependencies.logger ?? createLogger({
+    sink: actionSink(actionCore),
+    fields: { action: "azure-spec-discovery", action_version: actionVersion }
+  });
   const telemetry = createTelemetryContext({
     action: "azure-spec-discovery",
-    actionVersion: resolveActionVersion2(),
+    actionVersion,
     logger: actionCore
   });
   telemetry.setTeamId(resolveTelemetryTeamId(process.env));
   const postmanApiKey = getInput2("postman-api-key");
   const postmanAccessToken = getInput2("postman-access-token");
+  logger30.addSecret(postmanApiKey);
+  logger30.addSecret(postmanAccessToken);
   if (postmanApiKey) {
     actionCore.setSecret?.(postmanApiKey);
   }
   if (postmanAccessToken) {
     actionCore.setSecret?.(postmanAccessToken);
   }
-  const { accountType } = await prepareTelemetryCredentials({
-    postmanApiKey,
-    postmanAccessToken,
-    onToken: (token) => actionCore.setSecret?.(token),
-    onWarning: (message) => actionCore.warning(message)
-  });
+  const { accountType } = await logger30.phase(
+    "prepare-telemetry-credentials",
+    async () => prepareTelemetryCredentials({
+      postmanApiKey,
+      postmanAccessToken,
+      onToken: (token) => {
+        logger30.addSecret(token);
+        actionCore.setSecret?.(token);
+      },
+      onWarning: (message) => actionCore.warning(message)
+    })
+  );
   try {
-    const result = await runActionInner(actionCore, dependencies);
+    const result = await logger30.phase(
+      "discover",
+      async () => runActionInner(actionCore, dependencies, logger30)
+    );
     telemetry.setAccountType(accountType);
     telemetry.emitCompletion("success");
     return result;
@@ -247110,8 +247306,14 @@ async function runAction(actionCore = core_exports, dependencies = {}) {
     throw error2;
   }
 }
-async function runActionInner(actionCore = core_exports, dependencies = {}) {
+async function runActionInner(actionCore = core_exports, dependencies = {}, logger30) {
   const inputs = readActionInputs(actionCore);
+  logger30?.debug("resolved inputs", {
+    mode: inputs.mode,
+    dry_run: inputs.dryRun,
+    max_attempts: inputs.maxAttempts,
+    request_timeout_ms: inputs.requestTimeoutMs
+  });
   const useProductionProviders = !dependencies.providers;
   const credential = !dependencies.subscriptions || useProductionProviders ? createAzureCredential() : void 0;
   const sdkOptions = { requestTimeoutMs: inputs.requestTimeoutMs, maxAttempts: inputs.maxAttempts };
