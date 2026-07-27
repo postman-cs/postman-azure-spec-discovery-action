@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 
-import { createTelemetryContext } from '@postman-cse/automation-telemetry-core';
+import { createTelemetryContext } from '@postman-cse/automation-core';
 
 import { resolveActionVersion } from './action-version.js';
 import {

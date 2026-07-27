@@ -235,7 +235,7 @@ APIM SOAP and GraphQL APIs are exportable. APIM gRPC is authoritative native pro
 
 ## Telemetry
 
-The action emits one anonymous `completion` event per run (action name `azure-spec-discovery`) through `@postman-cse/automation-telemetry-core`. The payload never contains Azure subscription, tenant, or resource identifiers, resource names, tags, spec content, URLs, or credentials. Opt out with `POSTMAN_ACTIONS_TELEMETRY=off` or `DO_NOT_TRACK=1`.
+The action emits one anonymous `completion` event per run (action name `azure-spec-discovery`) through `@postman-cse/automation-core`. The payload never contains Azure subscription, tenant, or resource identifiers, resource names, tags, spec content, URLs, or credentials. Opt out with `POSTMAN_ACTIONS_TELEMETRY=off` or `DO_NOT_TRACK=1`.
 
 ## License
 

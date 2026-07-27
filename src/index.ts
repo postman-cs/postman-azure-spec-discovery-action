@@ -1,7 +1,7 @@
 // GitHub Action shell -- see runtime.ts for the core execution logic (execute, resolveInputs).
 import * as core from '@actions/core';
 
-import { createTelemetryContext } from '@postman-cse/automation-telemetry-core';
+import { createTelemetryContext } from '@postman-cse/automation-core';
 
 import { contractOutputNames, type DiscoveredService } from './contracts.js';
 import { resolveActionVersion } from './action-version.js';
