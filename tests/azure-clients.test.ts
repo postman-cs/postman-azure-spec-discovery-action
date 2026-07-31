@@ -759,7 +759,7 @@ describe('azure sdk client wrappers', () => {
   });
 
   it.each([501, 505] as const)(
-    'AZ-RETRY-011: subscription REST does not retry permanent HTTP %s',
+    'AZ-RETRY-011: subscription REST follows the shared all-5xx retry policy for HTTP %s',
     async (status) => {
       const client = new SubscriptionsSdkClient(fakeCredential(), {
         requestTimeoutMs: 30000,
@@ -768,7 +768,7 @@ describe('azure sdk client wrappers', () => {
       });
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('permanent', { status }));
       await expect(client.get('sub-1')).rejects.toThrow(`HTTP ${status}`);
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
     }
   );
 
@@ -798,7 +798,7 @@ describe('azure sdk client wrappers', () => {
   });
 
   it.each([501, 505] as const)(
-    'AZ-RETRY-014: generic ARM client (Custom APIs) does not retry permanent HTTP %s',
+    'AZ-RETRY-014: generic ARM client follows the shared all-5xx retry policy for HTTP %s',
     async (status) => {
       const client = new CustomApisSdkClient(fakeCredential(), 'sub-1', {
         requestTimeoutMs: 30000,
@@ -807,7 +807,7 @@ describe('azure sdk client wrappers', () => {
       });
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('permanent', { status }));
       await expect(client.listCustomApis()).rejects.toThrow(`HTTP ${status}`);
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
     }
   );
 });

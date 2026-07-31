@@ -405,7 +405,7 @@ describe('ApiCenterSdkClient', () => {
   });
 
   it.each([501, 505] as const)(
-    'AZ-APIC-005b: API Center does not retry permanent HTTP %s',
+    'AZ-APIC-005b: API Center follows the shared all-5xx retry policy for HTTP %s',
     async (status) => {
       const client = new ApiCenterSdkClient(fakeCredential(), 'sub-1', {
         requestTimeoutMs: 30000,
@@ -423,7 +423,7 @@ describe('ApiCenterSdkClient', () => {
           definitionName: 'openapi'
         })
       ).rejects.toThrow(new RegExp(`HTTP ${status}`));
-      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledTimes(3);
     }
   );
 

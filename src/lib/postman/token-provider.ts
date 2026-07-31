@@ -1,4 +1,4 @@
-import { retry } from '../retry.js';
+import { retry } from '@postman-cse/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { formatRejectedMint, inspectPmakIdentity, maskPmakDiagnostic } from './pmak-diagnostics.js';
 

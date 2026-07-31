@@ -43,6 +43,254 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// node_modules/@postman-cse/automation-core/dist/ci-context.js
+function norm(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function detectEventTrigger(env = process.env) {
+  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
+  if (ghEvent) {
+    if (ghEvent === "push")
+      return "push";
+    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
+      return "pull_request";
+    if (ghEvent === "schedule")
+      return "schedule";
+    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
+      return "manual";
+    return "other";
+  }
+  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
+  if (glSource) {
+    if (glSource === "push")
+      return "push";
+    if (glSource === "merge_request_event")
+      return "pull_request";
+    if (glSource === "schedule")
+      return "schedule";
+    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
+      return "manual";
+    }
+    return "other";
+  }
+  if (norm(env.BITBUCKET_PR_ID))
+    return "pull_request";
+  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
+    return "other";
+  }
+  return "unknown";
+}
+function detectRunnerOs(env = process.env) {
+  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
+  if (runnerOs === "linux")
+    return "linux";
+  if (runnerOs === "macos")
+    return "macos";
+  if (runnerOs === "windows")
+    return "windows";
+  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
+  if (platform2 === "linux")
+    return "linux";
+  if (platform2 === "darwin")
+    return "macos";
+  if (platform2 === "win32")
+    return "windows";
+  return "unknown";
+}
+function detectCiContext(env = process.env) {
+  const provider = detectCiProviderContext(env);
+  return {
+    ...provider,
+    eventTrigger: detectEventTrigger(env),
+    runnerOs: detectRunnerOs(env)
+  };
+}
+function detectCiProviderContext(env = process.env) {
+  if (norm(env.GITHUB_ACTIONS)) {
+    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
+    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "github",
+      runId: norm(env.GITHUB_RUN_ID),
+      runnerKind
+    };
+  }
+  if (norm(env.GITLAB_CI)) {
+    return {
+      ciProvider: "gitlab",
+      runId: norm(env.CI_PIPELINE_ID) ?? norm(env.CI_PIPELINE_IID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CIRCLECI)) {
+    return {
+      ciProvider: "circleci",
+      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BUILDKITE)) {
+    const computeType = norm(env.BUILDKITE_COMPUTE_TYPE);
+    const runnerKind = computeType === "hosted" ? "hosted" : computeType === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "buildkite",
+      runId: norm(env.BUILDKITE_BUILD_ID) ?? norm(env.BUILDKITE_BUILD_NUMBER),
+      runnerKind
+    };
+  }
+  if (norm(env.TF_BUILD)) {
+    return {
+      ciProvider: "azure",
+      runId: norm(env.BUILD_BUILDID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CODEBUILD_BUILD_ID)) {
+    return {
+      ciProvider: "codebuild",
+      runId: norm(env.CODEBUILD_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BITBUCKET_BUILD_NUMBER)) {
+    return {
+      ciProvider: "bitbucket",
+      runId: norm(env.BITBUCKET_BUILD_NUMBER),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.TEAMCITY_VERSION)) {
+    return {
+      ciProvider: "teamcity",
+      runId: norm(env.BUILD_NUMBER),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.HARNESS_BUILD_ID)) {
+    return {
+      ciProvider: "harness",
+      runId: norm(env.HARNESS_EXECUTION_ID) ?? norm(env.HARNESS_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.JENKINS_URL)) {
+    return {
+      ciProvider: "jenkins",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER) ?? norm(env.BUILD_TAG),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
+    return {
+      ciProvider: "concourse",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NAME),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.CI)) {
+    return { ciProvider: "other", runnerKind: "unknown" };
+  }
+  return { ciProvider: "unknown", runnerKind: "unknown" };
+}
+var init_ci_context = __esm({
+  "node_modules/@postman-cse/automation-core/dist/ci-context.js"() {
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/repo-context.js
+function normalize(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function normalizeRepoUrl(url) {
+  const raw = normalize(url);
+  if (!raw) {
+    return void 0;
+  }
+  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    const host = sshMatch[1];
+    const path14 = sshMatch[2];
+    return `https://${host}/${path14}`;
+  }
+  return raw.replace(/\.git$/, "");
+}
+function parseProvider(explicitProvider, repoUrl, env) {
+  const explicit = normalize(explicitProvider)?.toLowerCase();
+  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
+    return explicit;
+  }
+  const url = (repoUrl ?? "").toLowerCase();
+  if (url.includes("github")) {
+    return "github";
+  }
+  if (url.includes("gitlab")) {
+    return "gitlab";
+  }
+  if (url.includes("bitbucket")) {
+    return "bitbucket";
+  }
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
+    return "azure-devops";
+  }
+  if (normalize(env.GITHUB_REPOSITORY)) {
+    return "github";
+  }
+  if (normalize(env.CI_PROJECT_PATH) || normalize(env.GITLAB_CI)) {
+    return "gitlab";
+  }
+  if (normalize(env.BITBUCKET_REPO_SLUG)) {
+    return "bitbucket";
+  }
+  if (normalize(env.BUILD_REPOSITORY_URI)) {
+    return "azure-devops";
+  }
+  return "unknown";
+}
+function classifyRefKind(env = process.env) {
+  const githubRefType = normalize(env.GITHUB_REF_TYPE)?.toLowerCase();
+  const githubRef = normalize(env.GITHUB_REF);
+  const azureRef = normalize(env.BUILD_SOURCEBRANCH);
+  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize(env.CI_COMMIT_TAG) || normalize(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
+    return "tag";
+  }
+  const githubRefName = normalize(env.GITHUB_REF_NAME);
+  const githubDefault = normalize(env.GITHUB_DEFAULT_BRANCH);
+  if (githubRefName && githubDefault) {
+    return githubRefName === githubDefault ? "default-branch" : "branch";
+  }
+  const gitlabRef = normalize(env.CI_COMMIT_REF_NAME);
+  const gitlabDefault = normalize(env.CI_DEFAULT_BRANCH);
+  if (gitlabRef && gitlabDefault) {
+    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
+  }
+  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize(env.BITBUCKET_BRANCH) || normalize(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
+    return "branch";
+  }
+  return "unknown";
+}
+function detectRepoContext(input, env = process.env) {
+  const repoUrl = normalizeRepoUrl(input.repoUrl) ?? normalizeRepoUrl(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl(env.CI_PROJECT_URL) ?? normalizeRepoUrl(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl(env.BUILD_REPOSITORY_URI);
+  const repoSlug = normalize(input.repoSlug) ?? normalize(env.GITHUB_REPOSITORY) ?? normalize(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize(env.BUILD_REPOSITORY_NAME);
+  const ref = normalize(input.ref) ?? normalize(env.GITHUB_REF_NAME) ?? normalize(env.CI_COMMIT_REF_NAME) ?? normalize(env.BITBUCKET_BRANCH) ?? normalize(env.BUILD_SOURCEBRANCHNAME);
+  const sha = normalize(input.sha) ?? normalize(env.GITHUB_SHA) ?? normalize(env.CI_COMMIT_SHA) ?? normalize(env.BITBUCKET_COMMIT) ?? normalize(env.BUILD_SOURCEVERSION);
+  const provider = parseProvider(input.gitProvider, repoUrl, env);
+  const refKind = classifyRefKind(env);
+  return {
+    provider,
+    repoUrl,
+    repoSlug,
+    ref,
+    sha,
+    refKind
+  };
+}
+var init_repo_context = __esm({
+  "node_modules/@postman-cse/automation-core/dist/repo-context.js"() {
+  }
+});
+
 // node_modules/@postman-cse/automation-core/node_modules/undici/lib/core/symbols.js
 var require_symbols = __commonJS({
   "node_modules/@postman-cse/automation-core/node_modules/undici/lib/core/symbols.js"(exports2, module2) {
@@ -12042,7 +12290,7 @@ var require_response = __commonJS({
     var assert = require("node:assert");
     var { types } = require("node:util");
     var textEncoder = new TextEncoder("utf-8");
-    var Response = class _Response {
+    var Response2 = class _Response {
       // Creates network error Response.
       static error() {
         const responseObject = fromInnerResponse(makeNetworkError(), "immutable");
@@ -12185,8 +12433,8 @@ var require_response = __commonJS({
         return `Response ${nodeUtil.formatWithOptions(options, properties)}`;
       }
     };
-    mixinBody(Response);
-    Object.defineProperties(Response.prototype, {
+    mixinBody(Response2);
+    Object.defineProperties(Response2.prototype, {
       type: kEnumerableProperty,
       url: kEnumerableProperty,
       status: kEnumerableProperty,
@@ -12202,7 +12450,7 @@ var require_response = __commonJS({
         configurable: true
       }
     });
-    Object.defineProperties(Response, {
+    Object.defineProperties(Response2, {
       json: kEnumerableProperty,
       redirect: kEnumerableProperty,
       error: kEnumerableProperty
@@ -12335,7 +12583,7 @@ var require_response = __commonJS({
       }
     }
     function fromInnerResponse(innerResponse, guard) {
-      const response = new Response(kConstruct);
+      const response = new Response2(kConstruct);
       response[kState] = innerResponse;
       response[kHeaders] = new Headers2(kConstruct);
       setHeadersList(response[kHeaders], innerResponse.headersList);
@@ -12403,7 +12651,7 @@ var require_response = __commonJS({
       makeResponse,
       makeAppropriateNetworkError,
       filterResponse,
-      Response,
+      Response: Response2,
       cloneResponse,
       fromInnerResponse
     };
@@ -15075,7 +15323,7 @@ var require_cache = __commonJS({
     var { urlEquals, getFieldValues } = require_util5();
     var { kEnumerableProperty, isDisturbed } = require_util();
     var { webidl } = require_webidl();
-    var { Response, cloneResponse, fromInnerResponse } = require_response();
+    var { Response: Response2, cloneResponse, fromInnerResponse } = require_response();
     var { Request, fromInnerRequest } = require_request2();
     var { kState } = require_symbols2();
     var { fetching } = require_fetch();
@@ -15602,7 +15850,7 @@ var require_cache = __commonJS({
         converter: webidl.converters.DOMString
       }
     ]);
-    webidl.converters.Response = webidl.interfaceConverter(Response);
+    webidl.converters.Response = webidl.interfaceConverter(Response2);
     webidl.converters["sequence<RequestInfo>"] = webidl.sequenceConverter(
       webidl.converters.RequestInfo
     );
@@ -18601,6 +18849,443 @@ var require_undici = __commonJS({
     module2.exports.mockErrors = mockErrors;
     var { EventSource } = require_eventsource();
     module2.exports.EventSource = EventSource;
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/telemetry.js
+function getProxyDispatcher() {
+  return proxyDispatcher ??= new import_undici.EnvHttpProxyAgent();
+}
+function resolveActionVersion(explicit, env = process.env) {
+  if (explicit) {
+    return explicit;
+  }
+  const ref = env.GITHUB_ACTION_REF?.trim();
+  if (ref) {
+    return ref;
+  }
+  return typeof __ACTION_VERSION__ !== "undefined" && __ACTION_VERSION__ ? __ACTION_VERSION__ : "unknown";
+}
+function telemetryDisabled(env) {
+  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
+  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
+    return true;
+  }
+  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
+  if (dnt && dnt !== "0" && dnt !== "false") {
+    return true;
+  }
+  return false;
+}
+function sha256(value) {
+  return (0, import_node_crypto.createHash)("sha256").update(value).digest("hex");
+}
+function accountTypeFromConsumer(consumerType) {
+  const t = (consumerType ?? "").trim().toLowerCase();
+  if (!t) {
+    return "unknown";
+  }
+  return t === "service_account" ? "service" : "user";
+}
+function maybeNotice(logger30) {
+  if (noticeShown || !logger30) {
+    return;
+  }
+  noticeShown = true;
+  logger30.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
+}
+function buildTelemetryEvent(params) {
+  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
+  const ci = detectCiContext(env);
+  const repo = detectRepoContext({}, env);
+  const repoSlug = repo.repoSlug;
+  const repoSource = repoSlug ?? repo.repoUrl;
+  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
+  return {
+    schema_version: SCHEMA_VERSION,
+    event: "completion",
+    action,
+    action_version: actionVersion || "unknown",
+    team_id: teamId,
+    ci_provider: ci.ciProvider,
+    git_provider: repo.provider,
+    run_id: ci.runId,
+    runner_kind: ci.runnerKind,
+    repo_id: repoSource ? sha256(repoSource) : void 0,
+    org_id: owner ? sha256(owner) : void 0,
+    account_type: accountType,
+    event_trigger: ci.eventTrigger,
+    runner_os: ci.runnerOs,
+    ref_kind: repo.refKind,
+    outcome,
+    ts: now()
+  };
+}
+async function send(event, options) {
+  const env = options.env ?? process.env;
+  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
+  const transport = options.transport ?? import_undici.fetch;
+  const dispatcher = options.dispatcher ?? getProxyDispatcher();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  timer.unref?.();
+  const init = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(event),
+    signal: controller.signal
+  };
+  init.dispatcher = dispatcher;
+  try {
+    await transport(endpoint, init);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function createTelemetryContext(options) {
+  const env = options.env ?? process.env;
+  const now = options.now ?? Date.now;
+  const actionVersion = resolveActionVersion(options.actionVersion, env);
+  let teamId = "";
+  let accountType = "unknown";
+  let emitted = false;
+  return {
+    setTeamId(value) {
+      if (value) {
+        teamId = String(value);
+      }
+    },
+    setAccountType(consumerType) {
+      accountType = accountTypeFromConsumer(consumerType);
+    },
+    emitCompletion(outcome) {
+      if (emitted) {
+        return;
+      }
+      emitted = true;
+      try {
+        if (telemetryDisabled(env) || !teamId) {
+          return;
+        }
+        const event = buildTelemetryEvent({
+          action: options.action,
+          actionVersion,
+          teamId,
+          accountType,
+          outcome,
+          env,
+          now
+        });
+        maybeNotice(options.logger);
+        void send(event, options).catch(() => {
+        });
+      } catch {
+      }
+    }
+  };
+}
+var import_node_crypto, import_undici, SCHEMA_VERSION, DEFAULT_TIMEOUT_MS, DEFAULT_ENDPOINT, proxyDispatcher, noticeShown;
+var init_telemetry = __esm({
+  "node_modules/@postman-cse/automation-core/dist/telemetry.js"() {
+    import_node_crypto = require("node:crypto");
+    import_undici = __toESM(require_undici(), 1);
+    init_ci_context();
+    init_repo_context();
+    SCHEMA_VERSION = 3;
+    DEFAULT_TIMEOUT_MS = 1500;
+    DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
+    noticeShown = false;
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/logger.js
+function defaultCorrelationId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+function resolveLogLevel(env = process.env) {
+  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
+  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
+    return "debug";
+  if (explicit === "info")
+    return "info";
+  if (explicit === "warn" || explicit === "warning")
+    return "warning";
+  if (explicit === "error" || explicit === "quiet")
+    return "error";
+  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
+    return "debug";
+  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
+    return "debug";
+  return "info";
+}
+function isTruthyFlag(value) {
+  if (!value)
+    return false;
+  const flag = value.trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+}
+function actionSink(core) {
+  return {
+    debug: (message) => core.debug?.(message),
+    info: (message) => core.info(message),
+    warning: (message) => (core.warning ?? core.info)(message),
+    error: (message) => (core.error ?? core.warning ?? core.info)(message),
+    startGroup: core.startGroup ? (name3) => core.startGroup?.(name3) : void 0,
+    endGroup: core.endGroup ? () => core.endGroup?.() : void 0,
+    isDebug: core.isDebug ? () => core.isDebug?.() ?? false : void 0
+  };
+}
+function renderValue(value, maxLength = 512) {
+  if (value === void 0)
+    return "undefined";
+  if (value === null)
+    return "null";
+  if (typeof value === "string")
+    return truncate(value, maxLength);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (value instanceof Error)
+    return truncate(describeError(value), maxLength);
+  if (Array.isArray(value)) {
+    return truncate(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
+  }
+  try {
+    return truncate(JSON.stringify(value) ?? String(value), maxLength);
+  } catch {
+    return "<unserializable>";
+  }
+}
+function truncate(text, maxLength) {
+  if (text.length <= maxLength)
+    return text;
+  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
+}
+function describeError(error, maxDepth = 5) {
+  const parts = [];
+  let current = error;
+  let depth = 0;
+  while (current !== void 0 && current !== null && depth < maxDepth) {
+    if (current instanceof Error) {
+      const code = current.code;
+      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
+      current = current.cause;
+    } else if (typeof current === "object") {
+      try {
+        parts.push(JSON.stringify(current) ?? String(current));
+      } catch {
+        parts.push(String(current));
+      }
+      current = void 0;
+    } else {
+      parts.push(String(current));
+      current = void 0;
+    }
+    depth += 1;
+  }
+  if (parts.length === 0)
+    return "unknown error";
+  return parts.join(" <- caused by ");
+}
+function createLogger(options) {
+  const env = options.env ?? process.env;
+  const level = options.level ?? resolveLogLevel(env);
+  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
+  const correlationId = options.correlationId ?? defaultCorrelationId();
+  const now = options.now ?? (() => Date.now());
+  const threshold = LEVEL_ORDER[level];
+  function addSecret(value) {
+    if (typeof value !== "string")
+      return;
+    const trimmed = value.trim();
+    if (trimmed.length < MIN_SECRET_LENGTH)
+      return;
+    secrets.add(trimmed);
+  }
+  function redact(text) {
+    let output = typeof text === "string" ? text : renderValue(text, 4096);
+    for (const secret of secrets) {
+      if (!secret)
+        continue;
+      output = output.split(secret).join("***");
+      const encoded = encodeURIComponent(secret);
+      if (encoded !== secret)
+        output = output.split(encoded).join("***");
+    }
+    return output;
+  }
+  function build(baseFields) {
+    function emit(target, message, fields) {
+      if (LEVEL_ORDER[target] < threshold)
+        return;
+      const merged = { ...baseFields, ...fields ?? {} };
+      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
+      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
+      switch (target) {
+        case "debug":
+          options.sink.debug(line);
+          break;
+        case "info":
+          options.sink.info(line);
+          break;
+        case "warning":
+          options.sink.warning(line);
+          break;
+        case "error":
+          options.sink.error(line);
+          break;
+      }
+    }
+    const logger30 = {
+      level,
+      correlationId,
+      addSecret,
+      redact,
+      isDebug: () => threshold <= LEVEL_ORDER.debug,
+      debug: (message, fields) => emit("debug", message, fields),
+      info: (message, fields) => emit("info", message, fields),
+      warning: (message, fields) => emit("warning", message, fields),
+      error: (message, fields) => emit("error", message, fields),
+      failure: (message, error, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error) }),
+      child: (fields) => build({ ...baseFields, ...fields }),
+      async phase(name3, fn, fields) {
+        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name3 });
+        const started = now();
+        scoped.debug("phase start");
+        options.sink.startGroup?.(name3);
+        try {
+          const result = await fn();
+          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
+          return result;
+        } catch (error) {
+          scoped.failure("phase failed", error, { duration_ms: Math.round(now() - started) });
+          throw error;
+        } finally {
+          options.sink.endGroup?.();
+        }
+      }
+    };
+    return logger30;
+  }
+  const root = build({ run: correlationId, ...options.fields ?? {} });
+  return root;
+}
+var LEVEL_ORDER, MIN_SECRET_LENGTH;
+var init_logger = __esm({
+  "node_modules/@postman-cse/automation-core/dist/logger.js"() {
+    LEVEL_ORDER = {
+      debug: 10,
+      info: 20,
+      warning: 30,
+      error: 40
+    };
+    MIN_SECRET_LENGTH = 4;
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/secrets-resolver.js
+var init_secrets_resolver = __esm({
+  "node_modules/@postman-cse/automation-core/dist/secrets-resolver.js"() {
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/http/http-error.js
+var init_http_error = __esm({
+  "node_modules/@postman-cse/automation-core/dist/http/http-error.js"() {
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/http/retry.js
+function sleep(delayMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
+}
+function normalizeRetryOptions(options) {
+  return {
+    maxAttempts: Math.max(1, options.maxAttempts ?? 3),
+    delayMs: Math.max(0, options.delayMs ?? 2e3),
+    backoffMultiplier: Math.max(1, options.backoffMultiplier ?? 1),
+    maxDelayMs: options.maxDelayMs === void 0 ? Number.POSITIVE_INFINITY : Math.max(0, options.maxDelayMs),
+    onRetry: options.onRetry ?? (async () => void 0),
+    shouldRetry: options.shouldRetry ?? (() => true),
+    sleep: options.sleep ?? sleep
+  };
+}
+async function retry(operation, options = {}) {
+  const normalized = normalizeRetryOptions(options);
+  let nextDelayMs = normalized.delayMs;
+  for (let attempt = 1; attempt <= normalized.maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const shouldRetry = attempt < normalized.maxAttempts && normalized.shouldRetry(error, {
+        attempt,
+        maxAttempts: normalized.maxAttempts
+      });
+      if (!shouldRetry)
+        throw error;
+      await normalized.onRetry({
+        attempt,
+        maxAttempts: normalized.maxAttempts,
+        delayMs: nextDelayMs,
+        error
+      });
+      await normalized.sleep(nextDelayMs);
+      nextDelayMs = Math.min(normalized.maxDelayMs, Math.round(nextDelayMs * normalized.backoffMultiplier));
+    }
+  }
+  throw new Error("Retry exhausted without returning or throwing");
+}
+function fullJitterDelayMs(attempt, baseMs = 400, capMs = 5e3, random = Math.random, rounding = "floor") {
+  const ceiling = Math.max(0, Math.min(Math.max(0, capMs), Math.max(0, baseMs) * 2 ** Math.max(0, attempt)));
+  const delay5 = random() * ceiling;
+  return rounding === "round" ? Math.round(delay5) : Math.floor(delay5);
+}
+function parseRetryAfterMs(value, nowMs = Date.now()) {
+  const trimmed = value?.trim();
+  if (!trimmed)
+    return void 0;
+  if (/^\d+$/.test(trimmed))
+    return Number(trimmed) * 1e3;
+  const dateMs = Date.parse(trimmed);
+  return Number.isNaN(dateMs) ? void 0 : Math.max(0, dateMs - nowMs);
+}
+function computeBoundedRetryDelayMs(options) {
+  const maxDelayMs = Math.max(0, options.maxDelayMs ?? 8e3);
+  const retryAfterMs = parseRetryAfterMs(options.retryAfterHeader, options.nowMs);
+  if (retryAfterMs !== void 0)
+    return Math.min(maxDelayMs, retryAfterMs);
+  return fullJitterDelayMs(Math.max(0, options.attempt - 1), options.baseDelayMs ?? 500, maxDelayMs, options.random, options.rounding ?? "round");
+}
+function isTransientHttpStatus(status) {
+  return status === 408 || status === 429 || status >= 500;
+}
+var init_retry = __esm({
+  "node_modules/@postman-cse/automation-core/dist/http/retry.js"() {
+    init_http_error();
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/http/gateway-client.js
+var init_gateway_client = __esm({
+  "node_modules/@postman-cse/automation-core/dist/http/gateway-client.js"() {
+    init_http_error();
+    init_retry();
+  }
+});
+
+// node_modules/@postman-cse/automation-core/dist/index.js
+var init_dist = __esm({
+  "node_modules/@postman-cse/automation-core/dist/index.js"() {
+    init_ci_context();
+    init_repo_context();
+    init_telemetry();
+    init_logger();
+    init_secrets_resolver();
+    init_http_error();
+    init_retry();
+    init_gateway_client();
   }
 });
 
@@ -61521,7 +62206,7 @@ var require_response2 = __commonJS({
     var assert = require("node:assert");
     var { isomorphicEncode, serializeJavascriptValueToJSONString } = require_infra();
     var textEncoder = new TextEncoder("utf-8");
-    var Response = class _Response {
+    var Response2 = class _Response {
       /** @type {Headers} */
       #headers;
       #state;
@@ -61691,13 +62376,13 @@ var require_response2 = __commonJS({
         response.#state = newState;
       }
     };
-    var { getResponseHeaders: getResponseHeaders2, setResponseHeaders, getResponseState, setResponseState } = Response;
-    Reflect.deleteProperty(Response, "getResponseHeaders");
-    Reflect.deleteProperty(Response, "setResponseHeaders");
-    Reflect.deleteProperty(Response, "getResponseState");
-    Reflect.deleteProperty(Response, "setResponseState");
-    mixinBody(Response, getResponseState);
-    Object.defineProperties(Response.prototype, {
+    var { getResponseHeaders: getResponseHeaders2, setResponseHeaders, getResponseState, setResponseState } = Response2;
+    Reflect.deleteProperty(Response2, "getResponseHeaders");
+    Reflect.deleteProperty(Response2, "setResponseHeaders");
+    Reflect.deleteProperty(Response2, "getResponseState");
+    Reflect.deleteProperty(Response2, "setResponseState");
+    mixinBody(Response2, getResponseState);
+    Object.defineProperties(Response2.prototype, {
       type: kEnumerableProperty,
       url: kEnumerableProperty,
       status: kEnumerableProperty,
@@ -61713,7 +62398,7 @@ var require_response2 = __commonJS({
         configurable: true
       }
     });
-    Object.defineProperties(Response, {
+    Object.defineProperties(Response2, {
       json: kEnumerableProperty,
       redirect: kEnumerableProperty,
       error: kEnumerableProperty
@@ -61846,7 +62531,7 @@ var require_response2 = __commonJS({
       }
     }
     function fromInnerResponse(innerResponse, guard) {
-      const response = new Response(kConstruct);
+      const response = new Response2(kConstruct);
       setResponseState(response, innerResponse);
       const headers = new Headers2(kConstruct);
       setResponseHeaders(response, headers);
@@ -61900,14 +62585,14 @@ var require_response2 = __commonJS({
         converter: webidl.converters.HeadersInit
       }
     ]);
-    webidl.is.Response = webidl.util.MakeTypeAssertion(Response);
+    webidl.is.Response = webidl.util.MakeTypeAssertion(Response2);
     module2.exports = {
       isNetworkError: isNetworkError2,
       makeNetworkError,
       makeResponse,
       makeAppropriateNetworkError,
       filterResponse,
-      Response,
+      Response: Response2,
       cloneResponse,
       fromInnerResponse,
       getResponseState
@@ -68175,90 +68860,6 @@ ${captureLines}` : capture.stack;
   }
 });
 
-// src/lib/retry.ts
-function sleep(delayMs) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, delayMs);
-  });
-}
-function parseRetryAfterMs(value, nowMs = Date.now()) {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return void 0;
-  }
-  if (/^\d+$/.test(trimmed)) {
-    return Number(trimmed) * 1e3;
-  }
-  const dateMs = Date.parse(trimmed);
-  if (!Number.isNaN(dateMs)) {
-    return Math.max(0, dateMs - nowMs);
-  }
-  return void 0;
-}
-function computeBoundedRetryDelayMs(options) {
-  const baseDelayMs = Math.max(0, options.baseDelayMs ?? ARM_RETRY_BASE_DELAY_MS);
-  const maxDelayMs = Math.max(0, options.maxDelayMs ?? ARM_RETRY_MAX_DELAY_MS);
-  const random = options.random ?? Math.random;
-  const signal = parseRetryAfterMs(options.retryAfterHeader, options.nowMs ?? Date.now());
-  if (signal !== void 0) {
-    return Math.min(Math.max(0, signal), maxDelayMs);
-  }
-  const exponent = Math.max(0, options.attempt - 1);
-  const ceiling = Math.min(maxDelayMs, baseDelayMs * 2 ** exponent);
-  return Math.round(random() * ceiling);
-}
-function isTransientHttpStatus(status) {
-  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
-}
-function normalizeRetryOptions(options) {
-  return {
-    maxAttempts: Math.max(1, options.maxAttempts ?? 3),
-    delayMs: Math.max(0, options.delayMs ?? 2e3),
-    backoffMultiplier: Math.max(1, options.backoffMultiplier ?? 1),
-    maxDelayMs: options.maxDelayMs === void 0 ? Number.POSITIVE_INFINITY : Math.max(0, options.maxDelayMs),
-    onRetry: options.onRetry ?? (async () => void 0),
-    shouldRetry: options.shouldRetry ?? (() => true),
-    sleep: options.sleep ?? sleep
-  };
-}
-async function retry(operation, options = {}) {
-  const normalized = normalizeRetryOptions(options);
-  let nextDelayMs = normalized.delayMs;
-  for (let attempt = 1; attempt <= normalized.maxAttempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      const shouldRetry = attempt < normalized.maxAttempts && normalized.shouldRetry(error, {
-        attempt,
-        maxAttempts: normalized.maxAttempts
-      });
-      if (!shouldRetry) {
-        throw error;
-      }
-      await normalized.onRetry({
-        attempt,
-        maxAttempts: normalized.maxAttempts,
-        delayMs: nextDelayMs,
-        error
-      });
-      await normalized.sleep(nextDelayMs);
-      nextDelayMs = Math.min(
-        normalized.maxDelayMs,
-        Math.round(nextDelayMs * normalized.backoffMultiplier)
-      );
-    }
-  }
-  throw new Error("Retry exhausted without returning or throwing");
-}
-var ARM_RETRY_BASE_DELAY_MS, ARM_RETRY_MAX_DELAY_MS;
-var init_retry = __esm({
-  "src/lib/retry.ts"() {
-    "use strict";
-    ARM_RETRY_BASE_DELAY_MS = 500;
-    ARM_RETRY_MAX_DELAY_MS = 8e3;
-  }
-});
-
 // src/lib/azure/cloud.ts
 function normalizeAuthorityHost(value) {
   return value.trim().replace(/\/+$/, "").toLowerCase();
@@ -68493,7 +69094,7 @@ var MAX_ARM_LIST_PAGES, ArmHttpError;
 var init_arm_rest = __esm({
   "src/lib/azure/arm-rest.ts"() {
     "use strict";
-    init_retry();
+    init_dist();
     init_cloud();
     MAX_ARM_LIST_PAGES = 100;
     ArmHttpError = class extends Error {
@@ -76075,566 +76676,7 @@ __export(cli_exports, {
 module.exports = __toCommonJS(cli_exports);
 var import_node_fs7 = require("node:fs");
 var import_node_path13 = __toESM(require("node:path"), 1);
-
-// node_modules/@postman-cse/automation-core/dist/ci-context.js
-function norm(value) {
-  const trimmed = (value ?? "").trim();
-  return trimmed.length > 0 ? trimmed : void 0;
-}
-function detectEventTrigger(env = process.env) {
-  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
-  if (ghEvent) {
-    if (ghEvent === "push")
-      return "push";
-    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
-      return "pull_request";
-    if (ghEvent === "schedule")
-      return "schedule";
-    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
-      return "manual";
-    return "other";
-  }
-  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
-  if (glSource) {
-    if (glSource === "push")
-      return "push";
-    if (glSource === "merge_request_event")
-      return "pull_request";
-    if (glSource === "schedule")
-      return "schedule";
-    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
-      return "manual";
-    }
-    return "other";
-  }
-  if (norm(env.BITBUCKET_PR_ID))
-    return "pull_request";
-  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
-    return "other";
-  }
-  return "unknown";
-}
-function detectRunnerOs(env = process.env) {
-  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
-  if (runnerOs === "linux")
-    return "linux";
-  if (runnerOs === "macos")
-    return "macos";
-  if (runnerOs === "windows")
-    return "windows";
-  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
-  if (platform2 === "linux")
-    return "linux";
-  if (platform2 === "darwin")
-    return "macos";
-  if (platform2 === "win32")
-    return "windows";
-  return "unknown";
-}
-function detectCiContext(env = process.env) {
-  const provider = detectCiProviderContext(env);
-  return {
-    ...provider,
-    eventTrigger: detectEventTrigger(env),
-    runnerOs: detectRunnerOs(env)
-  };
-}
-function detectCiProviderContext(env = process.env) {
-  if (norm(env.GITHUB_ACTIONS)) {
-    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
-    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
-    return {
-      ciProvider: "github",
-      runId: norm(env.GITHUB_RUN_ID),
-      runnerKind
-    };
-  }
-  if (norm(env.GITLAB_CI)) {
-    return {
-      ciProvider: "gitlab",
-      runId: norm(env.CI_PIPELINE_ID) ?? norm(env.CI_PIPELINE_IID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.CIRCLECI)) {
-    return {
-      ciProvider: "circleci",
-      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.BUILDKITE)) {
-    const computeType = norm(env.BUILDKITE_COMPUTE_TYPE);
-    const runnerKind = computeType === "hosted" ? "hosted" : computeType === "self-hosted" ? "self-hosted" : "unknown";
-    return {
-      ciProvider: "buildkite",
-      runId: norm(env.BUILDKITE_BUILD_ID) ?? norm(env.BUILDKITE_BUILD_NUMBER),
-      runnerKind
-    };
-  }
-  if (norm(env.TF_BUILD)) {
-    return {
-      ciProvider: "azure",
-      runId: norm(env.BUILD_BUILDID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.CODEBUILD_BUILD_ID)) {
-    return {
-      ciProvider: "codebuild",
-      runId: norm(env.CODEBUILD_BUILD_ID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.BITBUCKET_BUILD_NUMBER)) {
-    return {
-      ciProvider: "bitbucket",
-      runId: norm(env.BITBUCKET_BUILD_NUMBER),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.TEAMCITY_VERSION)) {
-    return {
-      ciProvider: "teamcity",
-      runId: norm(env.BUILD_NUMBER),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.HARNESS_BUILD_ID)) {
-    return {
-      ciProvider: "harness",
-      runId: norm(env.HARNESS_EXECUTION_ID) ?? norm(env.HARNESS_BUILD_ID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.JENKINS_URL)) {
-    return {
-      ciProvider: "jenkins",
-      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER) ?? norm(env.BUILD_TAG),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
-    return {
-      ciProvider: "concourse",
-      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NAME),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.CI)) {
-    return { ciProvider: "other", runnerKind: "unknown" };
-  }
-  return { ciProvider: "unknown", runnerKind: "unknown" };
-}
-
-// node_modules/@postman-cse/automation-core/dist/repo-context.js
-function normalize(value) {
-  const trimmed = (value ?? "").trim();
-  return trimmed.length > 0 ? trimmed : void 0;
-}
-function normalizeRepoUrl(url) {
-  const raw = normalize(url);
-  if (!raw) {
-    return void 0;
-  }
-  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
-  if (sshMatch) {
-    const host = sshMatch[1];
-    const path14 = sshMatch[2];
-    return `https://${host}/${path14}`;
-  }
-  return raw.replace(/\.git$/, "");
-}
-function parseProvider(explicitProvider, repoUrl, env) {
-  const explicit = normalize(explicitProvider)?.toLowerCase();
-  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
-    return explicit;
-  }
-  const url = (repoUrl ?? "").toLowerCase();
-  if (url.includes("github")) {
-    return "github";
-  }
-  if (url.includes("gitlab")) {
-    return "gitlab";
-  }
-  if (url.includes("bitbucket")) {
-    return "bitbucket";
-  }
-  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
-    return "azure-devops";
-  }
-  if (normalize(env.GITHUB_REPOSITORY)) {
-    return "github";
-  }
-  if (normalize(env.CI_PROJECT_PATH) || normalize(env.GITLAB_CI)) {
-    return "gitlab";
-  }
-  if (normalize(env.BITBUCKET_REPO_SLUG)) {
-    return "bitbucket";
-  }
-  if (normalize(env.BUILD_REPOSITORY_URI)) {
-    return "azure-devops";
-  }
-  return "unknown";
-}
-function classifyRefKind(env = process.env) {
-  const githubRefType = normalize(env.GITHUB_REF_TYPE)?.toLowerCase();
-  const githubRef = normalize(env.GITHUB_REF);
-  const azureRef = normalize(env.BUILD_SOURCEBRANCH);
-  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize(env.CI_COMMIT_TAG) || normalize(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
-    return "tag";
-  }
-  const githubRefName = normalize(env.GITHUB_REF_NAME);
-  const githubDefault = normalize(env.GITHUB_DEFAULT_BRANCH);
-  if (githubRefName && githubDefault) {
-    return githubRefName === githubDefault ? "default-branch" : "branch";
-  }
-  const gitlabRef = normalize(env.CI_COMMIT_REF_NAME);
-  const gitlabDefault = normalize(env.CI_DEFAULT_BRANCH);
-  if (gitlabRef && gitlabDefault) {
-    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
-  }
-  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize(env.BITBUCKET_BRANCH) || normalize(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
-    return "branch";
-  }
-  return "unknown";
-}
-function detectRepoContext(input, env = process.env) {
-  const repoUrl = normalizeRepoUrl(input.repoUrl) ?? normalizeRepoUrl(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl(env.CI_PROJECT_URL) ?? normalizeRepoUrl(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl(env.BUILD_REPOSITORY_URI);
-  const repoSlug = normalize(input.repoSlug) ?? normalize(env.GITHUB_REPOSITORY) ?? normalize(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize(env.BUILD_REPOSITORY_NAME);
-  const ref = normalize(input.ref) ?? normalize(env.GITHUB_REF_NAME) ?? normalize(env.CI_COMMIT_REF_NAME) ?? normalize(env.BITBUCKET_BRANCH) ?? normalize(env.BUILD_SOURCEBRANCHNAME);
-  const sha = normalize(input.sha) ?? normalize(env.GITHUB_SHA) ?? normalize(env.CI_COMMIT_SHA) ?? normalize(env.BITBUCKET_COMMIT) ?? normalize(env.BUILD_SOURCEVERSION);
-  const provider = parseProvider(input.gitProvider, repoUrl, env);
-  const refKind = classifyRefKind(env);
-  return {
-    provider,
-    repoUrl,
-    repoSlug,
-    ref,
-    sha,
-    refKind
-  };
-}
-
-// node_modules/@postman-cse/automation-core/dist/telemetry.js
-var import_node_crypto = require("node:crypto");
-var import_undici = __toESM(require_undici(), 1);
-var SCHEMA_VERSION = 3;
-var DEFAULT_TIMEOUT_MS = 1500;
-var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
-var proxyDispatcher;
-function getProxyDispatcher() {
-  return proxyDispatcher ??= new import_undici.EnvHttpProxyAgent();
-}
-function resolveActionVersion(explicit, env = process.env) {
-  if (explicit) {
-    return explicit;
-  }
-  const ref = env.GITHUB_ACTION_REF?.trim();
-  if (ref) {
-    return ref;
-  }
-  return typeof __ACTION_VERSION__ !== "undefined" && __ACTION_VERSION__ ? __ACTION_VERSION__ : "unknown";
-}
-function telemetryDisabled(env) {
-  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
-  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
-    return true;
-  }
-  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
-  if (dnt && dnt !== "0" && dnt !== "false") {
-    return true;
-  }
-  return false;
-}
-function sha256(value) {
-  return (0, import_node_crypto.createHash)("sha256").update(value).digest("hex");
-}
-function accountTypeFromConsumer(consumerType) {
-  const t = (consumerType ?? "").trim().toLowerCase();
-  if (!t) {
-    return "unknown";
-  }
-  return t === "service_account" ? "service" : "user";
-}
-var noticeShown = false;
-function maybeNotice(logger30) {
-  if (noticeShown || !logger30) {
-    return;
-  }
-  noticeShown = true;
-  logger30.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
-}
-function buildTelemetryEvent(params) {
-  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
-  const ci = detectCiContext(env);
-  const repo = detectRepoContext({}, env);
-  const repoSlug = repo.repoSlug;
-  const repoSource = repoSlug ?? repo.repoUrl;
-  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
-  return {
-    schema_version: SCHEMA_VERSION,
-    event: "completion",
-    action,
-    action_version: actionVersion || "unknown",
-    team_id: teamId,
-    ci_provider: ci.ciProvider,
-    git_provider: repo.provider,
-    run_id: ci.runId,
-    runner_kind: ci.runnerKind,
-    repo_id: repoSource ? sha256(repoSource) : void 0,
-    org_id: owner ? sha256(owner) : void 0,
-    account_type: accountType,
-    event_trigger: ci.eventTrigger,
-    runner_os: ci.runnerOs,
-    ref_kind: repo.refKind,
-    outcome,
-    ts: now()
-  };
-}
-async function send(event, options) {
-  const env = options.env ?? process.env;
-  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
-  const transport = options.transport ?? import_undici.fetch;
-  const dispatcher = options.dispatcher ?? getProxyDispatcher();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  timer.unref?.();
-  const init = {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(event),
-    signal: controller.signal
-  };
-  init.dispatcher = dispatcher;
-  try {
-    await transport(endpoint, init);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-function createTelemetryContext(options) {
-  const env = options.env ?? process.env;
-  const now = options.now ?? Date.now;
-  const actionVersion = resolveActionVersion(options.actionVersion, env);
-  let teamId = "";
-  let accountType = "unknown";
-  let emitted = false;
-  return {
-    setTeamId(value) {
-      if (value) {
-        teamId = String(value);
-      }
-    },
-    setAccountType(consumerType) {
-      accountType = accountTypeFromConsumer(consumerType);
-    },
-    emitCompletion(outcome) {
-      if (emitted) {
-        return;
-      }
-      emitted = true;
-      try {
-        if (telemetryDisabled(env) || !teamId) {
-          return;
-        }
-        const event = buildTelemetryEvent({
-          action: options.action,
-          actionVersion,
-          teamId,
-          accountType,
-          outcome,
-          env,
-          now
-        });
-        maybeNotice(options.logger);
-        void send(event, options).catch(() => {
-        });
-      } catch {
-      }
-    }
-  };
-}
-
-// node_modules/@postman-cse/automation-core/dist/logger.js
-var LEVEL_ORDER = {
-  debug: 10,
-  info: 20,
-  warning: 30,
-  error: 40
-};
-function defaultCorrelationId() {
-  return Math.random().toString(36).slice(2, 10);
-}
-function resolveLogLevel(env = process.env) {
-  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
-  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
-    return "debug";
-  if (explicit === "info")
-    return "info";
-  if (explicit === "warn" || explicit === "warning")
-    return "warning";
-  if (explicit === "error" || explicit === "quiet")
-    return "error";
-  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
-    return "debug";
-  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
-    return "debug";
-  return "info";
-}
-function isTruthyFlag(value) {
-  if (!value)
-    return false;
-  const flag = value.trim().toLowerCase();
-  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
-}
-function actionSink(core) {
-  return {
-    debug: (message) => core.debug?.(message),
-    info: (message) => core.info(message),
-    warning: (message) => (core.warning ?? core.info)(message),
-    error: (message) => (core.error ?? core.warning ?? core.info)(message),
-    startGroup: core.startGroup ? (name3) => core.startGroup?.(name3) : void 0,
-    endGroup: core.endGroup ? () => core.endGroup?.() : void 0,
-    isDebug: core.isDebug ? () => core.isDebug?.() ?? false : void 0
-  };
-}
-var MIN_SECRET_LENGTH = 4;
-function renderValue(value, maxLength = 512) {
-  if (value === void 0)
-    return "undefined";
-  if (value === null)
-    return "null";
-  if (typeof value === "string")
-    return truncate(value, maxLength);
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-  if (value instanceof Error)
-    return truncate(describeError(value), maxLength);
-  if (Array.isArray(value)) {
-    return truncate(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
-  }
-  try {
-    return truncate(JSON.stringify(value) ?? String(value), maxLength);
-  } catch {
-    return "<unserializable>";
-  }
-}
-function truncate(text, maxLength) {
-  if (text.length <= maxLength)
-    return text;
-  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
-}
-function describeError(error, maxDepth = 5) {
-  const parts = [];
-  let current = error;
-  let depth = 0;
-  while (current !== void 0 && current !== null && depth < maxDepth) {
-    if (current instanceof Error) {
-      const code = current.code;
-      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
-      current = current.cause;
-    } else if (typeof current === "object") {
-      try {
-        parts.push(JSON.stringify(current) ?? String(current));
-      } catch {
-        parts.push(String(current));
-      }
-      current = void 0;
-    } else {
-      parts.push(String(current));
-      current = void 0;
-    }
-    depth += 1;
-  }
-  if (parts.length === 0)
-    return "unknown error";
-  return parts.join(" <- caused by ");
-}
-function createLogger(options) {
-  const env = options.env ?? process.env;
-  const level = options.level ?? resolveLogLevel(env);
-  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
-  const correlationId = options.correlationId ?? defaultCorrelationId();
-  const now = options.now ?? (() => Date.now());
-  const threshold = LEVEL_ORDER[level];
-  function addSecret(value) {
-    if (typeof value !== "string")
-      return;
-    const trimmed = value.trim();
-    if (trimmed.length < MIN_SECRET_LENGTH)
-      return;
-    secrets.add(trimmed);
-  }
-  function redact(text) {
-    let output = typeof text === "string" ? text : renderValue(text, 4096);
-    for (const secret of secrets) {
-      if (!secret)
-        continue;
-      output = output.split(secret).join("***");
-      const encoded = encodeURIComponent(secret);
-      if (encoded !== secret)
-        output = output.split(encoded).join("***");
-    }
-    return output;
-  }
-  function build(baseFields) {
-    function emit(target, message, fields) {
-      if (LEVEL_ORDER[target] < threshold)
-        return;
-      const merged = { ...baseFields, ...fields ?? {} };
-      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
-      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
-      switch (target) {
-        case "debug":
-          options.sink.debug(line);
-          break;
-        case "info":
-          options.sink.info(line);
-          break;
-        case "warning":
-          options.sink.warning(line);
-          break;
-        case "error":
-          options.sink.error(line);
-          break;
-      }
-    }
-    const logger30 = {
-      level,
-      correlationId,
-      addSecret,
-      redact,
-      isDebug: () => threshold <= LEVEL_ORDER.debug,
-      debug: (message, fields) => emit("debug", message, fields),
-      info: (message, fields) => emit("info", message, fields),
-      warning: (message, fields) => emit("warning", message, fields),
-      error: (message, fields) => emit("error", message, fields),
-      failure: (message, error, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error) }),
-      child: (fields) => build({ ...baseFields, ...fields }),
-      async phase(name3, fn, fields) {
-        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name3 });
-        const started = now();
-        scoped.debug("phase start");
-        options.sink.startGroup?.(name3);
-        try {
-          const result = await fn();
-          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
-          return result;
-        } catch (error) {
-          scoped.failure("phase failed", error, { duration_ms: Math.round(now() - started) });
-          throw error;
-        } finally {
-          options.sink.endGroup?.();
-        }
-      }
-    };
-    return logger30;
-  }
-  const root = build({ run: correlationId, ...options.fields ?? {} });
-  return root;
-}
+init_dist();
 
 // src/action-version.ts
 var import_node_fs = require("node:fs");
@@ -213192,7 +213234,7 @@ async function fetchSpecFromUrl(url, options = {}) {
 }
 
 // src/lib/azure/clients.ts
-init_retry();
+init_dist();
 init_cloud();
 init_logic_apps_native_client();
 
@@ -215878,7 +215920,7 @@ function formatUserSafeError(error) {
 }
 
 // src/lib/azure/api-center-client.ts
-init_retry();
+init_dist();
 init_cloud();
 var API_CENTER_API_VERSION = "2024-03-01";
 var MAX_LIST_PAGES2 = 100;
@@ -216456,7 +216498,7 @@ async function probeSessionIdentity(baseUrl, accessToken, fetchImpl, maxAttempts
 }
 
 // src/lib/postman/token-provider.ts
-init_retry();
+init_dist();
 
 // src/lib/postman/base-urls.ts
 var POSTMAN_ENDPOINT_PROFILES = {

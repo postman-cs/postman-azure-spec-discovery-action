@@ -143,7 +143,7 @@ describe('resource graph paging (direct ARM REST)', () => {
   );
 
   it.each([501, 505] as const)(
-    'AZ-RETRY-022: Resource Graph throwOnHttpError does not retry permanent HTTP %s',
+    'AZ-RETRY-022: Resource Graph follows the shared all-5xx retry policy for HTTP %s',
     async (status) => {
       fetchMock.mockResolvedValue(jsonResponse({ error: 'permanent' }, status));
       const client = new ResourceGraphSdkClient(credentialStub(), {
@@ -152,9 +152,9 @@ describe('resource graph paging (direct ARM REST)', () => {
         sleep: async () => undefined
       });
       await expect(client.queryResources('sub-1', buildCandidateQuery())).rejects.toThrow(
-        new RegExp(`HTTP ${status}`)
+        new RegExp(`failed after 3 attempt|HTTP ${status}`, 'i')
       );
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     }
   );
 

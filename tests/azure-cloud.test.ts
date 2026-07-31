@@ -9,7 +9,7 @@ import {
   computeBoundedRetryDelayMs,
   isTransientHttpStatus,
   parseRetryAfterMs
-} from '../src/lib/retry.js';
+} from '@postman-cse/automation-core';
 
 describe('Azure cloud profiles', () => {
   afterEach(() => {
@@ -124,17 +124,17 @@ describe('bounded Retry-After and full jitter', () => {
     ).toBe(0);
   });
 
-  it('AZ-RETRY-005: transient classification keeps 408/429/500/502/503/504 and rejects permanent 501/505', () => {
-    for (const status of [408, 429, 500, 502, 503, 504]) {
+  it('AZ-RETRY-005: shared transient classification includes 408, 429, and every 5xx', () => {
+    for (const status of [408, 429, 500, 501, 502, 503, 504, 505, 506, 511]) {
       expect(isTransientHttpStatus(status)).toBe(true);
     }
-    for (const status of [400, 401, 403, 404, 501, 505, 506, 511]) {
+    for (const status of [400, 401, 403, 404]) {
       expect(isTransientHttpStatus(status)).toBe(false);
     }
   });
 
   it.each([501, 505] as const)(
-    'AZ-RETRY-006: arm-rest throwOnHttpError does not retry permanent HTTP %s',
+    'AZ-RETRY-006: arm-rest throwOnHttpError follows the shared all-5xx retry policy for HTTP %s',
     async (status) => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('permanent', { status }));
       await expect(
@@ -145,8 +145,8 @@ describe('bounded Retry-After and full jitter', () => {
           throwOnHttpError: true,
           sleep: async () => undefined
         })
-      ).rejects.toThrow(`HTTP ${status}`);
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      ).rejects.toThrow('failed after 3 attempt(s)');
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
       fetchSpy.mockRestore();
     }
   );
