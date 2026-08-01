@@ -87,6 +87,25 @@ jobs:
             echo "::group::$n"; cat "$n.log"; echo "::endgroup::"
           done
           exit $fail
+      - name: Azure emulator transport lane
+        # Budgeted hermetic lane (cap 27s wall-clock): proves the shipped
+        # dist/cli.cjs speaks the real Azure wire protocol -- Entra ID
+        # client-credentials auth, ARM subscription preflight, APIM API
+        # resolution, the two-step APIM export with its Storage SAS download
+        # leg, expired-SAS re-export recovery, untrusted-SAS-host containment
+        # -- against an in-process TLS fixture. Transport rides the runtime's
+        # own env contracts (HTTPS_PROXY, NODE_USE_ENV_PROXY,
+        # NODE_EXTRA_CA_CERTS); no container, no product seam.
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          npm run test:emulator:azure
+          elapsed=$((SECONDS - start))
+          echo "emulator lane wall-clock: ${elapsed}s (cap 27s)"
+          if [ "$elapsed" -gt 27 ]; then
+            echo "::error::Azure emulator lane exceeded its 27s budget (${elapsed}s)"
+            exit 1
+          fi
       - name: Upload expected dist on mismatch
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

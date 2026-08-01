@@ -4,6 +4,18 @@ vi.mock('node:dns/promises', () => ({
   lookup: vi.fn(async () => [{ address: '20.0.0.1', family: 4 }])
 }));
 
+// The spec fetcher issues requests through this package's undici fetch (the
+// pinned dispatcher cannot cross into Node's global fetch). Forward to
+// globalThis.fetch so vi.spyOn(globalThis, 'fetch') still observes and
+// controls the real request path.
+vi.mock('undici', async (importOriginal) => {
+  const original = await importOriginal<typeof import('undici')>();
+  return {
+    ...original,
+    fetch: ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as unknown as typeof original.fetch
+  };
+});
+
 import {
   ApiCenterSdkClient,
   MAX_API_CENTER_CHILDREN_PER_LEVEL

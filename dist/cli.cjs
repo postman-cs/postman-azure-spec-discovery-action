@@ -213122,6 +213122,7 @@ async function fetchSpecFromUrl(url, options = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS2;
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
   const allowedRedirectHosts = new Set((options.allowedRedirectHosts ?? []).map((host) => host.toLowerCase()));
+  const fetchImpl = options.fetchImpl ?? import_undici2.fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -213152,7 +213153,7 @@ async function fetchSpecFromUrl(url, options = {}) {
         };
         let response;
         try {
-          response = await fetch(currentUrl, init);
+          response = await fetchImpl(currentUrl, init);
         } catch (error) {
           if (error instanceof SpecFetchError) throw error;
           if (controller.signal.aborted) {

@@ -1,4 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The spec fetcher issues requests through this package's undici fetch (the
+// pinned dispatcher cannot cross into Node's global fetch). Forward to
+// globalThis.fetch so vi.spyOn(globalThis, 'fetch') still observes and
+// controls the real request path.
+vi.mock('undici', async (importOriginal) => {
+  const original = await importOriginal<typeof import('undici')>();
+  return {
+    ...original,
+    fetch: ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as unknown as typeof original.fetch
+  };
+});
+
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 

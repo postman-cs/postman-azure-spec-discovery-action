@@ -27,6 +27,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
+    "test:emulator:azure": "vitest run --config vitest.emulator.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:coverage": "node scripts/verify-coverage-manifest.mjs"
   },

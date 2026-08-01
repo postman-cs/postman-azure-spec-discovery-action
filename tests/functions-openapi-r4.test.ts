@@ -6,6 +6,18 @@ const { lookupMock } = vi.hoisted(() => ({
 
 vi.mock('node:dns/promises', () => ({ lookup: lookupMock }));
 
+// The spec fetcher issues requests through this package's undici fetch (the
+// pinned dispatcher cannot cross into Node's global fetch). Forward to
+// globalThis.fetch so vi.spyOn(globalThis, 'fetch') still observes and
+// controls the real request path.
+vi.mock('undici', async (importOriginal) => {
+  const original = await importOriginal<typeof import('undici')>();
+  return {
+    ...original,
+    fetch: ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as unknown as typeof original.fetch
+  };
+});
+
 import type { AzureFunctionsClient, FunctionSummary } from '../src/lib/azure/clients.js';
 import { detectFunctionsOpenApiRoutes } from '../src/lib/azure/functions-openapi.js';
 import { FunctionBindingsProvider } from '../src/lib/providers/function-bindings.js';

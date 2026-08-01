@@ -22,7 +22,11 @@ vi.mock('undici', async (importOriginal) => {
         proxyOptions.push(options);
         super(options);
       }
-    }
+    },
+    // The fetcher defaults to this package's undici fetch (dispatcher ABI);
+    // forward to globalThis.fetch so vi.spyOn(globalThis, 'fetch') still
+    // observes and controls the real request path.
+    fetch: ((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) as unknown as typeof original.fetch
   };
 });
 

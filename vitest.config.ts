@@ -41,6 +41,7 @@ export default defineConfig({
               exclude: [
                 ...configDefaults.exclude,
                 'tests/live/**',
+                'tests/emulator/**',
                 ...windowsCwdSensitiveTests,
                 ...windowsSerialReceiptTests
               ]
@@ -57,6 +58,6 @@ export default defineConfig({
         // receipt, so test files must not read that receipt concurrently.
         fileParallelism: false,
         include: ['tests/**/*.test.ts'],
-        exclude: [...configDefaults.exclude, 'tests/live/**']
+        exclude: [...configDefaults.exclude, 'tests/live/**', 'tests/emulator/**']
       }
 });

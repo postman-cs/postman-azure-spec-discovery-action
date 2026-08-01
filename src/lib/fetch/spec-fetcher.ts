@@ -1,6 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
-import { Agent, Pool, ProxyAgent, type Dispatcher } from 'undici';
+import { Agent, fetch as undiciFetch, Pool, ProxyAgent, type Dispatcher } from 'undici';
 
 const MAX_SPEC_BYTES = 10 * 1024 * 1024; // 10 MiB
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -28,6 +28,13 @@ export interface FetchSpecOptions {
    * pass it here. Never used to relax IP/SSRF checks after DNS.
    */
   allowedRedirectHosts?: string[];
+  /**
+   * Test-only fetch override. Defaults to this package's undici fetch so the
+   * pinned dispatcher and the fetch implementation share one undici instance
+   * (Node's global fetch rejects a foreign dispatcher with
+   * 'invalid onRequestStart method').
+   */
+  fetchImpl?: typeof fetch;
 }
 
 export interface FetchedSpec {
@@ -236,6 +243,12 @@ export async function fetchSpecFromUrl(url: string, options: FetchSpecOptions = 
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
   const allowedRedirectHosts = new Set((options.allowedRedirectHosts ?? []).map((host) => host.toLowerCase()));
+  // The dispatcher below is an undici Agent/ProxyAgent from this package's undici.
+  // Node's global fetch is backed by its own bundled undici, and a dispatcher
+  // cannot cross that boundary (undici 8 handlers reject the foreign instance
+  // with 'invalid onRequestStart method'). Default to this package's fetch so
+  // the dispatcher and the fetch implementation always come from one undici.
+  const fetchImpl = options.fetchImpl ?? (undiciFetch as unknown as typeof fetch);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -269,7 +282,7 @@ export async function fetchSpecFromUrl(url: string, options: FetchSpecOptions = 
         };
         let response: Response;
         try {
-          response = await fetch(currentUrl, init);
+          response = await fetchImpl(currentUrl, init);
         } catch (error) {
           if (error instanceof SpecFetchError) throw error;
           if (controller.signal.aborted) {
