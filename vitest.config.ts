@@ -11,6 +11,8 @@ const windowsSerialReceiptTests = [
   'tests/coverage-manifest.test.ts'
 ];
 
+const windowsContentionSensitiveTests = ['tests/logging.test.ts'];
+
 export default defineConfig({
   test: process.platform === 'win32'
     ? {
@@ -27,7 +29,11 @@ export default defineConfig({
               isolate: false,
               // Distinct from windows-fast (different maxWorkers).
               sequence: { groupOrder: 1 },
-              include: [...windowsCwdSensitiveTests, ...windowsSerialReceiptTests]
+              include: [
+                ...windowsCwdSensitiveTests,
+                ...windowsSerialReceiptTests,
+                ...windowsContentionSensitiveTests
+              ]
             }
           },
           {
@@ -43,7 +49,8 @@ export default defineConfig({
                 'tests/live/**',
                 'tests/emulator/**',
                 ...windowsCwdSensitiveTests,
-                ...windowsSerialReceiptTests
+                ...windowsSerialReceiptTests,
+                ...windowsContentionSensitiveTests
               ]
             }
           }
