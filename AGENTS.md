@@ -5,7 +5,10 @@ Discovers Azure-hosted API specs (APIM, App Service, Functions, Logic Apps, and 
 ## Commands
 
 ```bash
-npm ci && npm test && npm run typecheck && npm run lint
+npm ci
+npm test
+npm run typecheck
+npm run lint
 npm run bundle
 npm run verify:dist:assert  # read-only dist contract (CI)
 npm run verify:dist         # rebuild + git diff + assert
