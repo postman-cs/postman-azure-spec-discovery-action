@@ -130,6 +130,8 @@ jobs:
     needs: [classify, verify-package]
     if: ${{ needs.classify.outputs.release_kind == 'immutable' }}
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.npm-publish.outputs.published }}
     permissions:
       contents: write
       id-token: write
@@ -147,10 +149,32 @@ jobs:
         run: |
           tar -xOf release.tgz package/scripts/verify-release-artifacts.mjs > "$RUNNER_TEMP/verify-release-artifacts.mjs"
           node "$RUNNER_TEMP/verify-release-artifacts.mjs"
-      - name: Publish or verify npm package identity
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          generate_release_notes: true
+          files: release-artifacts/release.tgz
+      - name: Publish npm package
+        id: npm-publish
+        continue-on-error: true
         working-directory: release-artifacts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; fi
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
+          VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
+          set +e
+          npm view "$NAME@$VERSION" dist.integrity >/tmp/npm-integrity 2>/tmp/npm-view.err
+          NPM_VIEW_STATUS=$?
+          set -e
+          VERIFIER="$RUNNER_TEMP/verify-release-artifacts.mjs" NPM_VIEW_STATUS="$NPM_VIEW_STATUS" node --input-type=module -e 'import { readFileSync } from "node:fs"; import { spawnSync } from "node:child_process"; import { pathToFileURL } from "node:url"; const status = Number(process.env.NPM_VIEW_STATUS); const errText = readFileSync("/tmp/npm-view.err", "utf8"); const m = await import(pathToFileURL(process.env.VERIFIER).href); if (status === 0) { const published = readFileSync("/tmp/npm-integrity", "utf8").trim(); m.verifyNpmSri("release.tgz", published); console.log("::notice::npm version already published with matching integrity"); process.exit(0); } if (!m.isExplicitNpmE404(errText)) { console.error("::error::npm view failed with a non-E404 error; refusing to publish"); process.exit(1); } const publish = spawnSync("npm", ["publish", "./release.tgz", "--provenance", "--access", "public"], { stdio: "inherit", env: process.env }); process.exit(publish.status === 0 ? 0 : (publish.status ?? 1));'
+          echo "published=true" >> "$GITHUB_OUTPUT"
+      - name: Verify npm registry identity
+        if: steps.npm-publish.outputs.published == 'true'
+        working-directory: release-artifacts
         run: |
           NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
           VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
@@ -158,36 +182,16 @@ jobs:
           npm view "$NAME@$VERSION" dist.integrity >/tmp/npm-integrity 2>/tmp/npm-view.err
           NPM_VIEW_STATUS=$?
           set -e
-          VERIFIER="$RUNNER_TEMP/verify-release-artifacts.mjs" NPM_VIEW_STATUS="$NPM_VIEW_STATUS" node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
-          import { spawnSync } from 'node:child_process';
-          import { pathToFileURL } from 'node:url';
-
-          const status = Number(process.env.NPM_VIEW_STATUS);
-          const errText = readFileSync('/tmp/npm-view.err', 'utf8');
-          const m = await import(pathToFileURL(process.env.VERIFIER).href);
-          if (status === 0) {
-            const published = readFileSync('/tmp/npm-integrity', 'utf8').trim();
-            m.verifyNpmSri('release.tgz', published);
-            console.log('::notice::npm version already published with matching integrity');
-            process.exit(0);
-          }
-          if (!m.isExplicitNpmE404(errText)) {
-            console.error('::error::npm view failed with a non-E404 error; refusing to publish');
-            process.exit(1);
-          }
-          const publish = spawnSync(
-            'npm',
-            ['publish', './release.tgz', '--provenance', '--access', 'public'],
-            { stdio: 'inherit', env: process.env }
-          );
-          process.exit(publish.status === 0 ? 0 : (publish.status ?? 1));
-          NODE
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          generate_release_notes: true
-          files: release-artifacts/release.tgz
+          VERIFIER="$RUNNER_TEMP/verify-release-artifacts.mjs" NPM_VIEW_STATUS="$NPM_VIEW_STATUS" node --input-type=module -e 'import { readFileSync } from "node:fs"; import { pathToFileURL } from "node:url"; const status = Number(process.env.NPM_VIEW_STATUS); const errText = readFileSync("/tmp/npm-view.err", "utf8"); const m = await import(pathToFileURL(process.env.VERIFIER).href); if (status === 0) { const published = readFileSync("/tmp/npm-integrity", "utf8").trim(); m.verifyNpmSri("release.tgz", published); console.log("::notice::npm version already published with matching integrity"); process.exit(0); } if (!m.isExplicitNpmE404(errText)) { console.error("::error::npm view failed with a non-E404 error; refusing to publish"); process.exit(1); } console.error("::error::npm package is not visible after a successful publish"); process.exit(1);'
+      - name: Report npm publish skipped
+        if: steps.npm-publish.outputs.published != 'true'
+        working-directory: release-artifacts
+        run: |
+          NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
+          VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
+          MESSAGE="npm publish for $NAME@$VERSION did not complete (missing/invalid NPM_TOKEN or registry error); GitHub Release remains authoritative; recover via backfill-npm.yml once publish access exists"
+          echo "::warning::$MESSAGE"
+          echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
 
   advance-rolling-aliases:
     needs: [classify, publish]

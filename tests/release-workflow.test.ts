@@ -142,21 +142,25 @@ describe('release workflow publishing contract', () => {
     expect(publish).not.toMatch(/#\s*Equivalent to node scripts\/verify-release-artifacts\.mjs/);
     assertOrder(
       'node "$RUNNER_TEMP/verify-release-artifacts.mjs"',
-      'Publish or verify npm package identity',
-      publish
-    );
-    assertOrder(
-      'node "$RUNNER_TEMP/verify-release-artifacts.mjs"',
       'Publish GitHub release',
       publish
     );
   });
 
-  it('AZ-RELEASE-006: npm SRI/identity uses explicit E404 only, before softprops; aliases after publish', () => {
+  it('AZ-RELEASE-006: npm publish soft-fails only after the authoritative GitHub Release and keeps registry identity hard', () => {
     const publish = section('\n  publish:', '\n  advance-rolling-aliases:');
-    assertOrder('Publish or verify npm package identity', 'Publish GitHub release', publish);
-    assertOrder("['publish', './release.tgz', '--provenance', '--access', 'public']", 'softprops/action-gh-release', releaseWorkflow);
+    assertOrder('Publish GitHub release', 'name: Publish npm package', publish);
+    assertOrder('name: Publish npm package', 'name: Verify npm registry identity', publish);
+    assertOrder('name: Verify npm registry identity', 'name: Report npm publish skipped', publish);
     assertOrder('\n  publish:', '\n  advance-rolling-aliases:');
+    expect(publish).toContain('published: ${{ steps.npm-publish.outputs.published }}');
+    expect(publish).toContain('id: npm-publish');
+    expect(publish).toContain('continue-on-error: true');
+    expect(publish).toContain('set -euo pipefail');
+    expect(publish).toContain("sed -i '/_authToken/d'");
+    expect(publish).toContain("if: steps.npm-publish.outputs.published == 'true'");
+    expect(publish).toContain("if: steps.npm-publish.outputs.published != 'true'");
+    expect(publish).toContain('GitHub Release remains authoritative; recover via backfill-npm.yml');
     expect(publish).toContain('dist.integrity');
     expect(publish).toContain('isExplicitNpmE404');
     expect(publish).toContain('verifyNpmSri');
@@ -181,5 +185,18 @@ describe('release workflow publishing contract', () => {
     expect(alias).not.toContain('git fetch --tags --force');
     expect(alias).not.toContain('git fetch --tags');
     expect(alias).toContain('git push origin "refs/tags/$ALIAS" --force');
+  });
+
+  it('AZ-RELEASE-008: npm backfill publishes verified immutable release assets without moving aliases', () => {
+    const backfill = readFileSync(join(process.cwd(), '.github/workflows/backfill-npm.yml'), 'utf8');
+    expect(backfill).toContain('workflow_dispatch:');
+    expect(backfill).toContain('Ordered space-separated immutable tags, oldest first');
+    expect(backfill).toContain('contents: read');
+    expect(backfill).toContain('id-token: write');
+    expect(backfill).toContain("gh release download \"$TAG\" --repo \"$GITHUB_REPOSITORY\" --pattern 'release.tgz'");
+    expect(backfill).toContain("PACKAGE_NAME='@postman/onboarding-azure-spec-discovery'");
+    expect(backfill).toContain('npm publish "$TARBALL" --provenance --access public --tag backfill');
+    expect(backfill).toContain('npm dist-tag add "$PACKAGE_NAME@$LATEST" latest');
+    expect(backfill).not.toContain('actions/checkout@');
   });
 });
