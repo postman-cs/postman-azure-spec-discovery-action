@@ -25,7 +25,7 @@ const baseManifest = {
   repository: 'postman-cs/postman-azure-spec-discovery-action',
   commit_sha: 'a'.repeat(40),
   tag: 'v1.3.3',
-  package_name: '@postman-cse/onboarding-azure-spec-discovery',
+  package_name: '@postman/onboarding-azure-spec-discovery',
   package_version: '1.3.3',
   artifacts: [{ path: 'release.tgz', sha256: sha256('tarball') }]
 };
