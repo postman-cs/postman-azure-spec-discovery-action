@@ -182,12 +182,16 @@ jobs:
           NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
           VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
           set +e
-          for attempt in 1 2 3 4 5 6 7 8; do
+          # A first publish of a new package name takes minutes to become readable.
+          # Measured 309s for @postman/onboarding-azure-spec-discovery@1.5.1 on 2026-08-25.
+          # 40 x 15s = 10 minutes gives roughly 2x headroom. Later versions of an
+          # existing package resolve on the first attempt.
+          for attempt in $(seq 1 40); do
             npm view "$NAME@$VERSION" dist.integrity >/tmp/npm-integrity 2>/tmp/npm-view.err
             NPM_VIEW_STATUS=$?
             if [ "$NPM_VIEW_STATUS" -eq 0 ]; then break; fi
-            echo "::notice::registry read-back attempt $attempt/8 has not resolved yet"
-            if [ "$attempt" -lt 8 ]; then sleep 15; fi
+            echo "::notice::registry read-back attempt $attempt/40 has not resolved yet"
+            if [ "$attempt" -lt 40 ]; then sleep 15; fi
           done
           set -e
           VERIFIER="$RUNNER_TEMP/verify-release-artifacts.mjs" NPM_VIEW_STATUS="$NPM_VIEW_STATUS" node --input-type=module -e 'import { readFileSync } from "node:fs"; import { pathToFileURL } from "node:url"; const status = Number(process.env.NPM_VIEW_STATUS); const errText = readFileSync("/tmp/npm-view.err", "utf8"); const m = await import(pathToFileURL(process.env.VERIFIER).href); if (status === 0) { const published = readFileSync("/tmp/npm-integrity", "utf8").trim(); m.verifyNpmSri("release.tgz", published); console.log("::notice::npm version already published with matching integrity"); process.exit(0); } if (!m.isExplicitNpmE404(errText)) { console.error("::error::npm view failed with a non-E404 error; refusing to publish"); process.exit(1); } console.error("::error::npm package is not visible after a successful publish"); process.exit(1);'
