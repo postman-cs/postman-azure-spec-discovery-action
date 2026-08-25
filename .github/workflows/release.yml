@@ -175,10 +175,7 @@ jobs:
       - name: Verify npm registry identity
         if: steps.npm-publish.outputs.published == 'true'
         working-directory: release-artifacts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; fi
           NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
           VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
           set +e
@@ -207,7 +204,7 @@ jobs:
 
   advance-rolling-aliases:
     needs: [classify, publish]
-    if: ${{ needs.classify.outputs.release_kind == 'immutable' && needs.publish.outputs.published == 'true' }}
+    if: ${{ needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
