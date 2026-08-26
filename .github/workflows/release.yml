@@ -158,11 +158,9 @@ jobs:
         id: npm-publish
         continue-on-error: true
         working-directory: release-artifacts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; fi
+          sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
           echo "published=false" >> "$GITHUB_OUTPUT"
           NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
           VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
@@ -198,7 +196,7 @@ jobs:
         run: |
           NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
           VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
-          MESSAGE="npm publish for $NAME@$VERSION did not complete (missing/invalid NPM_TOKEN or registry error); GitHub Release remains authoritative; recover via backfill-npm.yml once publish access exists"
+          MESSAGE="npm publish for $NAME@$VERSION did not complete (OIDC trusted publisher or registry error); GitHub Release remains authoritative; recover via backfill-npm.yml if needed"
           echo "::warning::$MESSAGE"
           echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
 
