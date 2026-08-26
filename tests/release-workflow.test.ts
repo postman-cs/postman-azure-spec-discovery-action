@@ -160,7 +160,7 @@ describe('release workflow publishing contract', () => {
     expect(publish).toContain("sed -i '/_authToken/d'");
     expect(publish).toContain("if: steps.npm-publish.outputs.published == 'true'");
     expect(publish).toContain("if: steps.npm-publish.outputs.published != 'true'");
-    expect(publish).toContain('GitHub Release remains authoritative; recover via backfill-npm.yml');
+    expect(publish).toContain('GitHub Release remains authoritative; rerun this release after trusted publishing is restored');
     expect(publish).toContain('dist.integrity');
     expect(publish).toContain('isExplicitNpmE404');
     expect(publish).toContain('verifyNpmSri');
@@ -187,16 +187,4 @@ describe('release workflow publishing contract', () => {
     expect(alias).toContain('git push origin "refs/tags/$ALIAS" --force');
   });
 
-  it('AZ-RELEASE-008: npm backfill publishes verified immutable release assets without moving aliases', () => {
-    const backfill = readFileSync(join(process.cwd(), '.github/workflows/backfill-npm.yml'), 'utf8');
-    expect(backfill).toContain('workflow_dispatch:');
-    expect(backfill).toContain('Ordered space-separated immutable tags, oldest first');
-    expect(backfill).toContain('contents: read');
-    expect(backfill).toContain('id-token: write');
-    expect(backfill).toContain("gh release download \"$TAG\" --repo \"$GITHUB_REPOSITORY\" --pattern 'release.tgz'");
-    expect(backfill).toContain("PACKAGE_NAME='@postman-cs/onboarding-azure-spec-discovery'");
-    expect(backfill).toContain('npm publish "$TARBALL" --provenance --access public --tag backfill');
-    expect(backfill).toContain('npm dist-tag add "$PACKAGE_NAME@$LATEST" latest');
-    expect(backfill).not.toContain('actions/checkout@');
-  });
 });

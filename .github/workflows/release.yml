@@ -196,7 +196,7 @@ jobs:
         run: |
           NAME=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).name)')
           VERSION=$(node -e 'const {execFileSync}=require("node:child_process"); console.log(JSON.parse(execFileSync("tar", ["-xOf", "release.tgz", "package/package.json"], {encoding:"utf8"})).version)')
-          MESSAGE="npm publish for $NAME@$VERSION did not complete (OIDC trusted publisher or registry error); GitHub Release remains authoritative; recover via backfill-npm.yml if needed"
+          MESSAGE="npm publish for $NAME@$VERSION did not complete (OIDC trusted publisher or registry error); GitHub Release remains authoritative; rerun this release after trusted publishing is restored"
           echo "::warning::$MESSAGE"
           echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
 
