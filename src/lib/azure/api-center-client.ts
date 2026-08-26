@@ -6,7 +6,7 @@ import {
   computeBoundedRetryDelayMs,
   isTransientHttpStatus,
   sleep as defaultSleep
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 import {
   armManagementUrl,
   assertSafeArmNextLink,

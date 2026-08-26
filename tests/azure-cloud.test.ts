@@ -9,7 +9,7 @@ import {
   computeBoundedRetryDelayMs,
   isTransientHttpStatus,
   parseRetryAfterMs
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 
 describe('Azure cloud profiles', () => {
   afterEach(() => {
