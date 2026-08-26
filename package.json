@@ -60,7 +60,7 @@
     "@azure/arm-servicebus": "^6.1.0",
     "@azure/arm-subscriptions": "6.0.0",
     "@azure/identity": "4.13.1",
-    "@postman-cse/automation-core": "^1.3.0",
+    "@postman-cs/automation-core": "^1.8.1",
     "undici": "^8.10.0",
     "yaml": "^2.9.0"
   },

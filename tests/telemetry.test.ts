@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createTelemetryContext } from '@postman-cse/automation-core';
+import { createTelemetryContext } from '@postman-cs/automation-core';
 
 import { runAction, type CoreLike } from '../src/index.js';
 import type { AzureDependencies } from '../src/runtime.js';

@@ -2469,7 +2469,7 @@ var require_request = __commonJS({
         return this.#paused;
       }
     };
-    var Request = class {
+    var Request2 = class {
       constructor(origin, {
         path: path18,
         method,
@@ -2825,7 +2825,7 @@ var require_request = __commonJS({
         request.headers.push(key, val);
       }
     }
-    module2.exports = Request;
+    module2.exports = Request2;
   }
 });
 
@@ -9324,7 +9324,7 @@ var require_client = __commonJS({
     var util2 = require_util();
     var { ClientStats } = require_stats();
     var { channels } = require_diagnostics();
-    var Request = require_request();
+    var Request2 = require_request();
     var DispatcherBase = require_dispatcher_base();
     var {
       InvalidArgumentError,
@@ -9636,7 +9636,7 @@ var require_client = __commonJS({
         this.once("connect", cb);
       }
       [kDispatch](opts, handler) {
-        const request = new Request(this[kUrl].origin, opts, handler);
+        const request = new Request2(this[kUrl].origin, opts, handler);
         this[kQueue].push(request);
         if (this[kResuming]) {
         } else if (util2.bodyLength(request.body) == null && util2.isIterable(request.body)) {
@@ -20986,7 +20986,7 @@ var require_request2 = __commonJS({
       }
     }
     var patchMethodWarning = false;
-    var Request = class _Request {
+    var Request2 = class _Request {
       /** @type {AbortSignal} */
       #signal;
       /** @type {import('../../dispatcher/dispatcher')} */
@@ -21491,15 +21491,15 @@ var require_request2 = __commonJS({
         request.#abortCleanup?.();
       }
     };
-    var { setRequestSignal, getRequestDispatcher, setRequestDispatcher, setRequestHeaders, getRequestState, setRequestState, removeRequestAbortListener } = Request;
-    Reflect.deleteProperty(Request, "setRequestSignal");
-    Reflect.deleteProperty(Request, "getRequestDispatcher");
-    Reflect.deleteProperty(Request, "setRequestDispatcher");
-    Reflect.deleteProperty(Request, "setRequestHeaders");
-    Reflect.deleteProperty(Request, "getRequestState");
-    Reflect.deleteProperty(Request, "setRequestState");
-    Reflect.deleteProperty(Request, "removeRequestAbortListener");
-    mixinBody(Request, getRequestState);
+    var { setRequestSignal, getRequestDispatcher, setRequestDispatcher, setRequestHeaders, getRequestState, setRequestState, removeRequestAbortListener } = Request2;
+    Reflect.deleteProperty(Request2, "setRequestSignal");
+    Reflect.deleteProperty(Request2, "getRequestDispatcher");
+    Reflect.deleteProperty(Request2, "setRequestDispatcher");
+    Reflect.deleteProperty(Request2, "setRequestHeaders");
+    Reflect.deleteProperty(Request2, "getRequestState");
+    Reflect.deleteProperty(Request2, "setRequestState");
+    Reflect.deleteProperty(Request2, "removeRequestAbortListener");
+    mixinBody(Request2, getRequestState);
     function makeRequest(init) {
       return {
         method: init.method ?? "GET",
@@ -21553,7 +21553,7 @@ var require_request2 = __commonJS({
       return newRequest;
     }
     function fromInnerRequest(innerRequest, dispatcher, signal, guard) {
-      const request = new Request(kConstruct);
+      const request = new Request2(kConstruct);
       setRequestState(request, innerRequest);
       setRequestDispatcher(request, dispatcher);
       setRequestSignal(request, signal);
@@ -21563,7 +21563,7 @@ var require_request2 = __commonJS({
       setHeadersGuard(headers, guard);
       return request;
     }
-    Object.defineProperties(Request.prototype, {
+    Object.defineProperties(Request2.prototype, {
       method: kEnumerableProperty,
       url: kEnumerableProperty,
       headers: kEnumerableProperty,
@@ -21589,7 +21589,7 @@ var require_request2 = __commonJS({
         configurable: true
       }
     });
-    webidl.is.Request = webidl.util.MakeTypeAssertion(Request);
+    webidl.is.Request = webidl.util.MakeTypeAssertion(Request2);
     webidl.converters.RequestInfo = function(V) {
       if (typeof V === "string") {
         return webidl.converters.USVString(V);
@@ -21688,7 +21688,7 @@ var require_request2 = __commonJS({
       }
     ]);
     module2.exports = {
-      Request,
+      Request: Request2,
       makeRequest,
       fromInnerRequest,
       cloneRequest,
@@ -21851,7 +21851,7 @@ var require_fetch = __commonJS({
       getResponseState
     } = require_response();
     var { HeadersList } = require_headers();
-    var { Request, cloneRequest, getRequestDispatcher, getRequestState, removeRequestAbortListener } = require_request2();
+    var { Request: Request2, cloneRequest, getRequestDispatcher, getRequestState, removeRequestAbortListener } = require_request2();
     var zlib2 = require("node:zlib");
     var {
       makePolicyContainer,
@@ -21971,7 +21971,7 @@ var require_fetch = __commonJS({
       let p = Promise.withResolvers();
       let requestObject;
       try {
-        requestObject = new Request(input, init);
+        requestObject = new Request2(input, init);
       } catch (e) {
         p.reject(e);
         return p.promise;
@@ -23026,7 +23026,7 @@ var require_cache3 = __commonJS({
     var { kEnumerableProperty, isDisturbed } = require_util();
     var { webidl } = require_webidl();
     var { cloneResponse, fromInnerResponse, getResponseState } = require_response();
-    var { Request, fromInnerRequest, getRequestState } = require_request2();
+    var { Request: Request2, fromInnerRequest, getRequestState } = require_request2();
     var { fetching } = require_fetch();
     var { urlIsHttpHttpsScheme, readAllBytes } = require_util2();
     var Cache = class _Cache {
@@ -23098,7 +23098,7 @@ var require_cache3 = __commonJS({
         }
         const fetchControllers = [];
         for (const request of requests) {
-          const r = getRequestState(new Request(request));
+          const r = getRequestState(new Request2(request));
           if (!urlIsHttpHttpsScheme(r.url)) {
             throw webidl.errors.exception({
               header: prefix,
@@ -23185,7 +23185,7 @@ var require_cache3 = __commonJS({
         if (webidl.is.Request(request)) {
           innerRequest = getRequestState(request);
         } else {
-          innerRequest = getRequestState(new Request(request));
+          innerRequest = getRequestState(new Request2(request));
         }
         if (!urlIsHttpHttpsScheme(innerRequest.url) || innerRequest.method !== "GET") {
           throw webidl.errors.exception({
@@ -23270,7 +23270,7 @@ var require_cache3 = __commonJS({
           }
         } else {
           assert(typeof request === "string");
-          r = getRequestState(new Request(request));
+          r = getRequestState(new Request2(request));
         }
         const operations = [];
         const operation = {
@@ -23315,7 +23315,7 @@ var require_cache3 = __commonJS({
               return [];
             }
           } else if (typeof request === "string") {
-            r = getRequestState(new Request(request));
+            r = getRequestState(new Request2(request));
           }
         }
         const promise = Promise.withResolvers();
@@ -23488,7 +23488,7 @@ var require_cache3 = __commonJS({
               return [];
             }
           } else if (typeof request === "string") {
-            r = getRequestState(new Request(request));
+            r = getRequestState(new Request2(request));
           }
         }
         const responses = [];
@@ -27235,7 +27235,7 @@ ${captureLines}` : capture.stack;
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/ci-context.js
+// node_modules/@postman-cs/automation-core/dist/ci-context.js
 function norm(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length > 0 ? trimmed : void 0;
@@ -27386,11 +27386,11 @@ function detectCiProviderContext(env = process.env) {
   return { ciProvider: "unknown", runnerKind: "unknown" };
 }
 var init_ci_context = __esm({
-  "node_modules/@postman-cse/automation-core/dist/ci-context.js"() {
+  "node_modules/@postman-cs/automation-core/dist/ci-context.js"() {
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/repo-context.js
+// node_modules/@postman-cs/automation-core/dist/repo-context.js
 function normalize(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length > 0 ? trimmed : void 0;
@@ -27479,11 +27479,11 @@ function detectRepoContext(input, env = process.env) {
   };
 }
 var init_repo_context = __esm({
-  "node_modules/@postman-cse/automation-core/dist/repo-context.js"() {
+  "node_modules/@postman-cs/automation-core/dist/repo-context.js"() {
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/telemetry.js
+// node_modules/@postman-cs/automation-core/dist/telemetry.js
 function getProxyDispatcher() {
   return proxyDispatcher ??= new import_undici2.EnvHttpProxyAgent();
 }
@@ -27617,7 +27617,7 @@ function createTelemetryContext(options) {
 }
 var import_node_crypto, import_undici2, SCHEMA_VERSION, DEFAULT_TIMEOUT_MS, DEFAULT_ENDPOINT, proxyDispatcher, noticeShown;
 var init_telemetry = __esm({
-  "node_modules/@postman-cse/automation-core/dist/telemetry.js"() {
+  "node_modules/@postman-cs/automation-core/dist/telemetry.js"() {
     import_node_crypto = require("node:crypto");
     import_undici2 = __toESM(require_undici(), 1);
     init_ci_context();
@@ -27629,7 +27629,7 @@ var init_telemetry = __esm({
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/logger.js
+// node_modules/@postman-cs/automation-core/dist/logger.js
 function defaultCorrelationId() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -27803,7 +27803,7 @@ function createLogger(options) {
 }
 var LEVEL_ORDER, MIN_SECRET_LENGTH;
 var init_logger = __esm({
-  "node_modules/@postman-cse/automation-core/dist/logger.js"() {
+  "node_modules/@postman-cs/automation-core/dist/logger.js"() {
     LEVEL_ORDER = {
       debug: 10,
       info: 20,
@@ -27814,19 +27814,19 @@ var init_logger = __esm({
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/secrets-resolver.js
+// node_modules/@postman-cs/automation-core/dist/secrets-resolver.js
 var init_secrets_resolver = __esm({
-  "node_modules/@postman-cse/automation-core/dist/secrets-resolver.js"() {
+  "node_modules/@postman-cs/automation-core/dist/secrets-resolver.js"() {
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/http/http-error.js
+// node_modules/@postman-cs/automation-core/dist/http/http-error.js
 var init_http_error = __esm({
-  "node_modules/@postman-cse/automation-core/dist/http/http-error.js"() {
+  "node_modules/@postman-cs/automation-core/dist/http/http-error.js"() {
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/http/retry.js
+// node_modules/@postman-cs/automation-core/dist/http/retry.js
 function sleep(delayMs) {
   return new Promise((resolve2) => {
     setTimeout(resolve2, delayMs);
@@ -27893,22 +27893,28 @@ function isTransientHttpStatus(status) {
   return status === 408 || status === 429 || status >= 500;
 }
 var init_retry = __esm({
-  "node_modules/@postman-cse/automation-core/dist/http/retry.js"() {
+  "node_modules/@postman-cs/automation-core/dist/http/retry.js"() {
     init_http_error();
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/http/gateway-client.js
+// node_modules/@postman-cs/automation-core/dist/http/gateway-client.js
 var init_gateway_client = __esm({
-  "node_modules/@postman-cse/automation-core/dist/http/gateway-client.js"() {
+  "node_modules/@postman-cs/automation-core/dist/http/gateway-client.js"() {
     init_http_error();
     init_retry();
   }
 });
 
-// node_modules/@postman-cse/automation-core/dist/index.js
+// node_modules/@postman-cs/automation-core/dist/http/error-injection.js
+var init_error_injection = __esm({
+  "node_modules/@postman-cs/automation-core/dist/http/error-injection.js"() {
+  }
+});
+
+// node_modules/@postman-cs/automation-core/dist/index.js
 var init_dist = __esm({
-  "node_modules/@postman-cse/automation-core/dist/index.js"() {
+  "node_modules/@postman-cs/automation-core/dist/index.js"() {
     init_ci_context();
     init_repo_context();
     init_telemetry();
@@ -27917,6 +27923,7 @@ var init_dist = __esm({
     init_http_error();
     init_retry();
     init_gateway_client();
+    init_error_injection();
   }
 });
 
