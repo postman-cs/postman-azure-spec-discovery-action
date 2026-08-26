@@ -194,7 +194,7 @@ describe('release workflow publishing contract', () => {
     expect(backfill).toContain('contents: read');
     expect(backfill).toContain('id-token: write');
     expect(backfill).toContain("gh release download \"$TAG\" --repo \"$GITHUB_REPOSITORY\" --pattern 'release.tgz'");
-    expect(backfill).toContain("PACKAGE_NAME='@postman/onboarding-azure-spec-discovery'");
+    expect(backfill).toContain("PACKAGE_NAME='@postman-cs/onboarding-azure-spec-discovery'");
     expect(backfill).toContain('npm publish "$TARBALL" --provenance --access public --tag backfill');
     expect(backfill).toContain('npm dist-tag add "$PACKAGE_NAME@$LATEST" latest');
     expect(backfill).not.toContain('actions/checkout@');

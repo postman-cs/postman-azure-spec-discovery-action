@@ -1,6 +1,6 @@
 # Postman Onboarding: Azure Spec Discovery
 
-[![CI](https://github.com/postman-cs/postman-azure-spec-discovery-action/actions/workflows/ci.yml/badge.svg)](https://github.com/postman-cs/postman-azure-spec-discovery-action/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/postman-cs/postman-azure-spec-discovery-action?sort=semver)](https://github.com/postman-cs/postman-azure-spec-discovery-action/releases) [![npm](https://img.shields.io/npm/v/%40postman%2Fonboarding-azure-spec-discovery)](https://www.npmjs.com/package/@postman/onboarding-azure-spec-discovery) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/postman-cs/postman-azure-spec-discovery-action/actions/workflows/ci.yml/badge.svg)](https://github.com/postman-cs/postman-azure-spec-discovery-action/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/postman-cs/postman-azure-spec-discovery-action?sort=semver)](https://github.com/postman-cs/postman-azure-spec-discovery-action/releases) [![npm](https://img.shields.io/npm/v/%40postman-cs%2Fonboarding-azure-spec-discovery)](https://www.npmjs.com/package/@postman-cs/onboarding-azure-spec-discovery) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Zero-config discovery and export of API specs from Azure services using only your existing Azure credentials. Use it when a service already runs on Azure and you need a source-of-truth [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/) specification that Postman onboarding can turn into deterministic collections, OpenAPI-backed contract checks, smoke tests, mocks, monitors, repo artifacts, and CI runs.
 
@@ -105,7 +105,7 @@ Enumerates repo-associated Azure resources across the selected subscription scop
 ### GitLab and other CI (portable CLI)
 
 ```sh
-npx @postman/onboarding-azure-spec-discovery \
+npx @postman-cs/onboarding-azure-spec-discovery \
   --subscription-id "$AZURE_SUBSCRIPTION_ID" \
   --result-json postman-azure-spec-discovery-result.json \
   --dotenv-path azure-spec.env

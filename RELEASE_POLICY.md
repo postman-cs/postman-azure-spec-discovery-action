@@ -51,7 +51,7 @@ The same gates run locally before any push:
 
 ## npm package
 
-The CLI publishes as `@postman/onboarding-azure-spec-discovery` with versions that match the GitHub release tag. Rolling major/minor aliases update action channels and skip npm publishing.
+The CLI publishes as `@postman-cs/onboarding-azure-spec-discovery` with versions that match the GitHub release tag. Rolling major/minor aliases update action channels and skip npm publishing.
 
 ## Compatibility
 

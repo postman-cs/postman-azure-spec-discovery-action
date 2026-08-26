@@ -31,7 +31,7 @@ const AZURE_PINS: Record<string, string> = {
 
 describe('package contract', () => {
   it('AZ-CONTRACT-006: name, version, engine, Azure pins, and packaged files are locked', () => {
-    expect(pkg.name).toBe('@postman/onboarding-azure-spec-discovery');
+    expect(pkg.name).toBe('@postman-cs/onboarding-azure-spec-discovery');
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(lock.packages['']?.version).toBe(pkg.version);
     expect(pkg.engines?.node).toBe('>=24');
