@@ -119,7 +119,11 @@ describe('release workflow publishing contract', () => {
     expect(verify).toContain('run test npm test');
     expect(verify).toContain('run dist npm run verify:dist:assert');
     expect(verify).toContain('run actionlint "$ACTIONLINT_BIN"');
+    expect(verify).toContain(
+      'https://raw.githubusercontent.com/rhysd/actionlint/393031adb9afb225ee52ae2ccd7a5af5525e03e8/scripts/download-actionlint.bash'
+    );
     expect(verify).toContain('1.7.11 "$RUNNER_TEMP"');
+    expect(releaseWorkflow).not.toContain('/main/scripts/download-actionlint.bash');
     expect(verify).toMatch(/^\s+- name: Pack release artifact\n\s+run: \|[\s\S]*scripts\/verify-release-artifacts\.mjs/m);
     expect(verify).toContain('release-artifacts/release.tgz');
     expect(verify).toContain('release-artifacts/release-manifest.json');
