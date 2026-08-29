@@ -985,6 +985,26 @@ describe('action/CLI inventory parity', () => {
 });
 
 describe('staged replacement', () => {
+  it('rejects a symlinked output parent before a multi-file stage touches its destination', async () => {
+    const sandbox = await mkdtemp(path.join(tmpdir(), 'az-inv-stage-symlink-'));
+    const repoRoot = path.join(sandbox, 'repo');
+    const outside = path.join(sandbox, 'outside');
+    await mkdir(repoRoot, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(repoRoot, 'service.proto'), PROTO_WITH_IMPORT);
+    await writeFile(path.join(repoRoot, 'common.proto'), PROTO_COMMON);
+    await writeNativeBinding(repoRoot, 'service.proto');
+    await symlink(outside, path.join(repoRoot, 'discovered-specs'), 'dir');
+
+    await expect(
+      execute(
+        resolveInputs({ INPUT_REPO_ROOT: repoRoot, INPUT_EXPECTED_SERVICE_NAME: 'payments' }),
+        baseDeps(repoRoot)
+      )
+    ).rejects.toThrow(/symbolic link/i);
+    expect(await readdir(outside)).toEqual([]);
+  });
+
   it('staging failure after member 2 preserves prior tree byte-identical with no residue', async () => {
     const repoRoot = await mkdtemp(path.join(tmpdir(), 'az-inv-stage-fail-'));
     const serviceDir = path.join(repoRoot, 'discovered-specs', 'payments');

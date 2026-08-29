@@ -64,9 +64,16 @@ for (const [address, prefix] of [
 for (const [address, prefix] of [
   ['::', 128],
   ['::1', 128],
+  // IPv4-compatible, NAT64, Teredo, and 6to4 addresses can route an embedded
+  // private/link-local IPv4 target despite looking like global IPv6 literals.
+  ['::', 96],
+  ['64:ff9b::', 96],
+  ['64:ff9b:1::', 48],
   ['100::', 64],
+  ['2001::', 32],
   ['2001:2::', 48],
   ['2001:db8::', 32],
+  ['2002::', 16],
   ['fc00::', 7],
   ['fe80::', 10],
   ['ff00::', 8]

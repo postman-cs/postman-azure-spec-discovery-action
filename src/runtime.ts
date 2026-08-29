@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 
 import {
   actionContract,
@@ -49,6 +49,7 @@ import {
   type RuntimeDeclaredWorkloadKind
 } from './lib/providers/runtime-declared-routes.js';
 import { sanitizeLogMessage } from './lib/logging/sanitize.js';
+import { compileApiFilter, type ApiFilter } from './lib/api-filter.js';
 import { detectRepoContext, type RepoContext } from './lib/repo/context.js';
 import { collectRepoSignals, type RepoSignals } from './lib/repo/signals.js';
 import { loadAzureResolverBinding, type AzureResolverBinding } from './lib/repo/azure-bindings.js';
@@ -127,7 +128,7 @@ export interface ResolvedInputs {
   repoContext: RepoContext;
   expectedServiceName?: string;
   expectedApiIds: string[];
-  apiFilter?: RegExp;
+  apiFilter?: ApiFilter;
   serviceMapping: Record<string, string>;
   /** Extra select-grade repo tag keys beside postman:repo (CLI-only repo-tag-keys-json). */
   repoTagKeys: string[];
@@ -408,10 +409,10 @@ export function resolveInputs(env: NodeJS.ProcessEnv = process.env): ResolvedInp
     env
   );
 
-  let apiFilter: RegExp | undefined;
+  let apiFilter: ApiFilter | undefined;
   if (apiFilterRaw) {
     try {
-      apiFilter = new RegExp(apiFilterRaw);
+      apiFilter = compileApiFilter(apiFilterRaw);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid regex for api-filter: ${detail}`, { cause: error });
@@ -1180,11 +1181,6 @@ async function listFilesRecursive(rootDir: string): Promise<string[]> {
   return out;
 }
 
-async function writeUtf8Atomic(targetPath: string, content: string): Promise<void> {
-  await mkdir(path.dirname(targetPath), { recursive: true });
-  await writeFile(targetPath, content, 'utf8');
-}
-
 async function fsyncFile(absolutePath: string): Promise<void> {
   const handle = await open(absolutePath, 'r+');
   try {
@@ -1244,24 +1240,27 @@ async function materializeDefinitionMembersStaged(options: {
   const stageDir = resolvePathWithinRoot(options.repoRoot, stageRel, 'output-dir');
   const backupDir = resolvePathWithinRoot(options.repoRoot, backupRel, 'output-dir');
 
+  // Reject a committed symlink anywhere in the output tree before cleanup,
+  // directory creation, copying, or rename can touch it.
+  await assertNoSymlinkEscape(options.repoRoot, canonicalRel, 'output-dir');
+  await assertNoSymlinkEscape(options.repoRoot, stageRel, 'output-dir');
+  await assertNoSymlinkEscape(options.repoRoot, backupRel, 'output-dir');
   await rm(stageDir, { recursive: true, force: true });
   await rm(backupDir, { recursive: true, force: true });
   await mkdir(stageDir, { recursive: true });
+  await assertNoSymlinkEscape(options.repoRoot, stageRel, 'output-dir');
 
   try {
     let index = 0;
     for (const member of options.members) {
       const safeRel = assertSafeArtifactRelativePath(member.relativePath);
-      const absolute = resolvePathWithinRoot(
-        options.repoRoot,
-        path.posix.join(stageRel, safeRel),
-        'output-dir'
-      );
+      const memberRel = path.posix.join(stageRel, safeRel);
+      const absolute = resolvePathWithinRoot(options.repoRoot, memberRel, 'output-dir');
       // Authoritative stage write + fsync/hash/size verification. The injected
       // writer is then invoked against the staged path only (never post-swap
       // canonical replay) so adapters/tests remain observable while rollback
       // is still available.
-      await writeUtf8Atomic(absolute, member.content);
+      await writeFileWithinRoot(options.repoRoot, memberRel, member.content, 'output-dir');
       await fsyncFile(absolute);
       await verifyDefinitionMemberBytes(
         absolute,
@@ -1270,6 +1269,7 @@ async function materializeDefinitionMembersStaged(options: {
       );
       if (options.writeSpecFile) {
         await options.writeSpecFile(absolute, member.content, options.repoRoot);
+        await assertNoSymlinkEscape(options.repoRoot, memberRel, 'output-dir');
         await fsyncFile(absolute);
         await verifyDefinitionMemberBytes(
           absolute,
@@ -1303,12 +1303,25 @@ async function materializeDefinitionMembersStaged(options: {
           path.posix.join(stageRel, rel),
           'output-dir'
         );
+        await assertNoSymlinkEscape(
+          options.repoRoot,
+          path.posix.join(stageRel, rel),
+          'output-dir'
+        );
         await mkdir(path.dirname(destination), { recursive: true });
+        await assertNoSymlinkEscape(
+          options.repoRoot,
+          path.posix.join(stageRel, rel),
+          'output-dir'
+        );
         await copyFile(absolutePrior, destination);
         await fsyncFile(destination);
       }
     }
 
+    await assertNoSymlinkEscape(options.repoRoot, canonicalRel, 'output-dir');
+    await assertNoSymlinkEscape(options.repoRoot, stageRel, 'output-dir');
+    await assertNoSymlinkEscape(options.repoRoot, backupRel, 'output-dir');
     if (canonicalExisted) {
       await rename(canonicalDir, backupDir);
     }
@@ -1329,6 +1342,11 @@ async function materializeDefinitionMembersStaged(options: {
     for (const member of options.members) {
       const safeRel = assertSafeArtifactRelativePath(member.relativePath);
       const absolute = resolvePathWithinRoot(
+        options.repoRoot,
+        path.posix.join(canonicalRel, safeRel),
+        'output-dir'
+      );
+      await assertNoSymlinkEscape(
         options.repoRoot,
         path.posix.join(canonicalRel, safeRel),
         'output-dir'
@@ -1983,7 +2001,7 @@ function enrichCandidatesFromGraph(
   });
 }
 
-function applyApiFilter(candidates: SpecCandidate[], apiFilter: RegExp | undefined): SpecCandidate[] {
+function applyApiFilter(candidates: SpecCandidate[], apiFilter: ApiFilter | undefined): SpecCandidate[] {
   if (!apiFilter) return candidates;
   return candidates.filter(
     (candidate) =>

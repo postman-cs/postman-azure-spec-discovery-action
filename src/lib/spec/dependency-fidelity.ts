@@ -47,7 +47,12 @@ export function listNativeDependencyRefs(content: string, format: SpecFormat): s
 }
 
 function isAbsoluteOrRemoteRef(ref: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith('//');
+  const slashNormalized = ref.replace(/\\/g, '/');
+  return (
+    /^[a-z][a-z0-9+.-]*:/i.test(ref) ||
+    slashNormalized.startsWith('/') ||
+    path.win32.isAbsolute(ref)
+  );
 }
 
 /**
