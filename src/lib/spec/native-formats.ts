@@ -69,21 +69,114 @@ function openApiVersionOf(document: Record<string, unknown>): ValidatedOpenApi['
   return undefined;
 }
 
-function stripXmlPreamble(xml: string): string {
-  return xml
-    .replace(/<\?xml[\s\S]*?\?>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
-    .trim();
+function isXmlWhitespace(char: string | undefined): boolean {
+  return char === ' ' || char === '\t' || char === '\r' || char === '\n';
+}
+
+function skipXmlWhitespace(xml: string, start: number): number {
+  let index = start;
+  while (index < xml.length && isXmlWhitespace(xml[index])) index += 1;
+  return index;
+}
+
+function startsWithIgnoreCase(value: string, search: string, position: number): boolean {
+  if (position + search.length > value.length) return false;
+  return value.slice(position, position + search.length).toLowerCase() === search.toLowerCase();
+}
+
+function skipDoctype(xml: string, start: number): number {
+  let quote: '"' | "'" | undefined;
+  let subsetDepth = 0;
+  for (let index = start + '<!DOCTYPE'.length; index < xml.length; index += 1) {
+    const char = xml[index];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '[') {
+      subsetDepth += 1;
+    } else if (char === ']' && subsetDepth > 0) {
+      subsetDepth -= 1;
+    } else if (char === '>' && subsetDepth === 0) {
+      return index + 1;
+    }
+  }
+  return xml.length;
+}
+
+function skipXmlPreamble(xml: string): number {
+  let index = skipXmlWhitespace(xml, 0);
+  while (index < xml.length) {
+    let next = index;
+    if (xml.startsWith('<?', index)) {
+      const close = xml.indexOf('?>', index + 2);
+      next = close === -1 ? xml.length : close + 2;
+    } else if (xml.startsWith('<!--', index)) {
+      const close = xml.indexOf('-->', index + 4);
+      next = close === -1 ? xml.length : close + 3;
+    } else if (startsWithIgnoreCase(xml, '<!DOCTYPE', index)) {
+      next = skipDoctype(xml, index);
+    }
+    if (next === index) break;
+    index = skipXmlWhitespace(xml, next);
+  }
+  return index;
+}
+
+function isXmlNameStart(char: string | undefined): boolean {
+  if (!char) return false;
+  const code = char.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || char === '_';
+}
+
+function isXmlNameChar(char: string | undefined): boolean {
+  if (isXmlNameStart(char)) return true;
+  if (!char) return false;
+  const code = char.charCodeAt(0);
+  return (code >= 48 && code <= 57) || char === '.' || char === '-';
+}
+
+function scanXmlNameSegment(xml: string, start: number): number {
+  if (!isXmlNameStart(xml[start])) return start;
+  let index = start + 1;
+  while (index < xml.length && isXmlNameChar(xml[index])) index += 1;
+  return index;
 }
 
 function xmlRootInfo(xml: string): { localName: string; qualified: string; head: string } | undefined {
-  const body = stripXmlPreamble(trimContent(xml));
-  const match = body.match(/<\s*([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)\b([^>]*)>/);
-  if (!match) return undefined;
-  const qualified = match[1]!;
+  const body = trimContent(xml);
+  let index = skipXmlPreamble(body);
+  if (body[index] !== '<') return undefined;
+  index = skipXmlWhitespace(body, index + 1);
+  const nameStart = index;
+  index = scanXmlNameSegment(body, index);
+  if (index === nameStart) return undefined;
+  if (body[index] === ':') {
+    const localStart = index + 1;
+    index = scanXmlNameSegment(body, localStart);
+    if (index === localStart) return undefined;
+  }
+  if (body[index] && !isXmlWhitespace(body[index]) && body[index] !== '/' && body[index] !== '>') {
+    return undefined;
+  }
+  const qualified = body.slice(nameStart, index);
+  let quote: '"' | "'" | undefined;
+  let close = index;
+  for (; close < body.length; close += 1) {
+    const char = body[close];
+    if (quote) {
+      if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '>') {
+      break;
+    }
+  }
+  if (close === body.length) return undefined;
   const localName = (qualified.includes(':') ? qualified.split(':').pop()! : qualified).toLowerCase();
-  const head = `${qualified} ${match[2] ?? ''}`.toLowerCase();
+  const head = body.slice(nameStart, close).toLowerCase();
   return { localName, qualified, head };
 }
 
@@ -106,15 +199,98 @@ function isXsdXml(xml: string): boolean {
   return /xmlschema/i.test(root.head) || /www\.w3\.org\/2001\/xmlschema/i.test(trimContent(xml));
 }
 
-const GRAPHQL_DEFINITION_RE =
-  /^\s*(?:"""[\s\S]*?"""\s*)?(?:extend\s+)?(?:(?:type|interface|enum|union|scalar|input)\s+[A-Za-z_]|schema\s*\{|directive\s+@)/m;
+function skipTextWhitespace(value: string, start: number): number {
+  let index = start;
+  while (index < value.length) {
+    const char = value[index];
+    if (char !== ' ' && char !== '\t' && char !== '\r' && char !== '\n' && char !== '\f' && char !== '\v') {
+      break;
+    }
+    index += 1;
+  }
+  return index;
+}
+
+function keywordEnd(value: string, keyword: string, start: number): number | undefined {
+  if (!value.startsWith(keyword, start)) return undefined;
+  const end = start + keyword.length;
+  const next = value[end];
+  if (next && (/[A-Za-z0-9_]/).test(next)) return undefined;
+  return end;
+}
+
+function graphqlDefinitionAt(value: string, start: number): boolean {
+  let index = start;
+  const extendEnd = keywordEnd(value, 'extend', index);
+  if (extendEnd !== undefined && isXmlWhitespace(value[extendEnd])) {
+    index = skipTextWhitespace(value, extendEnd);
+  }
+
+  for (const keyword of ['type', 'interface', 'enum', 'union', 'scalar', 'input']) {
+    const end = keywordEnd(value, keyword, index);
+    if (end === undefined || !isXmlWhitespace(value[end])) continue;
+    const nameStart = skipTextWhitespace(value, end);
+    return isXmlNameStart(value[nameStart]);
+  }
+
+  const schemaEnd = keywordEnd(value, 'schema', index);
+  if (schemaEnd !== undefined && value[skipTextWhitespace(value, schemaEnd)] === '{') return true;
+  const directiveEnd = keywordEnd(value, 'directive', index);
+  return directiveEnd !== undefined &&
+    isXmlWhitespace(value[directiveEnd]) &&
+    value[skipTextWhitespace(value, directiveEnd)] === '@';
+}
+
+function hasGraphqlDefinition(value: string): boolean {
+  let lineStart = 0;
+  while (lineStart < value.length) {
+    let start = skipTextWhitespace(value, lineStart);
+    if (value.startsWith('"""', start)) {
+      const descriptionEnd = value.indexOf('"""', start + 3);
+      if (descriptionEnd === -1) return false;
+      start = skipTextWhitespace(value, descriptionEnd + 3);
+    }
+    if (graphqlDefinitionAt(value, start)) return true;
+    const nextLine = value.indexOf('\n', Math.max(start, lineStart));
+    if (nextLine === -1) return false;
+    lineStart = nextLine + 1;
+  }
+  return false;
+}
+
+function hasApiDocumentMarker(value: string): boolean {
+  let lineStart = 0;
+  while (lineStart < value.length) {
+    const start = skipTextWhitespace(value, lineStart);
+    for (const keyword of ['openapi', 'swagger', 'asyncapi']) {
+      const end = keywordEnd(value, keyword, start);
+      if (end !== undefined && value[skipTextWhitespace(value, end)] === ':') return true;
+    }
+    const nextLine = value.indexOf('\n', Math.max(start, lineStart));
+    if (nextLine === -1) return false;
+    lineStart = nextLine + 1;
+  }
+  return false;
+}
+
+function someTrimmedLine(value: string, predicate: (line: string) => boolean): boolean {
+  let lineStart = 0;
+  while (lineStart <= value.length) {
+    const lineEnd = value.indexOf('\n', lineStart);
+    const end = lineEnd === -1 ? value.length : lineEnd;
+    if (predicate(value.slice(lineStart, end).trim())) return true;
+    if (lineEnd === -1) return false;
+    lineStart = lineEnd + 1;
+  }
+  return false;
+}
 
 function isGraphqlSdl(content: string): boolean {
   const trimmed = trimContent(content);
   if (!trimmed || looksLikeJson(trimmed) || looksLikeXml(trimmed)) return false;
   // Reject YAML mapping keys (`type:`, `enum:`) that would otherwise match bare keywords.
-  if (/^\s*(?:openapi|swagger|asyncapi)\s*:/m.test(trimmed)) return false;
-  return GRAPHQL_DEFINITION_RE.test(trimmed);
+  if (hasApiDocumentMarker(trimmed)) return false;
+  return hasGraphqlDefinition(trimmed);
 }
 
 /**
@@ -126,8 +302,8 @@ function isGraphqlSdl(content: string): boolean {
 function isProtobufSource(content: string): boolean {
   const trimmed = trimContent(content);
   if (!trimmed || looksLikeJson(trimmed) || looksLikeXml(trimmed)) return false;
-  if (/^\s*(?:openapi|swagger|asyncapi)\s*:/m.test(trimmed)) return false;
-  if (/^\s*syntax\s*=\s*["']proto[23]["']\s*;/m.test(trimmed)) return true;
+  if (hasApiDocumentMarker(trimmed)) return false;
+  if (someTrimmedLine(trimmed, (line) => /^syntax\s*=\s*["']proto[23]["']\s*;/.test(line))) return true;
   if (/\bservice\s+[A-Za-z_]\w*\s*\{[\s\S]*\brpc\b/.test(trimmed)) return true;
   return false;
 }
@@ -140,7 +316,7 @@ function isProtobufByFileNameHint(content: string, fileName?: string): boolean {
   return (
     isProtobufSource(trimmed) ||
     /\bmessage\s+[A-Za-z_]\w*\s*\{/.test(trimmed) ||
-    /^\s*package\s+[\w.]+/m.test(trimmed)
+    someTrimmedLine(trimmed, (line) => /^package\s+[\w.]+/.test(line))
   );
 }
 

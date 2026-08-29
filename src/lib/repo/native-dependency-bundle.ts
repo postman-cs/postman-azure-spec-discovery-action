@@ -1,4 +1,3 @@
-import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { SpecFormat } from '../../contracts.js';
@@ -8,7 +7,7 @@ import {
   listNativeDependencyRefs
 } from '../spec/dependency-fidelity.js';
 import { safeNativeFilename } from '../spec/native-filenames.js';
-import { assertNoSymlinkEscape, resolvePathWithinRoot } from '../utils/resolve-path-within-root.js';
+import { readUtf8FileWithinRoot } from '../utils/resolve-path-within-root.js';
 import type { SpecExportArtifact, SpecExportResult } from '../providers/types.js';
 
 /**
@@ -167,19 +166,13 @@ export async function resolveRepoNativeDependencyCompanions(options: {
     seenCandidateRelatives.add(candidateRelative);
 
     try {
-      await assertNoSymlinkEscape(options.repoRoot, candidateRelative, 'native-dependency');
-      const absolute = resolvePathWithinRoot(options.repoRoot, candidateRelative, 'native-dependency');
-      const fileStat = await stat(absolute);
-      if (!fileStat.isFile()) {
-        missingRefs.push(item.ref);
-        continue;
-      }
-      // Reject before reading when per-member or cumulative budget would be exceeded.
-      if (fileStat.size > limits.maxBytesPerFile || totalBytes + fileStat.size > limits.maxTotalBytes) {
-        missingRefs.push(item.ref);
-        continue;
-      }
-      const content = await readFile(absolute, 'utf8');
+      const remainingBytes = limits.maxTotalBytes - totalBytes;
+      const content = await readUtf8FileWithinRoot(
+        options.repoRoot,
+        candidateRelative,
+        'native-dependency',
+        Math.min(limits.maxBytesPerFile, remainingBytes)
+      );
       const byteLength = Buffer.byteLength(content, 'utf8');
       if (byteLength > limits.maxBytesPerFile || totalBytes + byteLength > limits.maxTotalBytes) {
         missingRefs.push(item.ref);

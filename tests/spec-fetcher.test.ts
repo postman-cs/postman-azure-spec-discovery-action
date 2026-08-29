@@ -130,6 +130,18 @@ describe('spec fetcher', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it.each([
+    '64:ff9b::a9fe:a9fe',
+    '64:ff9b:1::a9fe:a9fe',
+    '2002:a9fe:a9fe::',
+    '::a9fe:a9fe'
+  ])('rejects IPv4-transition address %s before fetch', async (address) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await expect(fetchSpecFromUrl(`https://[${address}]/spec.json`)).rejects.toThrow('Private or local');
+    expect(lookupMock).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('resolves and pins every redirect hop independently', async () => {
     lookupMock
       .mockResolvedValueOnce([{ address: '1.1.1.1', family: 4 }])

@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   applyNativeDependencyFidelity,
   assessNativeDependencyFidelity,
+  dependencyRefKey,
   extractProtobufImports,
   extractXmlSchemaDependencyRefs
 } from '../src/lib/spec/dependency-fidelity.js';
@@ -92,6 +93,17 @@ describe('dependency fidelity helpers', () => {
     });
     expect(closed.hasUnresolvedDependencies).toBe(false);
     expect(closed.contractClass).toBe('authoritative');
+  });
+
+  it('rejects POSIX, Windows, UNC, and remote absolute dependency refs', () => {
+    for (const ref of [
+      '/etc/passwd',
+      'C:\\Windows\\secret.proto',
+      '\\\\server\\share\\secret.proto',
+      'https://example.com/secret.proto'
+    ]) {
+      expect(dependencyRefKey(ref)).toBeUndefined();
+    }
   });
 
   it('never upgrades reconstructed/partial when applying dependency fidelity', () => {

@@ -129,6 +129,31 @@ describe('native format detection', () => {
     expect(detectNativeFormat(xsd)).toMatchObject({ format: 'xsd', kind: 'xsd' });
   });
 
+  it('scans XML preambles, roots, and GraphQL definitions in bounded linear time', () => {
+    const wsdlWithInternalSubset = `<!DOCTYPE definitions [
+      <!ENTITY harmless "unused">
+    ]>
+    <definitions xmlns="http://schemas.xmlsoap.org/wsdl/"><portType name="p"/></definitions>`;
+    expect(detectNativeFormat(wsdlWithInternalSubset)).toMatchObject({ format: 'wsdl', kind: 'wsdl' });
+    expect(detectNativeFormat('"""Root operations"""\ntype Query { ping: String }')).toMatchObject({
+      format: 'graphql-sdl',
+      kind: 'graphql-sdl'
+    });
+
+    const adversarial = [
+      `<a${'a.'.repeat(128_000)}`,
+      '<!--'.repeat(64_000),
+      '<?xml'.repeat(51_200),
+      '<!DOCTYPE'.repeat(28_445),
+      `a${'\n'.repeat(255_998)}z`
+    ];
+    const started = performance.now();
+    for (const content of adversarial) {
+      expect(detectNativeFormat(content)).toBeUndefined();
+    }
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it('detects protobuf from syntax or service/rpc; message-only needs .proto hint', () => {
     expect(
       detectNativeFormat('syntax = "proto3";\npackage demo;\nmessage Ping { string id = 1; }\n')

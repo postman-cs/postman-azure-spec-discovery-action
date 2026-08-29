@@ -107,6 +107,25 @@ describe('runtime execute', () => {
     };
   }
 
+  it('compiles api-filter with bounded linear-time matching', () => {
+    const resolved = resolveInputs({
+      INPUT_REPO_ROOT: repoRoot,
+      INPUT_SUBSCRIPTION_ID: 'sub-1',
+      INPUT_API_FILTER: '(a+)+$'
+    });
+    const started = performance.now();
+    expect(resolved.apiFilter?.test(`${'a'.repeat(256_000)}!`)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2_000);
+
+    expect(() =>
+      resolveInputs({
+        INPUT_REPO_ROOT: repoRoot,
+        INPUT_SUBSCRIPTION_ID: 'sub-1',
+        INPUT_API_FILTER: 'a'.repeat(1_025)
+      })
+    ).toThrow(/at most 1024 characters/i);
+  });
+
   it('repo spec wins before any provider is consulted', async () => {
     await writeFile(path.join(repoRoot, 'openapi.yaml'), 'openapi: 3.0.3\ninfo:\n  title: x\n  version: "1"\npaths:\n  /a: {}\n');
     const provider = stubProvider([apimCandidate('payments')]);
