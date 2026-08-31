@@ -29,6 +29,8 @@ Tags are an **output** of passing run, never input. Never push release tag by ha
 - Conventional-commit type picks bump; `chore`/`ci`/`build`/`test`/`style` alone cut nothing.
 - release commit lives only on tag; `release.yml` is started explicitly after tag push.
 - `RELEASE_POLICY.md` holds full contract.
+- `main` requires pull requests and green `ready` check (admins included, no bypass). Merge with `gh pr checks <n> --watch --fail-fast && gh pr merge <n> --merge --delete-branch`; never `--admin`.
+- `.githooks/pre-push` runs typecheck, lint, and test before every branch push.
 
 ## Anti-Patterns
 
