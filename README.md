@@ -96,7 +96,7 @@ Enumerates repo-associated Azure resources across the selected subscription scop
 ```yaml
 - id: spec
   uses: postman-cs/postman-azure-spec-discovery-action@v1
-- uses: postman-cs/postman-api-onboarding-action@v1
+- uses: postman-cs/postman-api-onboarding-action@v3
   with:
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
     spec-path: ${{ steps.spec.outputs.spec-path }}
