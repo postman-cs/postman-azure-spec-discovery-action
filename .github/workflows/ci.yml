@@ -19,6 +19,7 @@ permissions:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     permissions:
       contents: read
       pull-requests: read
@@ -161,6 +162,7 @@ jobs:
   dist-parity:
     needs: gate
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     permissions:
       contents: read
     steps:
@@ -185,6 +187,7 @@ jobs:
   windows:
     name: Windows gate
     runs-on: windows-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -204,6 +207,7 @@ jobs:
     needs: [gate, dist-parity, windows]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
       - name: Require all CI jobs succeeded
         run: |

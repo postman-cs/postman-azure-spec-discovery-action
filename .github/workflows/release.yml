@@ -16,6 +16,7 @@ concurrency:
 jobs:
   classify:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     outputs:
       release_kind: ${{ steps.release_tag.outputs.release_kind }}
       npm_publish: ${{ steps.release_tag.outputs.npm_publish }}
@@ -63,6 +64,7 @@ jobs:
     needs: classify
     if: ${{ needs.classify.outputs.release_kind == 'immutable' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     permissions:
       contents: read
     steps:
@@ -130,6 +132,7 @@ jobs:
     needs: [classify, verify-package]
     if: ${{ needs.classify.outputs.release_kind == 'immutable' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       published: ${{ steps.npm-publish.outputs.published }}
     permissions:
@@ -204,6 +207,7 @@ jobs:
     needs: [classify, publish]
     if: ${{ needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
       contents: write
     steps:
